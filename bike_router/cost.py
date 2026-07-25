@@ -55,7 +55,7 @@ def is_main_road(highway: object) -> bool:
 
 
 def edge_cost(
-    length: float, surface: object, highway: object, elev_source: float, elev_target: float, params: RoutingParams
+    *, length: float, surface: object, highway: object, elev_source: float, elev_target: float, params: RoutingParams
 ) -> float:
     """Total edge cost in metres = length + uphill + unpaved + main-road penalties."""
     assert length >= 0, "edge length must be non-negative"

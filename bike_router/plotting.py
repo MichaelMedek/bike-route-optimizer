@@ -24,6 +24,7 @@ logger = logging.getLogger(__name__)
 
 
 def plot_elevation_heatmap(
+    *,
     graph: nx.MultiDiGraph,
     route_nodes: list[int],
     track: Track,
