@@ -1,15 +1,15 @@
 """Runtime sanity checks (spec section 5) — invariants the pipeline asserts.
 
 These are intentionally cheap and fail loud, catching a broken graph or cost
-model before we emit outputs. Sanity 2 uses the balanced profile's combined cost.
+model before we emit outputs.
 """
 
 import logging
+from typing import Any
 
 import networkx as nx
 
-from bike_router.constants import RouteProfile, SanityConfig
-from bike_router.cost import combine, edge_stored_components
+from bike_router.constants import CostConfig, RoutingParams, SanityConfig
 
 logger = logging.getLogger(__name__)
 
@@ -28,29 +28,33 @@ def check_simplify_shrunk(nodes_before: int, nodes_after: int) -> None:
     logger.info("Sanity 1 OK: %d → %d nodes (>50%% shrink)", nodes_before, nodes_after)
 
 
-def _profile_cost(edges: dict[int, dict[str, object]], profile: RouteProfile) -> float:
-    """Cheapest parallel-edge cost under ``profile``."""
-    return min(combine(components=edge_stored_components(data=data), profile=profile) for data in edges.values())
+def _edge_cost(edges: dict[int, dict[str, Any]]) -> float:
+    """Cheapest parallel-edge stored cost."""
+    return min(float(data[CostConfig.EDGE_COST]) for data in edges.values())
 
 
-def check_uphill_costlier(graph: nx.MultiDiGraph, node_lower: int, node_upper: int, profile: RouteProfile) -> None:
-    """Sanity 2: under ``profile``, the uphill direction of a non-flat edge costs
-    more than downhill. Every profile is user-facing, so this must hold for each.
+def check_uphill_costlier(graph: nx.MultiDiGraph, node_lower: int, node_upper: int, params: RoutingParams) -> None:
+    """Sanity 2: when the rider penalises uphill, the uphill direction of a non-flat
+    edge costs more than downhill. If the uphill penalty is 0 the rider does not
+    care, so the two directions are (correctly) equal — the check is skipped.
 
     Caller must pass a genuinely bidirectional, non-flat edge (see
     find_steepest_bidirectional_edge) — edges/elevations accessed strictly.
     """
-    cost_up = _profile_cost(edges=graph.get_edge_data(node_lower, node_upper), profile=profile)
-    cost_down = _profile_cost(edges=graph.get_edge_data(node_upper, node_lower), profile=profile)
+    if params.extra_km_per_uphill_100m == 0:
+        logger.info("Sanity 2 skipped (uphill penalty disabled by user)")
+        return
+    cost_up = _edge_cost(edges=graph.get_edge_data(node_lower, node_upper))
+    cost_down = _edge_cost(edges=graph.get_edge_data(node_upper, node_lower))
     elev_lower = graph.nodes[node_lower]["elevation"]
     elev_upper = graph.nodes[node_upper]["elevation"]
     if elev_upper > elev_lower:  # node_lower→node_upper is uphill
-        assert cost_up > cost_down, f"Sanity 2 [{profile.name}] failed: uphill {cost_up} !> downhill {cost_down}"
+        assert cost_up > cost_down, f"Sanity 2 failed: uphill {cost_up} !> downhill {cost_down}"
     elif elev_lower > elev_upper:  # node_upper→node_lower is uphill
-        assert cost_down > cost_up, f"Sanity 2 [{profile.name}] failed: uphill {cost_down} !> downhill {cost_up}"
+        assert cost_down > cost_up, f"Sanity 2 failed: uphill {cost_down} !> downhill {cost_up}"
     else:
         raise AssertionError("Sanity 2 misused: edge is flat (caller must pass a non-flat edge)")
-    logger.info("Sanity 2 [%s] OK: uphill %.1f > downhill %.1f", profile.name, cost_up, cost_down)
+    logger.info("Sanity 2 OK: uphill %.1f > downhill %.1f", cost_up, cost_down)
 
 
 def check_strongly_connected(graph: nx.MultiDiGraph) -> None:

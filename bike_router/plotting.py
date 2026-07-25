@@ -17,20 +17,32 @@ import osmnx as ox  # noqa: E402
 from matplotlib import cm  # noqa: E402
 from matplotlib.colors import Normalize  # noqa: E402
 
+from bike_router.constants import RoutingParams  # noqa: E402
+from bike_router.track import Track  # noqa: E402
+
 logger = logging.getLogger(__name__)
 
 
 def plot_elevation_heatmap(
     graph: nx.MultiDiGraph,
     route_nodes: list[int],
+    track: Track,
+    params: RoutingParams,
     out_path: str,
     cmap_name: str = "plasma",
     dpi: int = 200,
 ) -> None:
-    """Save a PNG heatmap of the graph (nodes by elevation) with the route on top."""
+    """Save a PNG heatmap of the graph (nodes by elevation) with the route on top.
+
+    An overlay text box reports the rider's three preferences and the resulting
+    route stats (distance, ride time, total ascent/descent).
+    """
     nodes = list(graph.nodes)
+    assert nodes, "graph must have nodes to plot"
+    assert len(route_nodes) >= 2, "route must have >= 2 nodes to overlay"
     # elevation is an invariant (enrich_elevations fills nodata) → strict access.
     elevations = np.array([graph.nodes[node]["elevation"] for node in nodes], dtype=float)
+    assert np.all(np.isfinite(elevations)), "node elevations must be finite"
 
     elev_min, elev_max = float(elevations.min()), float(elevations.max())
     if elev_min == elev_max:
@@ -61,6 +73,29 @@ def plot_elevation_heatmap(
     colorbar = figure.colorbar(mappable, ax=axes, fraction=0.03, pad=0.02)
     colorbar.set_label("Elevation (m)")
     axes.set_title("Bike route — nodes colored by elevation")
+
+    overlay = (
+        "Preferences (extra km):\n"
+        f"  +{params.extra_km_per_uphill_100m:g} / 100 m uphill\n"
+        f"  +{params.extra_km_per_unpaved_km:g} / km unpaved\n"
+        f"  +{params.extra_km_per_main_road_km:g} / km main road\n"
+        "Route:\n"
+        f"  {track.distance_km:.1f} km · {track.duration_min:.0f} min\n"
+        f"  +{track.ascent_m:.0f} m / -{track.descent_m:.0f} m"
+    )
+    axes.text(
+        0.02,
+        0.02,
+        overlay,
+        transform=axes.transAxes,
+        va="bottom",
+        ha="left",
+        fontsize=7,
+        family="monospace",
+        color="black",
+        bbox={"boxstyle": "round", "facecolor": "white", "alpha": 0.75, "edgecolor": "#888888"},
+        zorder=6,
+    )
 
     figure.savefig(out_path, dpi=dpi, bbox_inches="tight")
     plt.close(figure)

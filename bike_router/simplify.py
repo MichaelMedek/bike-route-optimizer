@@ -1,11 +1,9 @@
 """Route geometry helpers.
 
-Two distinct jobs, deliberately kept apart:
+Two jobs:
 
 * ``route_to_linestring`` — stitch the node path into the FULL OSM geometry
-  (every real vertex). This is what the GPX track and debug PNG follow.
-* ``simplify_track`` — Douglas-Peucker-simplify that full track for file size:
-  drop near-collinear points on straights, keep sharp turns. Shape is preserved.
+  (every real vertex), used to derive the Google Maps waypoints.
 * ``select_waypoints`` — reduce to exactly N perceptually-significant points for
   the Google Maps URL, via Visvalingam-Whyatt effective-area ranking.
 """
@@ -16,26 +14,23 @@ import networkx as nx
 import numpy as np
 from shapely.geometry import LineString
 
-from bike_router.constants import GeoConfig, RouteProfile, SimplifyConfig
-from bike_router.cost import combine, edge_stored_components
+from bike_router.constants import CostConfig
 
 logger = logging.getLogger(__name__)
 
 
-def route_to_linestring(graph: nx.MultiDiGraph, node_path: list[int], profile: RouteProfile) -> LineString:
+def route_to_linestring(graph: nx.MultiDiGraph, node_path: list[int]) -> LineString:
     """Stitch a node path into the full lon/lat OSM geometry (x=lon, y=lat).
 
-    For each consecutive node pair pick the profile's min-cost parallel edge and
-    use its stored ``geometry`` if present, else a straight segment between node
-    coordinates.
+    For each consecutive node pair pick the cheapest parallel edge (matching A*)
+    and use its stored ``geometry`` if present, else a straight segment between
+    node coordinates.
     """
     assert len(node_path) >= 2, "route must have >= 2 nodes (distinct source/target)"
     coords: list[tuple[float, float]] = []
     for node_a, node_b in zip(node_path[:-1], node_path[1:], strict=True):
         edges = graph.get_edge_data(node_a, node_b)
-        best_key = min(
-            edges, key=lambda key: combine(components=edge_stored_components(data=edges[key]), profile=profile)
-        )
+        best_key = min(edges, key=lambda key: float(edges[key][CostConfig.EDGE_COST]))
         data = edges[best_key]
         geometry = data.get("geometry")  # OSM geometry is genuinely optional
         if geometry is not None:
@@ -49,22 +44,6 @@ def route_to_linestring(graph: nx.MultiDiGraph, node_path: list[int], profile: R
             segment = segment[1:]  # avoid duplicating the shared vertex
         coords.extend(segment)
     return LineString(coords)
-
-
-def simplify_track(line: LineString) -> list[tuple[float, float]]:
-    """Douglas-Peucker-simplify the full route track (returns (lon, lat) points).
-
-    RDP drops points within TRACK_TOLERANCE_M of the local chord (straights) while
-    keeping points far from it (sharp turns) — one tolerance controls smoothness.
-    The tolerance is metres, converted to degrees via the equator scale (shapely
-    simplifies in coordinate units).
-    """
-    tolerance_deg = SimplifyConfig.TRACK_TOLERANCE_M / GeoConfig.METERS_PER_DEGREE_EQUATOR
-    assert tolerance_deg > 0, "RDP tolerance must be positive"
-    simplified = line.simplify(tolerance_deg, preserve_topology=False)
-    coords = list(simplified.coords)
-    assert len(coords) >= 2, "simplified track must keep at least the endpoints"
-    return coords
 
 
 def select_waypoints(line: LineString, count: int = 10) -> list[tuple[float, float]]:

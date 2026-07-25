@@ -1,9 +1,9 @@
 """GPX track export via gpxpy.
 
-Builds a standard track (GPX → GPXTrack → GPXTrackSegment → GPXTrackPoint) where
-every point carries real DEM elevation and a synthesized timestamp. Since no
-actual ride happened, timestamps are derived from cumulative great-circle
-distance divided by an assumed cycling speed, starting at a given time.
+Builds a standard track (GPX → GPXTrack → GPXTrackSegment → GPXTrackPoint) straight
+from a Track (bike_router.track): every point carries its real DEM elevation and
+the cumulative ride time from the surface/grade-adaptive speed model, so the GPX
+end-timestamp equals the reported total duration by construction.
 """
 
 import datetime as _dt
@@ -11,57 +11,38 @@ import datetime as _dt
 import gpxpy
 import gpxpy.gpx
 
-from bike_router.constants import GpxConfig
-from bike_router.geo import haversine_distance_m
+from bike_router.track import Track
 
 
-def build_gpx(
-    coords_latlon: list[tuple[float, float]],
-    elevations_m: list[float | None],
-    start_time: _dt.datetime | None = None,
-    track_name: str = "Optimized bike route",
-) -> str:
-    """Build GPX XML for the route.
+def build_gpx(track: Track, start_time: _dt.datetime | None = None, track_name: str = "Optimized bike route") -> str:
+    """Build GPX XML from a computed Track.
 
     Args:
-        coords_latlon: Ordered (lat, lon) points along the route.
-        elevations_m: Elevation (metres) per point, same length as coords.
+        track: The route track (points carry elevation + cumulative elapsed time).
         start_time: Track start (defaults to now, UTC).
         track_name: GPX track name.
 
     Returns:
         GPX document as an XML string.
     """
-    if len(coords_latlon) != len(elevations_m):
-        raise ValueError("coords_latlon and elevations_m must be the same length")
-    assert len(coords_latlon) >= 1, "need at least one track point"
-
+    assert track.points, "track must have at least one point"
     start_time = start_time or _dt.datetime.now(_dt.UTC)
-    speed_ms = GpxConfig.SPEED_KMH * GpxConfig.METERS_PER_KM / GpxConfig.SECONDS_PER_HOUR
-    assert speed_ms > 0, "derived speed must be positive"
 
     gpx = gpxpy.gpx.GPX()
-    track = gpxpy.gpx.GPXTrack(name=track_name)
-    gpx.tracks.append(track)
+    gpx_track = gpxpy.gpx.GPXTrack(name=track_name)
+    gpx.tracks.append(gpx_track)
     segment = gpxpy.gpx.GPXTrackSegment()
-    track.segments.append(segment)
+    gpx_track.segments.append(segment)
 
-    elapsed_s = 0.0
-    previous: tuple[float, float] | None = None
-    for (latitude, longitude), elevation in zip(coords_latlon, elevations_m, strict=True):
-        if previous is not None:
-            distance = haversine_distance_m(lat_a=previous[0], lon_a=previous[1], lat_b=latitude, lon_b=longitude)
-            elapsed_s += distance / speed_ms
-        point_time = start_time + _dt.timedelta(seconds=elapsed_s)
+    for point in track.points:
         segment.points.append(
             gpxpy.gpx.GPXTrackPoint(
-                latitude=latitude,
-                longitude=longitude,
-                elevation=(None if elevation is None else float(elevation)),
-                time=point_time,
+                latitude=point.lat,
+                longitude=point.lon,
+                elevation=point.elevation_m,
+                time=start_time + _dt.timedelta(seconds=point.elapsed_s),
             )
         )
-        previous = (latitude, longitude)
 
     xml: str = gpx.to_xml()
     return xml

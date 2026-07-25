@@ -70,106 +70,107 @@ class CorridorConfig:
 
 
 class SurfaceConfig:
-    """Surface-quality multipliers (asphalt cheap, dirt very expensive).
+    """Surface → penalty TIER (0 = good/paved, 1 = moderate/gravel, 2 = heavy/soft).
 
     Covers the surfaces actually seen on the Freudenstadt→Pforzheim corridor
-    (measured): asphalt/paved/paving_stones dominate the good end; gravel/compacted/
-    ground the middle; grass/dirt/sand the worst. Keys are the raw OSM values.
+    (measured). The tier multiplies the user's --extra_km_per_unpaved_km penalty:
+    good adds nothing, moderate adds it once, heavy adds it twice.
     """
 
-    SURFACE_FACTORS = {
-        # smooth paved → factor 1.0
-        "asphalt": 1.0,
-        "concrete": 1.0,
-        "paved": 1.0,
-        "paving_stones": 1.0,
-        # cobble-ish paved: rideable but rough → mild penalty
-        "sett": 1.5,
-        "cobblestone": 1.8,
-        # loose but compacted → moderate penalty
-        "compacted": 3.5,
-        "fine_gravel": 3.5,
-        "gravel": 3.5,
-        "pebblestone": 3.5,
-        "unpaved": 3.5,
-        # soft / natural → heavy penalty
-        "ground": 8.0,
-        "grass": 8.0,
-        "dirt": 8.0,
-        "earth": 8.0,
-        "sand": 8.0,
-        "mud": 8.0,
+    SURFACE_TIER = {
+        # good / paved → no unpaved penalty
+        "asphalt": 0,
+        "concrete": 0,
+        "paved": 0,
+        "paving_stones": 0,
+        "sett": 0,
+        "cobblestone": 0,
+        # moderate / compacted-loose → penalty ×1
+        "compacted": 1,
+        "fine_gravel": 1,
+        "gravel": 1,
+        "pebblestone": 1,
+        "unpaved": 1,
+        # heavy / soft-natural → penalty ×2
+        "ground": 2,
+        "grass": 2,
+        "dirt": 2,
+        "earth": 2,
+        "sand": 2,
+        "mud": 2,
     }
-    # Unknown/untagged surface → assume this type's factor.
-    DEFAULT_SURFACE = "gravel"
+    # Untagged surface (~37% of ways) → assume moderate.
+    DEFAULT_TIER = 1
 
 
 class RoadConfig:
-    """Road-type multipliers (cycleways rewarded, arterials deterred).
+    """Which highway classes count as a "main road" (attract the main-road penalty).
 
-    Covers the highway classes actually seen on the corridor (measured): track &
-    path are the most common (unpaved-leaning), then residential/service.
+    Everything not listed here (cycleway, living_street, residential, tertiary,
+    service, track, path, …) is a standard bike-friendly way with no penalty.
+    Unknown/untagged highway (~0% in practice) is treated as a main road.
     """
 
-    ROAD_FACTORS = {
-        "cycleway": 0.85,
-        "living_street": 0.85,
-        "residential": 1.2,
-        "tertiary": 1.2,
-        "unclassified": 1.2,
-        "service": 1.3,  # driveways/alleys: legal but not through-routes
-        "track": 1.4,  # field/forest tracks: rideable, often unpaved
-        "path": 1.5,  # narrow paths: bike-legal here but least road-like
-        "secondary": 6.0,
-        "primary": 6.0,
-    }
-    # Unknown highway → assume the WORST tier. Highway is ~never untagged
-    # (measured 0%), so worst-case is safe and maximally cautious.
-    DEFAULT_HIGHWAY = "primary"
+    MAIN_ROADS = frozenset({"secondary", "primary", "unclassified"})
 
 
-class CostConfig:
-    """Elevation-penalty coefficients and per-edge cost components."""
+class RoutingDefaults:
+    """Default values + safety limit for the three routing parameters."""
 
-    ELEV_COEFF = 50.0  # metres-of-climb weight
-    GRADE_COEFF = 10.0  # extra punishment proportional to gradient
-    # Per-edge additive cost COMPONENTS (see cost.py). A weighted sum of these
-    # three, with per-profile weights, is what A* minimizes.
-    COMP_DIST = "cost_dist"  # length in metres
-    COMP_SURFACE = "cost_surface"  # length * (SurfaceFactor*RoadFactor - 1)
-    COMP_ELEV = "cost_elev"  # uphill elevation penalty
-    # Cheapest possible SurfaceFactor*RoadFactor (perfect asphalt cycleway),
-    # DERIVED from the tables (no drift). The surface component's per-metre floor
-    # is (this - 1); used to keep each profile's A* heuristic admissible.
-    MIN_SF_RF = min(SurfaceConfig.SURFACE_FACTORS.values()) * min(RoadConfig.ROAD_FACTORS.values())
+    EXTRA_KM_PER_UPHILL_100M = 5.0
+    EXTRA_KM_PER_UNPAVED_KM = 1.0
+    EXTRA_KM_PER_MAIN_ROAD_KM = 1.0
+    MAX_EXTRA_KM = 1000.0  # hard ceiling for numerical stability (values above → error)
 
 
 @dataclass(frozen=True)
-class RouteProfile:
-    """One routing preset: a display name, filename postfix, and the three
-    component weights. All factors stay active; one is simply weighted heavier.
+class RoutingParams:
+    """User-facing routing preferences, expressed as intuitive "extra km".
+
+    Each is how many extra kilometres of virtual distance the router adds:
+      * per 100 m of climb            (0 = ignore hills, high = force flat)
+      * per km ridden on unpaved      (×1 moderate, ×2 heavy surfaces)
+      * per km ridden on a main road  (secondary/primary/unclassified)
+    0 is valid ("don't care"). Out-of-range values raise loudly (no silent clamp).
     """
 
-    name: str
-    postfix: str
-    w_dist: float
-    w_surface: float
-    w_elev: float
+    extra_km_per_uphill_100m: float
+    extra_km_per_unpaved_km: float
+    extra_km_per_main_road_km: float
+
+    def __post_init__(self) -> None:
+        for name, value in (
+            ("extra_km_per_uphill_100m", self.extra_km_per_uphill_100m),
+            ("extra_km_per_unpaved_km", self.extra_km_per_unpaved_km),
+            ("extra_km_per_main_road_km", self.extra_km_per_main_road_km),
+        ):
+            if not 0.0 <= value <= RoutingDefaults.MAX_EXTRA_KM:
+                raise ValueError(f"{name}={value} out of range [0, {RoutingDefaults.MAX_EXTRA_KM}]")
 
 
-# The routes computed every query. Base weight 1.0 on all components, with one
-# boosted (BOOST) so that route leans toward its category without collapsing the
-# others. The 4th, `balanced` (1,1,1), is the best all-round compromise and also
-# drives the sanity checks (it reproduces the plain cost model).
-class RouteConfig:
-    BOOST = 2.5  # tuning knob: how strongly the favoured component is weighted
-    PROFILES = (
-        RouteProfile(name="least uphill", postfix="flattest", w_dist=1.0, w_surface=1.0, w_elev=BOOST),
-        RouteProfile(name="least distance", postfix="shortest", w_dist=BOOST, w_surface=1.0, w_elev=1.0),
-        RouteProfile(name="best surface", postfix="smoothest", w_dist=1.0, w_surface=BOOST, w_elev=1.0),
-        RouteProfile(name="best all-round", postfix="balanced", w_dist=1.0, w_surface=1.0, w_elev=1.0),
-    )
-    BALANCED = PROFILES[-1]  # the (1,1,1) profile; also the default for sanity checks
+class CostConfig:
+    """Per-edge cost = length + uphill + unpaved + main-road penalties (all in metres).
+
+    All penalties are >= 0, so the cheapest possible edge is pure distance — which
+    keeps the A* great-circle heuristic admissible with scale 1.0.
+    """
+
+    EDGE_COST = "custom_cost"  # stored per directed edge by assign_edge_costs
+    UPHILL_REFERENCE_M = 100.0  # the "per 100 m of climb" reference rise
+
+
+class SpeedConfig:
+    """Surface- and grade-adaptive cycling speed (km/h) for time estimation.
+
+    Two anchors, linearly interpolated: at 0 % grade the rider does the surface's
+    base speed; at WALK_GRADE (a steep 12 %) they slow to WALK_KMH (pushing pace).
+    Flat/downhill hold the base speed; above WALK_GRADE stay at WALK_KMH. Applied
+    per edge, treating each edge as a single linear grade.
+    """
+
+    BASE_KMH_BY_TIER = {0: 25.0, 1: 20.0, 2: 15.0}  # good / moderate / heavy surface
+    WALK_KMH = 5.0  # speed at WALK_GRADE and steeper (pushing the bike)
+    WALK_GRADE = 0.12  # rise/run at which the rider drops to walking pace
 
 
 class GmapsConfig:
@@ -190,13 +191,8 @@ class NominatimConfig:
 
 
 class GpxConfig:
-    """Synthesized-timestamp settings for the GPX track.
+    """Unit conversions for GPX timestamp synthesis (speed model lives in SpeedConfig)."""
 
-    One constant cycling speed across the whole route — timestamps are purely
-    synthetic (no real ride), so a single average is all that's meaningful.
-    """
-
-    SPEED_KMH = 20.0
     METERS_PER_KM = 1000.0
     SECONDS_PER_HOUR = 3600.0
     MINUTES_PER_HOUR = 60.0
@@ -209,31 +205,21 @@ class SanityConfig:
     MIN_MEANINGFUL_NODES = 20
 
 
-class SimplifyConfig:
-    """GPX track simplification + Google-Maps waypoint reduction.
-
-    The GPX/PNG follow the FULL OSM route; we only Douglas-Peucker-simplify the
-    track to drop redundant near-collinear points on straights while keeping sharp
-    turns (points far from the chord). ONE tolerance sets the smoothness. The Maps
-    URL takes the N most significant points (Visvalingam-Whyatt effective area).
-    """
-
-    # RDP tolerance in metres: track points within this of the chord are dropped.
-    TRACK_TOLERANCE_M = 15.0
-
-
 # --- Load-time invariants: fail loud on a bad edit ---------------------------
-assert SurfaceConfig.SURFACE_FACTORS, "SURFACE_FACTORS must not be empty"
-assert RoadConfig.ROAD_FACTORS, "ROAD_FACTORS must not be empty"
-assert CostConfig.ELEV_COEFF > 0 and CostConfig.GRADE_COEFF > 0, "cost coeffs must be positive"
+assert SurfaceConfig.SURFACE_TIER, "SURFACE_TIER must not be empty"
+assert set(SurfaceConfig.SURFACE_TIER.values()) <= {0, 1, 2}, "surface tiers must be 0, 1, or 2"
+assert SurfaceConfig.DEFAULT_TIER in {0, 1, 2}, "DEFAULT_TIER must be 0, 1, or 2"
+assert RoadConfig.MAIN_ROADS, "MAIN_ROADS must not be empty"
 assert GmapsConfig.N_WAYPOINTS >= 2, "need at least origin + destination"
-
-# Default fallback types must be real table keys (so their factor is single-sourced).
-assert SurfaceConfig.DEFAULT_SURFACE in SurfaceConfig.SURFACE_FACTORS, "DEFAULT_SURFACE must be a known surface"
-assert RoadConfig.DEFAULT_HIGHWAY in RoadConfig.ROAD_FACTORS, "DEFAULT_HIGHWAY must be a known highway"
-# The default surface must sit strictly between best and worst — never worst-case
-# (37% of ways are untagged; assuming dirt would ban most streets).
-_SURFACE_MIN = min(SurfaceConfig.SURFACE_FACTORS.values())
-_SURFACE_MAX = max(SurfaceConfig.SURFACE_FACTORS.values())
-_DEFAULT_SURFACE_FACTOR = SurfaceConfig.SURFACE_FACTORS[SurfaceConfig.DEFAULT_SURFACE]
-assert _SURFACE_MIN <= _DEFAULT_SURFACE_FACTOR < _SURFACE_MAX, "DEFAULT_SURFACE factor must be in [min, max)"
+assert RoutingDefaults.MAX_EXTRA_KM > 0, "MAX_EXTRA_KM must be positive"
+assert all(
+    0 <= value <= RoutingDefaults.MAX_EXTRA_KM
+    for value in (
+        RoutingDefaults.EXTRA_KM_PER_UPHILL_100M,
+        RoutingDefaults.EXTRA_KM_PER_UNPAVED_KM,
+        RoutingDefaults.EXTRA_KM_PER_MAIN_ROAD_KM,
+    )
+), "default routing params must be within [0, MAX_EXTRA_KM]"
+assert set(SpeedConfig.BASE_KMH_BY_TIER) == {0, 1, 2}, "need a base speed for every surface tier"
+assert all(speed > SpeedConfig.WALK_KMH for speed in SpeedConfig.BASE_KMH_BY_TIER.values()), "base speeds > walk"
+assert SpeedConfig.WALK_GRADE > 0, "WALK_GRADE must be a positive uphill grade"

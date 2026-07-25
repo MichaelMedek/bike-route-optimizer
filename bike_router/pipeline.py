@@ -1,10 +1,9 @@
 """Route-planning pipeline orchestration.
 
-Builds the bike graph once, then computes FOUR routes over it — one per
-RouteConfig profile (flattest / shortest / smoothest / balanced). Each profile
-weights the three cost components (distance, surface, elevation) differently but
-keeps all active. Every route is written to its own place+profile-stamped GPX and
-debug PNG, and its distance/time/ascent/descent is logged.
+Builds the bike graph once and computes ONE route for the rider's RoutingParams
+(the three "extra km" preferences). A single Track (surface/grade-adaptive timing)
+is the source for the GPX, the printed stats, and the debug PNG — so every number
+agrees. The route is written to a place-stamped GPX + debug PNG.
 """
 
 import logging
@@ -12,9 +11,8 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import networkx as nx
-from shapely.geometry import LineString
 
-from bike_router.constants import CorridorConfig, GmapsConfig, GpxConfig, RouteConfig, RouteProfile
+from bike_router.constants import CorridorConfig, GmapsConfig, GpxConfig, RoutingParams
 from bike_router.corridor import build_corridor, corridor_within_dem
 from bike_router.cost import assign_edge_costs
 from bike_router.elevation import DEMService
@@ -25,7 +23,6 @@ from bike_router.gpx_export import build_gpx
 from bike_router.graph import build_bike_graph, enrich_elevations, raw_node_count, snap_endpoints
 from bike_router.naming import route_output_paths
 from bike_router.plotting import plot_elevation_heatmap
-from bike_router.route_stats import RouteStats, route_stats
 from bike_router.routing import shortest_route
 from bike_router.sanity import (
     check_simplify_shrunk,
@@ -33,29 +30,30 @@ from bike_router.sanity import (
     check_uphill_costlier,
     find_steepest_bidirectional_edge,
 )
-from bike_router.simplify import route_to_linestring, select_waypoints, simplify_track
+from bike_router.simplify import route_to_linestring, select_waypoints
+from bike_router.track import Track, build_track
 
 logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
 class RouteResult:
-    """One computed route variant: its profile, stats, outputs, and Maps URL."""
+    """The computed route: its track (stats + points), output paths, and Maps URL."""
 
-    profile: RouteProfile
-    stats: RouteStats
+    track: Track
     gpx_path: Path
     png_path: Path
     gmaps_url: str
 
 
-def plan_routes(*, origin: str, destination: str, dem_path: Path) -> list[RouteResult]:
-    """Compute all RouteConfig profiles between origin and destination.
+def plan_route(*, origin: str, destination: str, dem_path: Path, params: RoutingParams) -> RouteResult:
+    """Compute a single route between origin and destination for ``params``.
 
     Args:
         origin: Start place string (geocoded via Nominatim).
         destination: Destination place string.
         dem_path: DEM GeoTIFF path (already ensured to exist).
+        params: The rider's three "extra km" routing preferences.
     """
     geocode_fn = make_geocode_fn()  # one rate-limited fn spans both calls (1 req/s)
     start_latlon = geocode(place=origin, geocode_fn=geocode_fn)
@@ -84,83 +82,44 @@ def plan_routes(*, origin: str, destination: str, dem_path: Path) -> list[RouteR
     source, target = snap_endpoints(graph=graph, start_latlon=start_latlon, dest_latlon=dest_latlon)
     enrich_elevations(graph=graph, dem=terrain)
 
-    assign_edge_costs(graph=graph)
+    assign_edge_costs(graph=graph, params=params)
     check_simplify_shrunk(nodes_before=raw_count, nodes_after=graph.number_of_nodes())
     steepest = find_steepest_bidirectional_edge(graph=graph)
     if steepest is not None:  # None = no bidirectional edge (legitimate, not a bug)
-        # Sanity 2 must hold for EVERY user-facing profile's weighting.
-        for profile in RouteConfig.PROFILES:
-            check_uphill_costlier(graph=graph, node_lower=steepest[0], node_upper=steepest[1], profile=profile)
+        check_uphill_costlier(graph=graph, node_lower=steepest[0], node_upper=steepest[1], params=params)
 
-    results = []
-    for profile in RouteConfig.PROFILES:
-        results.append(
-            _plan_single(
-                graph=graph,
-                terrain=terrain,
-                origin=origin,
-                destination=destination,
-                source=source,
-                target=target,
-                profile=profile,
-            )
-        )
-    assert len(results) == len(RouteConfig.PROFILES), "one result per profile expected"
-    return results
-
-
-def _plan_single(
-    *,
-    graph: nx.MultiDiGraph,
-    terrain: DEMService,
-    origin: str,
-    destination: str,
-    source: int,
-    target: int,
-    profile: RouteProfile,
-) -> RouteResult:
-    """Route + write GPX/PNG + compute stats for one profile."""
     try:
-        node_path = shortest_route(graph=graph, source=source, target=target, profile=profile)
+        node_path = shortest_route(graph=graph, source=source, target=target)
     except nx.NetworkXNoPath as exc:
         raise SystemExit("No bike route found between the two places within the corridor.") from exc
+    logger.info("Route: %d nodes", len(node_path))
 
-    stats = route_stats(graph=graph, node_path=node_path, profile=profile)
+    track = build_track(graph=graph, node_path=node_path)
     logger.info(
-        "[%s] %.1f km, %.0f min, +%.0f m / -%.0f m",
-        profile.name,
-        stats.distance_km,
-        stats.duration_min,
-        stats.ascent_m,
-        stats.descent_m,
+        "%.1f km, %.0f min, +%.0f m / -%.0f m",
+        track.distance_km,
+        track.duration_min,
+        track.ascent_m,
+        track.descent_m,
     )
 
-    geometry = route_to_linestring(graph=graph, node_path=node_path, profile=profile)
+    gpx_path, png_path = route_output_paths(origin=origin, destination=destination)
+    gpx_path.parent.mkdir(parents=True, exist_ok=True)
+    gpx_path.write_text(build_gpx(track=track))
+    logger.info("Wrote %s (%d trackpoints)", gpx_path, len(track.points))
+
+    png_path.parent.mkdir(parents=True, exist_ok=True)
+    plot_elevation_heatmap(graph=graph, route_nodes=node_path, track=track, params=params, out_path=str(png_path))
+
+    # Google Maps waypoints come from the RDP-simplified route geometry.
+    geometry = route_to_linestring(graph=graph, node_path=node_path)
     waypoints = select_waypoints(line=geometry, count=GmapsConfig.N_WAYPOINTS)
     assert len(waypoints) == GmapsConfig.N_WAYPOINTS, "must produce exactly N waypoints"
-    gpx_path, png_path = route_output_paths(origin=origin, destination=destination, profile=profile)
-    _write_gpx(terrain=terrain, geometry=geometry, gpx_path=gpx_path)
-    png_path.parent.mkdir(parents=True, exist_ok=True)
-    plot_elevation_heatmap(graph=graph, route_nodes=node_path, out_path=str(png_path))
     assert gpx_path.exists() and png_path.exists(), "GPX and PNG must be written"
 
     return RouteResult(
-        profile=profile,
-        stats=stats,
+        track=track,
         gpx_path=gpx_path,
         png_path=png_path,
         gmaps_url=build_gmaps_url(waypoints_latlon=waypoints),
     )
-
-
-def _write_gpx(terrain: DEMService, geometry: LineString, gpx_path: Path) -> None:
-    """Douglas-Peucker-simplify the full route track, then write GPX."""
-    track_lonlat = simplify_track(line=geometry)
-    full_latlon = [(lat, lon) for lon, lat in track_lonlat]
-    elevations = terrain.get_elevations(
-        lons=[lon for _lat, lon in full_latlon], lats=[lat for lat, _lon in full_latlon]
-    ).tolist()
-    gpx_xml = build_gpx(coords_latlon=full_latlon, elevations_m=elevations)
-    gpx_path.parent.mkdir(parents=True, exist_ok=True)
-    gpx_path.write_text(gpx_xml)
-    logger.info("Wrote %s (%d trackpoints)", gpx_path, len(full_latlon))

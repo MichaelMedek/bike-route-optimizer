@@ -1,14 +1,14 @@
-"""Output-path naming: filenames carry the start+end places AND the route
-profile postfix, so all four route variants are clearly recognisable.
+"""Output-path naming: filenames carry the start+end places so the route is
+clearly recognisable.
 
-e.g. origin "Freudenstadt, Germany" + dest "Pforzheim" + profile "flattest" →
-output/freudenstadt_germany__to__pforzheim__flattest.gpx
+e.g. origin "Freudenstadt, Germany" + dest "Pforzheim" →
+output/freudenstadt_germany__to__pforzheim.gpx
 """
 
 import re
 from pathlib import Path
 
-from bike_router.constants import OutputConfig, RouteProfile
+from bike_router.constants import OutputConfig
 
 
 def slugify(text: str) -> str:
@@ -24,16 +24,16 @@ def slugify(text: str) -> str:
     return slug
 
 
-def route_basename(origin: str, destination: str, profile: RouteProfile) -> str:
-    """`<origin>__to__<destination>__<profile>` stem from both place slugs."""
-    stem = f"{slugify(text=origin)}__to__{slugify(text=destination)}__{profile.postfix}"
+def route_basename(origin: str, destination: str) -> str:
+    """`<origin>__to__<destination>` stem from both place slugs."""
+    stem = f"{slugify(text=origin)}__to__{slugify(text=destination)}"
     assert stem.count("__to__") == 1, "basename must contain exactly one '__to__' separator"
     return stem
 
 
-def route_output_paths(origin: str, destination: str, profile: RouteProfile) -> tuple[Path, Path]:
-    """(gpx_path, png_path) under OUTPUT_DIR, stamped with places + profile."""
-    stem = route_basename(origin=origin, destination=destination, profile=profile)
+def route_output_paths(origin: str, destination: str) -> tuple[Path, Path]:
+    """(gpx_path, png_path) under OUTPUT_DIR, stamped with both places."""
+    stem = route_basename(origin=origin, destination=destination)
     gpx_path = OutputConfig.OUTPUT_DIR / f"{stem}.gpx"
     png_path = OutputConfig.OUTPUT_DIR / f"{stem}.png"
     assert gpx_path.suffix == ".gpx" and png_path.suffix == ".png", "output suffixes must match type"
