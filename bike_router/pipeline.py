@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import networkx as nx
+from shapely.geometry import LineString
 
 from bike_router.constants import CorridorConfig, GmapsConfig, GpxConfig, RouteConfig, RouteProfile
 from bike_router.corridor import build_corridor, corridor_within_dem
@@ -104,6 +105,7 @@ def plan_routes(*, origin: str, destination: str, dem_path: Path) -> list[RouteR
                 profile=profile,
             )
         )
+    assert len(results) == len(RouteConfig.PROFILES), "one result per profile expected"
     return results
 
 
@@ -135,10 +137,12 @@ def _plan_single(
 
     geometry = route_to_linestring(graph=graph, node_path=node_path, profile=profile)
     waypoints = select_waypoints(line=geometry, count=GmapsConfig.N_WAYPOINTS)
+    assert len(waypoints) == GmapsConfig.N_WAYPOINTS, "must produce exactly N waypoints"
     gpx_path, png_path = route_output_paths(origin=origin, destination=destination, profile=profile)
     _write_gpx(terrain=terrain, geometry=geometry, gpx_path=gpx_path)
     png_path.parent.mkdir(parents=True, exist_ok=True)
     plot_elevation_heatmap(graph=graph, route_nodes=node_path, out_path=str(png_path))
+    assert gpx_path.exists() and png_path.exists(), "GPX and PNG must be written"
 
     return RouteResult(
         profile=profile,
@@ -149,9 +153,9 @@ def _plan_single(
     )
 
 
-def _write_gpx(terrain: DEMService, geometry: object, gpx_path: Path) -> None:
+def _write_gpx(terrain: DEMService, geometry: LineString, gpx_path: Path) -> None:
     """Douglas-Peucker-simplify the full route track, then write GPX."""
-    track_lonlat = simplify_track(line=geometry)  # type: ignore[arg-type]
+    track_lonlat = simplify_track(line=geometry)
     full_latlon = [(lat, lon) for lon, lat in track_lonlat]
     elevations = terrain.get_elevations(
         lons=[lon for _lat, lon in full_latlon], lats=[lat for lat, _lon in full_latlon]

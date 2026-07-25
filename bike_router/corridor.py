@@ -26,11 +26,13 @@ def build_corridor(
     Returns:
         A shapely Polygon in lon/lat (x=lon, y=lat) degrees.
     """
+    assert buffer_deg > 0, "buffer_deg must be positive"
     start_lat, start_lon = start_latlon
     dest_lat, dest_lon = dest_latlon
     # shapely uses (x=lon, y=lat) ordering — swap from the (lat, lon) inputs.
     line = LineString([(start_lon, start_lat), (dest_lon, dest_lat)])
     corridor: Polygon = line.buffer(buffer_deg)
+    assert not corridor.is_empty, "corridor polygon must not be empty"
     return corridor
 
 
@@ -41,6 +43,8 @@ def corridor_within_dem(polygon: Polygon, dem_bounds: tuple[float, float, float,
         polygon: The corridor polygon (lon/lat degrees).
         dem_bounds: DEM (west, south, east, north) in WGS84.
     """
+    assert len(dem_bounds) == 4, "dem_bounds must be (west, south, east, north)"
     west, south, east, north = dem_bounds
+    assert west < east and south < north, "dem_bounds must be well-ordered"
     min_lon, min_lat, max_lon, max_lat = polygon.bounds
     return bool(min_lon >= west and max_lon <= east and min_lat >= south and max_lat <= north)

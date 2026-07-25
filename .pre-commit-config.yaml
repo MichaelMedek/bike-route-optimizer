@@ -28,7 +28,7 @@ repos:
     rev: v1.13.0
     hooks:
       - id: mypy
-        additional_dependencies: [numpy]
+        additional_dependencies: [numpy, types-requests]
         args: [--ignore-missing-imports]
         # Only type-check our own code; tests keep the relaxed override in pyproject.
         files: ^(bike_router/|main\.py)

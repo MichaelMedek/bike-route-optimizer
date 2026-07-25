@@ -41,13 +41,16 @@ def build_bike_graph(polygon: Polygon) -> nx.MultiDiGraph:
     raw_count = graph.number_of_nodes()
     graph = ox.truncate.largest_component(graph, strongly=True)
     logger.info("Graph: %d nodes raw → %d nodes in strongly-connected core", raw_count, graph.number_of_nodes())
+    assert graph.number_of_nodes() > 0, "bike graph must not be empty"
     return graph
 
 
 def raw_node_count(polygon: Polygon) -> int:
     """Node count of the UN-simplified graph (for the >50% shrink sanity check)."""
     graph = ox.graph_from_polygon(polygon, network_type="bike", simplify=False)
-    return int(graph.number_of_nodes())
+    count = int(graph.number_of_nodes())
+    assert count > 0, "raw graph must not be empty"
+    return count
 
 
 def snap_endpoints(
@@ -61,9 +64,10 @@ def snap_endpoints(
     """
     start_lat, start_lon = start_latlon
     dest_lat, dest_lon = dest_latlon
-    source = ox.distance.nearest_nodes(graph, X=start_lon, Y=start_lat)
-    target = ox.distance.nearest_nodes(graph, X=dest_lon, Y=dest_lat)
-    return int(source), int(target)
+    source = int(ox.distance.nearest_nodes(graph, X=start_lon, Y=start_lat))
+    target = int(ox.distance.nearest_nodes(graph, X=dest_lon, Y=dest_lat))
+    assert source in graph and target in graph, "snapped nodes must exist in the graph"
+    return source, target
 
 
 def enrich_elevations(graph: nx.MultiDiGraph, dem: DEMService) -> None:
@@ -74,10 +78,12 @@ def enrich_elevations(graph: nx.MultiDiGraph, dem: DEMService) -> None:
     the elevation penalty / A*.
     """
     nodes = list(graph.nodes)
+    assert nodes, "graph must have nodes to enrich"
     lons = np.array([graph.nodes[node]["x"] for node in nodes], dtype=np.float64)
     lats = np.array([graph.nodes[node]["y"] for node in nodes], dtype=np.float64)
 
     elevations = dem.get_elevations(lons=lons, lats=lats)
+    assert len(elevations) == len(nodes), "one elevation per node expected"
 
     nan_mask = np.isnan(elevations)
     nan_count = int(nan_mask.sum())
@@ -91,5 +97,6 @@ def enrich_elevations(graph: nx.MultiDiGraph, dem: DEMService) -> None:
             fill_value,
         )
 
+    assert not np.any(np.isnan(elevations)), "all node elevations must be finite after fill"
     for node, elevation in zip(nodes, elevations, strict=True):
         graph.nodes[node]["elevation"] = float(elevation)

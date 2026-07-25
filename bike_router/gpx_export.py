@@ -34,9 +34,11 @@ def build_gpx(
     """
     if len(coords_latlon) != len(elevations_m):
         raise ValueError("coords_latlon and elevations_m must be the same length")
+    assert len(coords_latlon) >= 1, "need at least one track point"
 
     start_time = start_time or _dt.datetime.now(_dt.UTC)
     speed_ms = GpxConfig.SPEED_KMH * GpxConfig.METERS_PER_KM / GpxConfig.SECONDS_PER_HOUR
+    assert speed_ms > 0, "derived speed must be positive"
 
     gpx = gpxpy.gpx.GPX()
     track = gpxpy.gpx.GPXTrack(name=track_name)
@@ -45,7 +47,7 @@ def build_gpx(
     track.segments.append(segment)
 
     elapsed_s = 0.0
-    previous = None
+    previous: tuple[float, float] | None = None
     for (latitude, longitude), elevation in zip(coords_latlon, elevations_m, strict=True):
         if previous is not None:
             distance = haversine_distance_m(lat_a=previous[0], lon_a=previous[1], lat_b=latitude, lon_b=longitude)
@@ -61,4 +63,5 @@ def build_gpx(
         )
         previous = (latitude, longitude)
 
-    return gpx.to_xml()
+    xml: str = gpx.to_xml()
+    return xml

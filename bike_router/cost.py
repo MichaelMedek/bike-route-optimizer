@@ -15,6 +15,8 @@ Because the graph is directed, the uphill and downhill directions of one street
 get different `elev` components — uphill costs more (flat-preferring).
 """
 
+import math
+
 import networkx as nx
 
 from bike_router.constants import CostConfig, RoadConfig, RouteProfile, SurfaceConfig
@@ -24,36 +26,37 @@ def _as_values(tag: object) -> list[str]:
     """Normalize an OSM tag (str | list | None) to a list of lowercased strings."""
     if tag is None:
         return []
-    if isinstance(tag, (list, tuple, set)):
+    if isinstance(tag, list | tuple | set):
         return [str(v).lower() for v in tag]
     return [str(tag).lower()]
 
 
 def surface_factor(surface: object, highway: object) -> float:
-    """Surface-quality multiplier.
+    """Surface-quality multiplier (worst known value wins for list-valued tags).
 
-    Known surfaces map through SURFACE_FACTORS (worst element wins for lists).
-    Unknown/missing surface falls back by road class: rougher (track/path) → 2.5,
-    else → 1.1.
+    Unknown/missing surface falls back to SurfaceConfig.DEFAULT_SURFACE's factor.
+    ``highway`` is unused now but kept for signature symmetry with road_factor.
     """
     factors = [SurfaceConfig.SURFACE_FACTORS[s] for s in _as_values(tag=surface) if s in SurfaceConfig.SURFACE_FACTORS]
     if factors:
         return max(factors)  # worst (highest-penalty) known surface
-    # Unknown surface → depend on highway class.
-    hw = set(_as_values(tag=highway))
-    if hw & SurfaceConfig.ROUGH_HIGHWAYS:
-        return SurfaceConfig.UNKNOWN_TRACK_PATH
-    return SurfaceConfig.UNKNOWN_OTHER
+    fallback = SurfaceConfig.SURFACE_FACTORS[SurfaceConfig.DEFAULT_SURFACE]
+    assert fallback > 0, "default surface factor must be positive"
+    return fallback
 
 
 def road_factor(highway: object) -> float:
     """Road-type multiplier (cycleways rewarded, arterials deterred).
 
-    Worst (highest) factor wins for list-valued highway tags, so a way tagged
-    both `residential` and `secondary` is treated as the arterial.
+    Worst (highest) factor wins for list-valued highway tags. Unknown/missing
+    highway falls back to RoadConfig.DEFAULT_HIGHWAY's factor.
     """
     factors = [RoadConfig.ROAD_FACTORS[h] for h in _as_values(tag=highway) if h in RoadConfig.ROAD_FACTORS]
-    return max(factors) if factors else RoadConfig.DEFAULT
+    if factors:
+        return max(factors)
+    fallback = RoadConfig.ROAD_FACTORS[RoadConfig.DEFAULT_HIGHWAY]
+    assert fallback > 0, "default highway factor must be positive"
+    return fallback
 
 
 def elevation_penalty(elev_source: float, elev_target: float, length: float) -> float:
@@ -63,18 +66,24 @@ def elevation_penalty(elev_source: float, elev_target: float, length: float) -> 
     where grade = dh / length. Elevations are finite here (enrich_elevations fills
     nodata), so no NaN guard.
     """
+    assert math.isfinite(elev_source), "elev_source must be finite (enrich_elevations fills nodata)"
+    assert math.isfinite(elev_target), "elev_target must be finite (enrich_elevations fills nodata)"
     dh = elev_target - elev_source
     if dh <= 0 or length <= 0:
         return 0.0
     grade = dh / length
-    return dh * CostConfig.ELEV_COEFF * (1.0 + grade * CostConfig.GRADE_COEFF)
+    penalty = dh * CostConfig.ELEV_COEFF * (1.0 + grade * CostConfig.GRADE_COEFF)
+    assert penalty >= 0, "uphill penalty must be non-negative"
+    return penalty
 
 
 def edge_components(
     length: float, surface: object, highway: object, elev_source: float, elev_target: float
 ) -> tuple[float, float, float]:
     """The (dist, surface, elev) additive cost components of one directed edge."""
+    assert length >= 0, "edge length must be non-negative"
     sf_rf = surface_factor(surface=surface, highway=highway) * road_factor(highway=highway)
+    assert sf_rf > 0, "surface*road factor must be positive"
     dist = length
     surface_extra = length * (sf_rf - 1.0)
     elev = elevation_penalty(elev_source=elev_source, elev_target=elev_target, length=length)
@@ -83,8 +92,10 @@ def edge_components(
 
 def combine(components: tuple[float, float, float], profile: RouteProfile) -> float:
     """Weighted sum of (dist, surface, elev) components for a routing profile."""
+    assert len(components) == 3, "expected exactly (dist, surface, elev) components"
     dist, surface_extra, elev = components
-    return profile.w_dist * dist + profile.w_surface * surface_extra + profile.w_elev * elev
+    total = profile.w_dist * dist + profile.w_surface * surface_extra + profile.w_elev * elev
+    return total
 
 
 def edge_stored_components(data: dict[str, object]) -> tuple[float, float, float]:
@@ -114,3 +125,4 @@ def assign_edge_costs(graph: nx.MultiDiGraph) -> None:
         data[CostConfig.COMP_DIST] = dist
         data[CostConfig.COMP_SURFACE] = surface_extra
         data[CostConfig.COMP_ELEV] = elev
+    assert graph.number_of_edges() > 0, "graph must have edges to cost"

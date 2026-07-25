@@ -28,6 +28,7 @@ def route_stats(graph: nx.MultiDiGraph, node_path: list[int], profile: RouteProf
     Distance sums the traversed (profile-cheapest) edge lengths; ascent/descent
     sum positive/negative node-elevation deltas along the path.
     """
+    assert len(node_path) >= 2, "route must have >= 2 nodes"
     total_m = 0.0
     for node_a, node_b in zip(node_path[:-1], node_path[1:], strict=True):
         edges = graph.get_edge_data(node_a, node_b)
@@ -35,6 +36,7 @@ def route_stats(graph: nx.MultiDiGraph, node_path: list[int], profile: RouteProf
             edges, key=lambda key: combine(components=edge_stored_components(data=edges[key]), profile=profile)
         )
         total_m += float(edges[best_key]["length"])
+    assert total_m > 0, "route distance must be positive"
 
     ascent = descent = 0.0
     for node_a, node_b in zip(node_path[:-1], node_path[1:], strict=True):
@@ -46,4 +48,6 @@ def route_stats(graph: nx.MultiDiGraph, node_path: list[int], profile: RouteProf
 
     distance_km = total_m / GpxConfig.METERS_PER_KM
     duration_min = (distance_km / GpxConfig.SPEED_KMH) * GpxConfig.MINUTES_PER_HOUR
+    assert ascent >= 0 and descent >= 0, "ascent/descent must be non-negative"
+    assert duration_min >= 0, "duration must be non-negative"
     return RouteStats(distance_km=distance_km, duration_min=duration_min, ascent_m=ascent, descent_m=descent)

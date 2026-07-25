@@ -70,40 +70,62 @@ class CorridorConfig:
 
 
 class SurfaceConfig:
-    """Surface-quality multipliers (asphalt cheap, dirt very expensive)."""
+    """Surface-quality multipliers (asphalt cheap, dirt very expensive).
+
+    Covers the surfaces actually seen on the Freudenstadt→Pforzheim corridor
+    (measured): asphalt/paved/paving_stones dominate the good end; gravel/compacted/
+    ground the middle; grass/dirt/sand the worst. Keys are the raw OSM values.
+    """
 
     SURFACE_FACTORS = {
+        # smooth paved → factor 1.0
         "asphalt": 1.0,
         "concrete": 1.0,
+        "paved": 1.0,
         "paving_stones": 1.0,
-        "gravel": 3.5,
-        "fine_gravel": 3.5,
-        "unpaved": 3.5,
+        # cobble-ish paved: rideable but rough → mild penalty
+        "sett": 1.5,
+        "cobblestone": 1.8,
+        # loose but compacted → moderate penalty
         "compacted": 3.5,
+        "fine_gravel": 3.5,
+        "gravel": 3.5,
+        "pebblestone": 3.5,
+        "unpaved": 3.5,
+        # soft / natural → heavy penalty
+        "ground": 8.0,
+        "grass": 8.0,
         "dirt": 8.0,
         "earth": 8.0,
         "sand": 8.0,
         "mud": 8.0,
     }
-    # Fallbacks when `surface` is missing/unknown, keyed by highway class.
-    UNKNOWN_TRACK_PATH = 2.5  # highway in {track, path}
-    UNKNOWN_OTHER = 1.1
-    # highway values that trigger the harsher unknown-surface fallback
-    ROUGH_HIGHWAYS = frozenset({"track", "path"})
+    # Unknown/untagged surface → assume this type's factor.
+    DEFAULT_SURFACE = "gravel"
 
 
 class RoadConfig:
-    """Road-type multipliers (cycleways rewarded, arterials deterred)."""
+    """Road-type multipliers (cycleways rewarded, arterials deterred).
+
+    Covers the highway classes actually seen on the corridor (measured): track &
+    path are the most common (unpaved-leaning), then residential/service.
+    """
 
     ROAD_FACTORS = {
         "cycleway": 0.85,
         "living_street": 0.85,
         "residential": 1.2,
         "tertiary": 1.2,
+        "unclassified": 1.2,
+        "service": 1.3,  # driveways/alleys: legal but not through-routes
+        "track": 1.4,  # field/forest tracks: rideable, often unpaved
+        "path": 1.5,  # narrow paths: bike-legal here but least road-like
         "secondary": 6.0,
         "primary": 6.0,
     }
-    DEFAULT = 1.0
+    # Unknown highway → assume the WORST tier. Highway is ~never untagged
+    # (measured 0%), so worst-case is safe and maximally cautious.
+    DEFAULT_HIGHWAY = "primary"
 
 
 class CostConfig:
@@ -206,9 +228,12 @@ assert RoadConfig.ROAD_FACTORS, "ROAD_FACTORS must not be empty"
 assert CostConfig.ELEV_COEFF > 0 and CostConfig.GRADE_COEFF > 0, "cost coeffs must be positive"
 assert GmapsConfig.N_WAYPOINTS >= 2, "need at least origin + destination"
 
-# Unknown/untagged surface fallbacks must sit BETWEEN the best and worst known surface factors
+# Default fallback types must be real table keys (so their factor is single-sourced).
+assert SurfaceConfig.DEFAULT_SURFACE in SurfaceConfig.SURFACE_FACTORS, "DEFAULT_SURFACE must be a known surface"
+assert RoadConfig.DEFAULT_HIGHWAY in RoadConfig.ROAD_FACTORS, "DEFAULT_HIGHWAY must be a known highway"
+# The default surface must sit strictly between best and worst — never worst-case
+# (37% of ways are untagged; assuming dirt would ban most streets).
 _SURFACE_MIN = min(SurfaceConfig.SURFACE_FACTORS.values())
 _SURFACE_MAX = max(SurfaceConfig.SURFACE_FACTORS.values())
-assert _SURFACE_MIN <= SurfaceConfig.UNKNOWN_OTHER < _SURFACE_MAX, "UNKNOWN_OTHER must be in [min, max) surface"
-assert _SURFACE_MIN <= SurfaceConfig.UNKNOWN_TRACK_PATH < _SURFACE_MAX, "UNKNOWN_TRACK_PATH must be in [min, max)"
-assert SurfaceConfig.UNKNOWN_OTHER <= SurfaceConfig.UNKNOWN_TRACK_PATH, "track/path fallback must be >= plain"
+_DEFAULT_SURFACE_FACTOR = SurfaceConfig.SURFACE_FACTORS[SurfaceConfig.DEFAULT_SURFACE]
+assert _SURFACE_MIN <= _DEFAULT_SURFACE_FACTOR < _SURFACE_MAX, "DEFAULT_SURFACE factor must be in [min, max)"

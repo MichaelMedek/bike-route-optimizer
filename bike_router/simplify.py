@@ -60,8 +60,11 @@ def simplify_track(line: LineString) -> list[tuple[float, float]]:
     simplifies in coordinate units).
     """
     tolerance_deg = SimplifyConfig.TRACK_TOLERANCE_M / GeoConfig.METERS_PER_DEGREE_EQUATOR
+    assert tolerance_deg > 0, "RDP tolerance must be positive"
     simplified = line.simplify(tolerance_deg, preserve_topology=False)
-    return list(simplified.coords)
+    coords = list(simplified.coords)
+    assert len(coords) >= 2, "simplified track must keep at least the endpoints"
+    return coords
 
 
 def select_waypoints(line: LineString, count: int = 10) -> list[tuple[float, float]]:
@@ -73,10 +76,12 @@ def select_waypoints(line: LineString, count: int = 10) -> list[tuple[float, flo
     interpolation so callers always receive exactly ``count``.
     """
     coords = list(line.coords)  # (lon, lat)
+    assert count >= 2, "need at least origin + destination waypoints"
     if len(coords) <= count:
         coords = _interpolate_to_n(coords=coords, count=count)
     else:
         coords = _visvalingam(coords=coords, count=count)
+    assert len(coords) == count, "select_waypoints must return exactly `count` points"
     return [(lat, lon) for lon, lat in coords]
 
 
@@ -93,6 +98,7 @@ def _triangle_area(point_a: tuple[float, float], point_b: tuple[float, float], p
 
 def _visvalingam(coords: list[tuple[float, float]], count: int) -> list[tuple[float, float]]:
     """Drop the smallest-effective-area interior point until ``count`` remain."""
+    assert len(coords) >= count, "cannot reduce below the requested count"
     survivors = list(coords)
     while len(survivors) > count:
         smallest_index = 1

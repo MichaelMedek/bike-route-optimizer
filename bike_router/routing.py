@@ -39,7 +39,9 @@ def _min_per_metre_cost(profile: RouteProfile) -> float:
     ≥0. Clamped at 0 so the heuristic never goes negative (stays admissible).
     """
     floor = profile.w_dist + profile.w_surface * (CostConfig.MIN_SF_RF - 1.0)
-    return max(floor, 0.0)
+    scale = max(floor, 0.0)
+    assert scale >= 0.0, "heuristic scale must be non-negative for admissibility"
+    return scale
 
 
 def make_heuristic(graph: nx.MultiDiGraph, profile: RouteProfile) -> Heuristic:
@@ -48,9 +50,11 @@ def make_heuristic(graph: nx.MultiDiGraph, profile: RouteProfile) -> Heuristic:
 
     def heuristic(current: int, target: int) -> float:
         node_now, node_end = graph.nodes[current], graph.nodes[target]
-        return scale * haversine_distance_m(
+        estimate = scale * haversine_distance_m(
             lat_a=node_now["y"], lon_a=node_now["x"], lat_b=node_end["y"], lon_b=node_end["x"]
         )
+        assert estimate >= 0, "heuristic estimate must be non-negative"
+        return estimate
 
     return heuristic
 
@@ -62,6 +66,8 @@ def shortest_route(graph: nx.MultiDiGraph, source: int, target: int, profile: Ro
         networkx.NetworkXNoPath: if no path exists (should not happen on the
             strongly-connected core).
     """
+    assert source in graph, "source node must be in the graph"
+    assert target in graph, "target node must be in the graph"
     path: list[int] = nx.astar_path(
         graph,
         source=source,
@@ -69,4 +75,5 @@ def shortest_route(graph: nx.MultiDiGraph, source: int, target: int, profile: Ro
         heuristic=make_heuristic(graph=graph, profile=profile),
         weight=weighted_cost_fn(profile=profile),
     )
+    assert path[0] == source and path[-1] == target, "A* path must start at source and end at target"
     return path

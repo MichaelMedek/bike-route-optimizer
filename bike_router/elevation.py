@@ -130,9 +130,10 @@ class DEMService:
             logger.info("Loading DEM from %s ...", dem_path)
             start = time.time()
             dataset = rasterio.open(dem_path)
+            dem_array = dataset.read(1)
             self._dem = dataset
             self._dem_crs = dataset.crs.to_string() if dataset.crs else "EPSG:4326"
-            self._dem_array = dataset.read(1)
+            self._dem_array = dem_array
             self._dem_nodata = dataset.nodata
             if self._dem_crs != "EPSG:4326":
                 self._to_dem = Transformer.from_crs("EPSG:4326", self._dem_crs, always_xy=True)
@@ -141,7 +142,7 @@ class DEMService:
             logger.info(
                 "DEM loaded in %.2fs (shape=%s, CRS=%s)",
                 time.time() - start,
-                self._dem_array.shape,
+                dem_array.shape,
                 self._dem_crs,
             )
 

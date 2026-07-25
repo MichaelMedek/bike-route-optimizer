@@ -20,18 +20,21 @@ def slugify(text: str) -> str:
     slug = re.sub(r"[^a-z0-9]+", "_", text.strip().lower()).strip("_")
     if not slug:
         raise ValueError(f"cannot slugify {text!r} — no alphanumeric characters")
+    assert "__" not in slug, "single-underscore collapse invariant violated"
     return slug
 
 
 def route_basename(origin: str, destination: str, profile: RouteProfile) -> str:
     """`<origin>__to__<destination>__<profile>` stem from both place slugs."""
-    return f"{slugify(text=origin)}__to__{slugify(text=destination)}__{profile.postfix}"
+    stem = f"{slugify(text=origin)}__to__{slugify(text=destination)}__{profile.postfix}"
+    assert stem.count("__to__") == 1, "basename must contain exactly one '__to__' separator"
+    return stem
 
 
 def route_output_paths(origin: str, destination: str, profile: RouteProfile) -> tuple[Path, Path]:
     """(gpx_path, png_path) under OUTPUT_DIR, stamped with places + profile."""
     stem = route_basename(origin=origin, destination=destination, profile=profile)
-    return (
-        OutputConfig.OUTPUT_DIR / f"{stem}.gpx",
-        OutputConfig.OUTPUT_DIR / f"{stem}.png",
-    )
+    gpx_path = OutputConfig.OUTPUT_DIR / f"{stem}.gpx"
+    png_path = OutputConfig.OUTPUT_DIR / f"{stem}.png"
+    assert gpx_path.suffix == ".gpx" and png_path.suffix == ".png", "output suffixes must match type"
+    return gpx_path, png_path
