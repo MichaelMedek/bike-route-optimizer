@@ -56,7 +56,7 @@ def download_dem_from_huggingface(
     return target_path
 
 
-def ensure_dem(dem_path: Path) -> Path:
+def ensure_dem(dem_path: Path, progress_callback: Callable[[float], None] | None = None) -> Path:
     """Return a ready-to-use DEM path, downloading the default from HF if missing.
 
     Only the bundled default path (DEMConfig.EURODEM_PATH) is auto-fetched; a
@@ -64,13 +64,15 @@ def ensure_dem(dem_path: Path) -> Path:
 
     Args:
         dem_path: Requested DEM file path.
+        progress_callback: Optional sink receiving download fraction 0.0–1.0 (the
+            CLI leaves it None; Streamlit wires an st.progress bar).
     """
     if dem_path.exists():
         return dem_path
     if dem_path != DEMConfig.EURODEM_PATH:
         raise FileNotFoundError(f"DEM file not found: {dem_path}")
     logger.info("DEM not found at %s — downloading from Hugging Face…", dem_path)
-    return download_dem_from_huggingface(target_path=dem_path, progress_callback=None)
+    return download_dem_from_huggingface(target_path=dem_path, progress_callback=progress_callback)
 
 
 class DEMService:

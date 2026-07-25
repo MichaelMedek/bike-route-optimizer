@@ -55,9 +55,27 @@ def main() -> None:
     if st.button("Compute route", use_container_width=True):
         try:
             params = RoutingParams(**slider_values)
-            with st.spinner("Planning route…"):
-                dem_path = ensure_dem(dem_path=DEMConfig.EURODEM_PATH)
-                result = plan_route(origin=origin, destination=destination, dem_path=dem_path, params=params)
+            # Two ski-resort-style progress bars: DEM download (bytes) + graph build
+            # (nodes contracted). Each shows a real percentage, no fake spinner.
+            dem_bar = st.progress(0.0, text="Preparing terrain…")
+
+            def _dem_progress(fraction: float) -> None:
+                dem_bar.progress(fraction, text=f"Downloading terrain… {fraction * 100:.0f}%")
+
+            dem_path = ensure_dem(dem_path=DEMConfig.EURODEM_PATH, progress_callback=_dem_progress)
+            dem_bar.progress(1.0, text="Terrain ready")
+
+            build_bar = st.progress(0.0, text="Building bike network…")
+
+            def _build_progress(done: int, total: int) -> None:
+                frac = done / total if total else 0.0
+                build_bar.progress(frac, text=f"Building bike network… {frac * 100:.0f}% ({done}/{total} nodes)")
+
+            result = plan_route(
+                origin=origin, destination=destination, dem_path=dem_path, params=params, progress=_build_progress
+            )
+            dem_bar.empty()
+            build_bar.empty()
             st.session_state.result = result
             st.session_state.ribbon_points = route_ribbon_points(track=result.track)
             first, last = result.track.points[0], result.track.points[-1]
