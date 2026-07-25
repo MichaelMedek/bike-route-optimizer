@@ -4,7 +4,15 @@
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "-q"
+addopts = "-q --cov=bike_router --cov-report=term-missing --cov-fail-under=90"
+
+[tool.coverage.run]
+branch = true
+omit = ["scripts/*", "main.py"]
+
+[tool.coverage.report]
+# Lines that only run under __main__ or defensive-unreachable branches.
+exclude_lines = ["pragma: no cover", "if __name__ == .__main__.:", "raise NotImplementedError"]
 
 [tool.ruff]
 indent-width = 4
