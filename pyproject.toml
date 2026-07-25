@@ -18,7 +18,9 @@ exclude_lines = ["pragma: no cover", "if __name__ == .__main__.:", "raise NotImp
 indent-width = 4
 line-length = 120
 target-version = "py311"
-exclude = ["setup.py"]
+exclude = ["setup.py", ".claude/hooks/*"]
+# Honour `exclude` even when pre-commit passes files explicitly.
+force-exclude = true
 
 [tool.ruff.format]
 quote-style = "double"
@@ -49,7 +51,7 @@ convention = "google"
 "tests/*" = ["ANN", "PLR09", "C901"]
 
 [tool.ruff.lint.mccabe]
-max-complexity = 20
+max-complexity = 12
 
 [tool.mypy]
 python_version = "3.11"

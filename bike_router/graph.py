@@ -1,16 +1,7 @@
-"""Graph construction, endpoint snapping, and elevation enrichment.
+"""Bike-graph construction, endpoint snapping, and elevation enrichment.
 
-Builds the routable bike network in three measured, route-preserving steps:
-    1. ox.graph_from_polygon(..., simplify=False, retain_all=True) — download +
-       build once, skipping OSMnx's internal largest-component deep-copy (~130s).
-    2. _contract_interstitial_nodes — geometry-free degree-2 contraction in place
-       (~5s vs ox.simplify_graph's ~34s of unused shapely geometry).
-    3. ox.truncate.largest_component(strongly=True) — the routable directed core.
-The result is cached to disk (pickle, keyed by corridor bounds), so re-tuning the
-routing parameters on the same start/end skips the whole build — the OSRM/
-GraphHopper "preprocess once, reuse" pattern. Elevation is attached via the reused
-DEMService (vectorized), NOT ox.elevation.add_node_elevations_raster (which
-mis-samples the arcsecond DEM).
+Build once (retain_all), drop tier-2 surfaces, contract degree-2 nodes ourselves
+(fast, geometry-free), core it, and cache to disk keyed by corridor bounds.
 """
 
 import hashlib

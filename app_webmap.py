@@ -66,10 +66,9 @@ def main() -> None:
             )
             st.session_state.camera_epoch += 1
         except GeocodeError as error:
-            st.toast(f"Could not find {error}. Check for typos.", icon="⚠️")
-            st.error(f"Could not find {error}. Check the spelling (e.g. add a country, like 'Paris, France').")
+            st.toast(f"Could not find {error}. Check the spelling (e.g. add a country like 'Paris, France').", icon="⚠️")
         except SystemExit as error:  # trip too short/long, or no route in corridor
-            st.error(str(error))
+            st.toast(str(error), icon="⚠️")
 
     # 6. 3D map. camera_epoch in the key remounts deck.gl so the camera reframes.
     deck = build_deck(view=st.session_state.view, ribbon_points=st.session_state.ribbon_points)
