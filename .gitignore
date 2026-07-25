@@ -1,3 +1,9 @@
+# Generated route artifacts + OSM/Overpass HTTP cache (contents ignored, dirs kept)
+output/*
+!output/.gitkeep
+cache/*
+!cache/.gitkeep
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]
