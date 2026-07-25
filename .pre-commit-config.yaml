@@ -1,0 +1,34 @@
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v4.5.0
+    hooks:
+      - id: check-json
+      - id: check-yaml
+      - id: check-toml
+      - id: end-of-file-fixer
+      - id: trailing-whitespace
+      - id: mixed-line-ending
+
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.9.1
+    hooks:
+      # Linter
+      - id: ruff
+        types_or: [python, pyi]
+        args: [--fix]
+      # Import sorting
+      - id: ruff
+        name: ruff-sort-imports
+        args: [--select, I, --fix]
+      # Formatter
+      - id: ruff-format
+        types_or: [python, pyi]
+
+  - repo: https://github.com/pre-commit/mirrors-mypy
+    rev: v1.13.0
+    hooks:
+      - id: mypy
+        additional_dependencies: [numpy]
+        args: [--ignore-missing-imports]
+        # Only type-check our own code; tests keep the relaxed override in pyproject.
+        files: ^(bike_router/|main\.py)
