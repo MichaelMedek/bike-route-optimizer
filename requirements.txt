@@ -12,6 +12,7 @@ pyproj>=3.6.0
 # OSM graph + routing
 osmnx>=2.0.0
 networkx>=3.0
+scikit-learn>=1.3.0  # osmnx.distance.nearest_nodes needs it for unprojected graphs
 
 # GPX + numerics + visualization
 gpxpy>=1.6.0
