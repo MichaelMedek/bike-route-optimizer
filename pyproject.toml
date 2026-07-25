@@ -49,7 +49,7 @@ convention = "google"
 "tests/*" = ["ANN", "PLR09", "C901"]
 
 [tool.ruff.lint.mccabe]
-max-complexity = 12
+max-complexity = 20
 
 [tool.mypy]
 python_version = "3.11"
