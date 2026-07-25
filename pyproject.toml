@@ -4,7 +4,7 @@
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "-q --cov=bike_router --cov-report=term-missing --cov-fail-under=90"
+addopts = "-q --cov=bike_router --cov-report=term-missing --cov-fail-under=95"
 
 [tool.coverage.run]
 branch = true
