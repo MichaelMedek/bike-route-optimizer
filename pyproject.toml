@@ -54,6 +54,7 @@ max-complexity = 12
 [tool.mypy]
 python_version = "3.11"
 strict = true
+explicit_package_bases = true
 warn_unreachable = true
 pretty = true
 show_error_codes = true

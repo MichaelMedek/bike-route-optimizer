@@ -10,7 +10,7 @@ Guidance for AI agents working in this repo. These are **non-negotiable** engine
 
 3. **Fix the root cause, not the symptom.** When the same class of failure appears at one place, or even worse at multiple sites, stop patching each read/call site IMMEDIATELY! Find where the bad state is *produced* and fix it there. One correct emitter beats EVERY defensive readers. If needed refactor ALL callers across teh FULL codebase! "Too much work" is NEVER an excuse!
 
-4. **No duplicated logic — extract and share.** If the same block appears in 2+ places, factor it into one function and call it. Duplicated logic drifts and gets fixed in only some copies. You are respnsible for all drifts, across the full code base, even if pre-existing.
+4. **No duplicated logic — extract and share.** If the same block appears in 2+ places, factor it into one function and call it. Duplicated logic drifts and gets fixed in only some copies. You are respnsible for all drifts, across the full code base, even if pre-existing. Dead code is STRICTLY forbidden and must be radically PRUNED out of all places across the code base!
 
 5. **Prefer the existing pattern.** Before adding a new approach, find how the codebase already solves the same problem and follow it. Consistency over novelty.
 
@@ -25,4 +25,3 @@ Guidance for AI agents working in this repo. These are **non-negotiable** engine
 
 - Tests, `ruff`, and `mypy` must stay green; coverage gate must be met. Run the suite before declaring done.
 - When you change behaviour, update the tests that encoded the old behaviour AND add a regression test for the specific bug — don't just make existing tests pass.
-
