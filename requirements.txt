@@ -19,6 +19,11 @@ gpxpy>=1.6.0
 numpy>=1.24.0
 matplotlib>=3.7.0
 
+# Web viewer (Streamlit 3D map). Uses the built-in st.pydeck_chart — no
+# streamlit-deckgl needed (no click/flythrough interaction).
+streamlit>=1.36.0
+pydeck>=0.9.0
+
 # DEM hosting / paths
 huggingface_hub>=0.20.0
 platformdirs>=3.0.0
