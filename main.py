@@ -17,34 +17,20 @@ import logging
 import sys
 from pathlib import Path
 
-from bike_router.constants import DEMConfig, RoutingDefaults, RoutingParams
+from bike_router.constants import PARAM_SPECS, DEMConfig, RoutingParams
 from bike_router.elevation import ensure_dem
 from bike_router.geocoding import GeocodeError
 from bike_router.pipeline import plan_route
+from bike_router.progress import tqdm_progress
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Eco- & surface-optimized bicycle route planner.")
     parser.add_argument("origin", help='Start place, e.g. "Freudenstadt, Germany"')
     parser.add_argument("destination", help='Destination place, e.g. "Pforzheim, Germany"')
-    parser.add_argument(
-        "--extra_km_per_uphill_100m",
-        type=float,
-        default=RoutingDefaults.EXTRA_KM_PER_UPHILL_100M,
-        help="Extra km the rider accepts to avoid each 100 m of climb.",
-    )
-    parser.add_argument(
-        "--extra_km_per_unpaved_km",
-        type=float,
-        default=RoutingDefaults.EXTRA_KM_PER_UNPAVED_KM,
-        help="Extra km accepted to avoid each km of unpaved surface.",
-    )
-    parser.add_argument(
-        "--extra_km_per_main_road_km",
-        type=float,
-        default=RoutingDefaults.EXTRA_KM_PER_MAIN_ROAD_KM,
-        help="Extra km accepted to avoid each km of main road.",
-    )
+    # One CLI flag per routing knob, straight from the shared PARAM_SPECS.
+    for spec in PARAM_SPECS:
+        parser.add_argument(f"--{spec.field}", type=float, default=spec.default, help=spec.help)
     parser.add_argument(
         "--dem",
         type=Path,
@@ -61,11 +47,7 @@ def main(argv: list[str] | None = None) -> int:
 
     # RoutingParams validates ranges in __post_init__ and raises ValueError loudly.
     try:
-        params = RoutingParams(
-            extra_km_per_uphill_100m=arguments.extra_km_per_uphill_100m,
-            extra_km_per_unpaved_km=arguments.extra_km_per_unpaved_km,
-            extra_km_per_main_road_km=arguments.extra_km_per_main_road_km,
-        )
+        params = RoutingParams(**{spec.field: getattr(arguments, spec.field) for spec in PARAM_SPECS})
     except ValueError as error:
         print(str(error), file=sys.stderr)
         return 2
@@ -78,7 +60,11 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         result = plan_route(
-            origin=arguments.origin, destination=arguments.destination, dem_path=dem_path, params=params
+            origin=arguments.origin,
+            destination=arguments.destination,
+            dem_path=dem_path,
+            params=params,
+            progress=tqdm_progress(desc="Simplifying graph"),
         )
     except GeocodeError as error:
         print(str(error), file=sys.stderr)

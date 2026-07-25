@@ -49,3 +49,22 @@ def geocode(place: str, geocode_fn: GeocodeFn) -> tuple[float, float]:
     if location is None:
         raise GeocodeError(f"Could not geocode {place!r} — no matching location found.")
     return float(location.latitude), float(location.longitude)
+
+
+def geocode_endpoint(place: str, label: str, geocode_fn: GeocodeFn) -> tuple[float, float]:
+    """Geocode one named endpoint, raising a field-named GeocodeError on failure.
+
+    Wraps ``geocode`` so start/destination lookups fail loud with the field name in
+    the message (e.g. "Start ('xyz')"). Blank input is rejected without a lookup.
+
+    Args:
+        place: The place string to resolve.
+        label: Human field name for the error (e.g. "Start", "Destination").
+        geocode_fn: Rate-limited geocode callable from make_geocode_fn.
+    """
+    if not place.strip():
+        raise GeocodeError(f"{label} is empty")
+    try:
+        return geocode(place=place, geocode_fn=geocode_fn)
+    except GeocodeError as exc:
+        raise GeocodeError(f"{label} ({place!r})") from exc

@@ -4,10 +4,13 @@ Each edge's ``custom_cost`` (cost.assign_edge_costs) is length plus non-negative
 penalties, so the cheapest possible edge is its raw length. The A* heuristic is
 therefore the plain great-circle distance to the target — it never overestimates
 the true remaining cost, so it is admissible and A* returns the optimal path.
+
+We pass ``custom_cost`` as a STRING weight (not a Python callable): NetworkX then
+does a C-level attribute lookup per edge and auto-picks the cheapest parallel edge
+of a MultiDiGraph — faster than invoking a callable for every edge examined.
 """
 
 from collections.abc import Callable
-from typing import Any
 
 import networkx as nx
 
@@ -15,11 +18,6 @@ from bike_router.constants import CostConfig
 from bike_router.geo import haversine_distance_m
 
 Heuristic = Callable[[int, int], float]
-
-
-def _edge_cost(edges: dict[int, dict[str, Any]]) -> float:
-    """Cheapest parallel-edge cost (NetworkX hands the weight fn all parallel edges)."""
-    return min(float(data[CostConfig.EDGE_COST]) for data in edges.values())
 
 
 def make_heuristic(graph: nx.MultiDiGraph) -> Heuristic:
@@ -50,7 +48,7 @@ def shortest_route(graph: nx.MultiDiGraph, source: int, target: int) -> list[int
         source=source,
         target=target,
         heuristic=make_heuristic(graph=graph),
-        weight=lambda node_a, node_b, edges: _edge_cost(edges=edges),
+        weight=CostConfig.EDGE_COST,  # string attr → C-level lookup, min over parallel edges
     )
     assert path[0] == source and path[-1] == target, "A* path must start at source and end at target"
     return path

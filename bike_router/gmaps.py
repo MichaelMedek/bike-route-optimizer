@@ -4,8 +4,8 @@ Uses the official Maps URLs `api=1` scheme (verified against Google's docs):
     https://www.google.com/maps/dir/?api=1&origin=lat,lng&destination=lat,lng
         &waypoints=lat,lng|lat,lng|...&travelmode=bicycling
 
-With N=10 downsampled points → origin + 8 intermediate waypoints + destination.
-8 intermediate is within the api=1 limit of 9 waypoints.
+With N=10 significant points (Visvalingam-selected) → origin + 8 intermediate
+waypoints + destination. 8 intermediate is within the api=1 limit of 9 waypoints.
 """
 
 from urllib.parse import urlencode

@@ -1,54 +1,30 @@
 """Pure helpers for the Streamlit 3D map viewer (app_webmap.py).
 
-Kept out of the UI shell so the map wiring is unit-testable: turning a routed
-node path into ribbon points, and computing the deck.gl camera for the default
-and post-route views. No streamlit/pydeck imports here.
+Kept out of the UI shell so the map wiring is unit-testable: turning a computed
+Track into ribbon points, and computing the deck.gl camera for the default and
+post-route views. No streamlit/pydeck imports here.
 """
 
 import math
 from dataclasses import dataclass
 
-import networkx as nx
-import numpy as np
-
 from bike_router.constants import WebMapConfig
-from bike_router.elevation import DEMService
 from bike_router.geo import haversine_distance_m
-from bike_router.simplify import route_to_linestring
+from bike_router.track import Track
 
 
-def route_ribbon_points(
-    graph: nx.MultiDiGraph,
-    node_path: list[int],
-    dem: DEMService,
-    float_above_m: float = WebMapConfig.RIBBON_FLOAT_ABOVE_M,
-) -> list[list[float]]:
+def route_ribbon_points(track: Track, float_above_m: float = WebMapConfig.RIBBON_FLOAT_ABOVE_M) -> list[list[float]]:
     """`[[lon, lat, elevation + float_above_m], ...]` for the route ribbon.
 
-    Follows the full OSM route geometry (route_to_linestring), then samples the
-    DEM per vertex. Nodata (NaN) samples are filled with the finite mean so no
-    NaN reaches deck.gl.
+    Reads the Track's points directly (elevations are already finite — the pipeline
+    fills DEM nodata during enrich_elevations), lifting each above the terrain mesh.
 
     Args:
-        graph: The costed bike graph (edges carry the stored cost + geometry).
-        node_path: A* node path from source to target.
-        dem: Elevation sampler.
+        track: The computed route track from plan_route.
         float_above_m: Metres to lift the ribbon above the terrain mesh.
     """
-    track_lonlat = list(route_to_linestring(graph=graph, node_path=node_path).coords)
-    lons = [lon for lon, _lat in track_lonlat]
-    lats = [lat for _lon, lat in track_lonlat]
-    elevations = dem.get_elevations(lons=lons, lats=lats)
-
-    nan_mask = np.isnan(elevations)
-    if nan_mask.any():
-        fill = float(np.nanmean(elevations)) if not nan_mask.all() else 0.0
-        elevations = np.where(nan_mask, fill, elevations)
-
-    return [
-        [lon, lat, float(elevation) + float_above_m]
-        for (lon, lat), elevation in zip(track_lonlat, elevations.tolist(), strict=True)
-    ]
+    assert len(track.points) >= 2, "ribbon needs at least two points to draw"
+    return [[point.lon, point.lat, point.elevation_m + float_above_m] for point in track.points]
 
 
 @dataclass(frozen=True)

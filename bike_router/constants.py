@@ -61,20 +61,26 @@ class GeoConfig:
 
 
 class CorridorConfig:
-    """The "Schlauch" corridor around the straight start→dest line."""
+    """The "Schlauch" search corridor around the straight start→dest line.
 
-    # buffer radius in DEGREES (~0.2° ≈ 22 km each side → ~40 km-wide corridor)
-    BUFFER_DEG = 0.2
-    # Fail fast if start/dest are closer than this straight-line — too short to plan.
-    MIN_TRIP_KM = 5.0
+    A tube of half-width HALF_WIDTH_KM each side of the direct line (isotropic in
+    real distance — N-S and E-W get the same km width; the km→degree conversion
+    corrects for longitude shrink at the route's latitude). Trips shorter than
+    MIN_TRIP_KM or longer than MAX_TRIP_KM are rejected up front.
+    """
+
+    HALF_WIDTH_KM = 22.0  # search this far each side of the direct line
+    MIN_TRIP_KM = 5.0  # too short to bother planning
+    MAX_TRIP_KM = 100.0  # beyond this the corridor graph is too big / out of scope
 
 
 class SurfaceConfig:
     """Surface → penalty TIER (0 = good/paved, 1 = moderate/gravel, 2 = heavy/soft).
 
     Covers the surfaces actually seen on the Freudenstadt→Pforzheim corridor
-    (measured). The tier multiplies the user's --extra_km_per_unpaved_km penalty:
-    good adds nothing, moderate adds it once, heavy adds it twice.
+    (measured). Tier 0 rides free; tier 1 adds the user's --extra_km_per_unpaved_km
+    once. Tier 2 (soft natural ground) is EXCLUDED from the graph entirely — those
+    ways are dropped before routing so a route never runs over mud/sand/grass.
     """
 
     SURFACE_TIER = {
@@ -91,7 +97,7 @@ class SurfaceConfig:
         "gravel": 1,
         "pebblestone": 1,
         "unpaved": 1,
-        # heavy / soft-natural → penalty ×2
+        # heavy / soft-natural → EXCLUDED from the graph (see EXCLUDED_TIER)
         "ground": 2,
         "grass": 2,
         "dirt": 2,
@@ -99,8 +105,10 @@ class SurfaceConfig:
         "sand": 2,
         "mud": 2,
     }
-    # Untagged surface (~37% of ways) → assume moderate.
+    # Untagged surface (~37% of ways) → assume moderate (kept, penalised).
     DEFAULT_TIER = 1
+    # Edges whose surface tier is this high are removed from the routable graph.
+    EXCLUDED_TIER = 2
 
 
 class RoadConfig:
@@ -115,23 +123,56 @@ class RoadConfig:
 
 
 class RoutingDefaults:
-    """Default values + safety limit for the three routing parameters."""
+    """Safety limit for the routing parameters (per-param defaults live in PARAM_SPECS)."""
 
-    EXTRA_KM_PER_UPHILL_100M = 5.0
-    EXTRA_KM_PER_UNPAVED_KM = 1.0
-    EXTRA_KM_PER_MAIN_ROAD_KM = 1.0
     MAX_EXTRA_KM = 100.0  # hard ceiling for numerical stability (values above → error)
+
+
+@dataclass(frozen=True)
+class RoutingParamSpec:
+    """One user-facing routing knob — the SINGLE source both CLI and web read.
+
+    ``field`` is the RoutingParams attribute / CLI flag name; ``label`` + ``help``
+    drive the web slider and CLI --help; ``default`` seeds both.
+    """
+
+    field: str
+    label: str
+    help: str
+    default: float
+
+
+# The three "extra km" preferences, defined ONCE. CLI args and web sliders both
+# iterate this — no duplicated label/default/help text anywhere.
+PARAM_SPECS = (
+    RoutingParamSpec(
+        field="extra_km_per_uphill_100m",
+        label="Uphill penalty",
+        help="Extra km you'd ride to avoid every 100 m of climbing (0 = ignore hills).",
+        default=5.0,
+    ),
+    RoutingParamSpec(
+        field="extra_km_per_unpaved_km",
+        label="Unpaved penalty",
+        help="Extra km you'd ride to avoid 1 km of unpaved surface (0 = don't mind gravel).",
+        default=1.0,
+    ),
+    RoutingParamSpec(
+        field="extra_km_per_main_road_km",
+        label="Main road penalty",
+        help="Extra km you'd ride to avoid 1 km on a busy main road (0 = don't mind them).",
+        default=1.0,
+    ),
+)
 
 
 @dataclass(frozen=True)
 class RoutingParams:
     """User-facing routing preferences, expressed as intuitive "extra km".
 
-    Each is how many extra kilometres of virtual distance the router adds:
-      * per 100 m of climb            (0 = ignore hills, high = force flat)
-      * per km ridden on unpaved      (×1 moderate, ×2 heavy surfaces)
-      * per km ridden on a main road  (secondary/primary/unclassified)
-    0 is valid ("don't care"). Out-of-range values raise loudly (no silent clamp).
+    Each is how many extra kilometres of virtual distance the router adds per unit
+    of the bad thing (see PARAM_SPECS). 0 is valid ("don't care"); out-of-range
+    values raise loudly (no silent clamp).
     """
 
     extra_km_per_uphill_100m: float
@@ -139,13 +180,10 @@ class RoutingParams:
     extra_km_per_main_road_km: float
 
     def __post_init__(self) -> None:
-        for name, value in (
-            ("extra_km_per_uphill_100m", self.extra_km_per_uphill_100m),
-            ("extra_km_per_unpaved_km", self.extra_km_per_unpaved_km),
-            ("extra_km_per_main_road_km", self.extra_km_per_main_road_km),
-        ):
+        for spec in PARAM_SPECS:
+            value = getattr(self, spec.field)
             if not 0.0 <= value <= RoutingDefaults.MAX_EXTRA_KM:
-                raise ValueError(f"{name}={value} out of range [0, {RoutingDefaults.MAX_EXTRA_KM}]")
+                raise ValueError(f"{spec.field}={value} out of range [0, {RoutingDefaults.MAX_EXTRA_KM}]")
 
 
 class CostConfig:
@@ -176,7 +214,7 @@ class SpeedConfig:
 class GmapsConfig:
     """Google Maps directions-URL output."""
 
-    # exactly N downsampled points → origin + (N-2) waypoints + destination.
+    # exactly N significant points → origin + (N-2) waypoints + destination.
     # Maps `api=1` allows max 9 intermediate waypoints; N=10 → 8 waypoints (OK).
     N_WAYPOINTS = 10
     BASE_URL = "https://www.google.com/maps/dir/?api=1"
@@ -238,14 +276,15 @@ assert SurfaceConfig.DEFAULT_TIER in {0, 1, 2}, "DEFAULT_TIER must be 0, 1, or 2
 assert RoadConfig.MAIN_ROADS, "MAIN_ROADS must not be empty"
 assert GmapsConfig.N_WAYPOINTS >= 2, "need at least origin + destination"
 assert RoutingDefaults.MAX_EXTRA_KM > 0, "MAX_EXTRA_KM must be positive"
-assert all(
-    0 <= value <= RoutingDefaults.MAX_EXTRA_KM
-    for value in (
-        RoutingDefaults.EXTRA_KM_PER_UPHILL_100M,
-        RoutingDefaults.EXTRA_KM_PER_UNPAVED_KM,
-        RoutingDefaults.EXTRA_KM_PER_MAIN_ROAD_KM,
-    )
-), "default routing params must be within [0, MAX_EXTRA_KM]"
+assert PARAM_SPECS, "PARAM_SPECS must not be empty"
+assert all(0 <= spec.default <= RoutingDefaults.MAX_EXTRA_KM for spec in PARAM_SPECS), (
+    "every param default must be within [0, MAX_EXTRA_KM]"
+)
+assert {spec.field for spec in PARAM_SPECS} == set(RoutingParams.__dataclass_fields__), (
+    "PARAM_SPECS fields must match RoutingParams attributes exactly"
+)
 assert set(SpeedConfig.BASE_KMH_BY_TIER) == {0, 1, 2}, "need a base speed for every surface tier"
 assert all(speed > SpeedConfig.WALK_KMH for speed in SpeedConfig.BASE_KMH_BY_TIER.values()), "base speeds > walk"
 assert SpeedConfig.WALK_GRADE > 0, "WALK_GRADE must be a positive uphill grade"
+assert 0 < CorridorConfig.MIN_TRIP_KM < CorridorConfig.MAX_TRIP_KM, "trip bounds must be 0 < min < max"
+assert CorridorConfig.HALF_WIDTH_KM > 0, "corridor half-width must be positive"

@@ -54,7 +54,7 @@ def select_waypoints(line: LineString, count: int = 10) -> list[tuple[float, flo
     Endpoints are always kept. If the line has <= count points it is padded by
     interpolation so callers always receive exactly ``count``.
     """
-    coords = list(line.coords)  # (lon, lat)
+    coords: list[tuple[float, float]] = [(lon, lat) for lon, lat in line.coords]  # (lon, lat)
     assert count >= 2, "need at least origin + destination waypoints"
     if len(coords) <= count:
         coords = _interpolate_to_n(coords=coords, count=count)

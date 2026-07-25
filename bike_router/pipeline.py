@@ -1,9 +1,9 @@
 """Route-planning pipeline orchestration.
 
-Builds the bike graph once and computes ONE route for the rider's RoutingParams
-(the three "extra km" preferences). A single Track (surface/grade-adaptive timing)
-is the source for the GPX, the printed stats, and the debug PNG — so every number
-agrees. The route is written to a place-stamped GPX + debug PNG.
+Builds (or loads the cached) bike graph and computes ONE route for the rider's
+RoutingParams (the three "extra km" preferences). A single Track (surface/
+grade-adaptive timing) is the source for the GPX, the printed stats, and the debug
+PNG — so every number agrees. The route is written to a place-stamped GPX + PNG.
 """
 
 import logging
@@ -17,12 +17,13 @@ from bike_router.corridor import build_corridor, corridor_within_dem
 from bike_router.cost import assign_edge_costs
 from bike_router.elevation import DEMService
 from bike_router.geo import haversine_distance_m
-from bike_router.geocoding import geocode, make_geocode_fn
+from bike_router.geocoding import geocode_endpoint, make_geocode_fn
 from bike_router.gmaps import build_gmaps_url
 from bike_router.gpx_export import build_gpx
-from bike_router.graph import build_bike_graph, enrich_elevations, raw_node_count, snap_endpoints
+from bike_router.graph import build_bike_graph, enrich_elevations, snap_endpoints
 from bike_router.naming import route_output_paths
 from bike_router.plotting import plot_elevation_heatmap
+from bike_router.progress import ProgressFn, null_progress
 from bike_router.routing import shortest_route
 from bike_router.sanity import (
     check_simplify_shrunk,
@@ -46,7 +47,9 @@ class RouteResult:
     gmaps_url: str
 
 
-def plan_route(*, origin: str, destination: str, dem_path: Path, params: RoutingParams) -> RouteResult:
+def plan_route(
+    *, origin: str, destination: str, dem_path: Path, params: RoutingParams, progress: ProgressFn = null_progress
+) -> RouteResult:
     """Compute a single route between origin and destination for ``params``.
 
     Args:
@@ -54,10 +57,13 @@ def plan_route(*, origin: str, destination: str, dem_path: Path, params: Routing
         destination: Destination place string.
         dem_path: DEM GeoTIFF path (already ensured to exist).
         params: The rider's three "extra km" routing preferences.
+        progress: Real per-item sink (nodes done, total) for the graph-build loop;
+            the CLI wires tqdm, Streamlit st.progress. Defaults to no-op.
     """
     geocode_fn = make_geocode_fn()  # one rate-limited fn spans both calls (1 req/s)
-    start_latlon = geocode(place=origin, geocode_fn=geocode_fn)
-    dest_latlon = geocode(place=destination, geocode_fn=geocode_fn)
+    # Fail-fast: a bad Start raises before Destination is ever looked up.
+    start_latlon = geocode_endpoint(place=origin, label="Start", geocode_fn=geocode_fn)
+    dest_latlon = geocode_endpoint(place=destination, label="Destination", geocode_fn=geocode_fn)
     logger.info("Geocoded: %s=%s, %s=%s", origin, start_latlon, destination, dest_latlon)
 
     trip_km = (
@@ -69,14 +75,18 @@ def plan_route(*, origin: str, destination: str, dem_path: Path, params: Routing
             f"Start and destination are only {trip_km:.1f} km apart "
             f"(minimum {CorridorConfig.MIN_TRIP_KM:.0f} km) — too short to plan."
         )
+    if trip_km > CorridorConfig.MAX_TRIP_KM:
+        raise SystemExit(
+            f"Start and destination are {trip_km:.0f} km apart "
+            f"(maximum {CorridorConfig.MAX_TRIP_KM:.0f} km) — too far to plan."
+        )
 
     terrain = DEMService(dem_path=dem_path)
     corridor = build_corridor(start_latlon=start_latlon, dest_latlon=dest_latlon)
     if not corridor_within_dem(polygon=corridor, dem_bounds=terrain.bounds):
         logger.warning("Corridor %s not fully within DEM %s — may hit nodata.", corridor.bounds, terrain.bounds)
 
-    raw_count = raw_node_count(polygon=corridor)
-    graph = build_bike_graph(polygon=corridor)
+    graph, raw_count = build_bike_graph(polygon=corridor, progress=progress)
     check_strongly_connected(graph=graph)
 
     source, target = snap_endpoints(graph=graph, start_latlon=start_latlon, dest_latlon=dest_latlon)
@@ -111,7 +121,7 @@ def plan_route(*, origin: str, destination: str, dem_path: Path, params: Routing
     png_path.parent.mkdir(parents=True, exist_ok=True)
     plot_elevation_heatmap(graph=graph, route_nodes=node_path, track=track, params=params, out_path=str(png_path))
 
-    # Google Maps waypoints come from the RDP-simplified route geometry.
+    # Google Maps waypoints: the N most significant points of the full geometry.
     geometry = route_to_linestring(graph=graph, node_path=node_path)
     waypoints = select_waypoints(line=geometry, count=GmapsConfig.N_WAYPOINTS)
     assert len(waypoints) == GmapsConfig.N_WAYPOINTS, "must produce exactly N waypoints"

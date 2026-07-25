@@ -74,6 +74,7 @@ module = [
     "huggingface_hub.*",
     "pydeck.*",
     "streamlit.*",
+    "tqdm.*",
 ]
 ignore_missing_imports = true
 
