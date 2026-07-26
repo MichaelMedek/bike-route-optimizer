@@ -70,7 +70,7 @@ def main() -> None:
                 camera_epoch=st.session_state.camera_epoch + 1,
             )
         except GeocodeError as error:
-            st.toast(f"Could not find {error}. Check the spelling (e.g. add a country like 'Paris, France').", icon="⚠️")
+            st.toast(f"Could not find {error}. Check the spelling.", icon="⚠️")
 
     # The currently-marked endpoints (colors match the map markers and the PNG).
     if st.session_state.start_latlon is not None:
