@@ -37,7 +37,7 @@ def composition_donut(title: str, by_km: dict[str, float], colors: dict[str, str
     total = sum(by_km.values()) or 1.0
     frame = pd.DataFrame([{"category": label, "km": km, "pct": km / total * 100} for label, km in by_km.items()])
     domain = list(colors)
-    return (
+    chart: alt.Chart = (
         alt.Chart(frame, title=title)
         .mark_arc(innerRadius=30)
         .encode(
@@ -55,6 +55,7 @@ def composition_donut(title: str, by_km: dict[str, float], colors: dict[str, str
         )
         .properties(height=180)
     )
+    return chart
 
 
 def route_ribbon_segments(
