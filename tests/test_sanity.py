@@ -43,7 +43,7 @@ def test_check_strongly_connected_pass_and_fail():
 def test_find_steepest_and_uphill_costlier():
     graph = make_line_graph()
     steepest = find_steepest_bidirectional_edge(graph=graph)
-    assert steepest is not None
+    assert steepest is not None and set(steepest) == {1, 2}  # 1↔2 is the only non-flat edge (100↔130 m)
     check_uphill_costlier(graph=graph, node_lower=steepest[0], node_upper=steepest[1], params=DEFAULT_PARAMS)
 
 

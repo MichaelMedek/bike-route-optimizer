@@ -12,12 +12,18 @@ from bike_router import graph_ops
 from bike_router.graph_ops import (
     consolidate_graph,
     contract_interstitial_nodes,
-    drop_excluded_surface_edges,
+    drop_disallowed_edges,
     enrich_elevations,
     normalize_pyrosm_graph,
     snap_endpoints,
 )
-from tests.conftest import MockDEMService, make_line_graph
+from tests.conftest import (
+    MockDEMService,
+    make_contract_chain_graph,
+    make_line_graph,
+    make_surface_mix_graph,
+    make_two_cluster_graph,
+)
 
 
 def test_normalize_pyrosm_graph_strips_colliding_attrs():
@@ -34,28 +40,19 @@ def test_normalize_pyrosm_graph_strips_colliding_attrs():
     assert edge["length"] == 100.0
 
 
-def test_drop_excluded_surface_edges_removes_tier2():
-    graph = nx.MultiDiGraph()
-    for node in (1, 2, 3):
-        graph.add_node(node, x=float(node), y=0.0)
-    graph.add_edge(1, 2, key=0, length=100.0, surface="asphalt", highway="residential")
-    graph.add_edge(2, 3, key=0, length=100.0, surface="mud", highway="path")
-    drop_excluded_surface_edges(graph)
-    assert graph.has_edge(1, 2)
-    assert not graph.has_edge(2, 3)  # mud edge removed
-    assert 3 not in graph  # orphaned node pruned
+def test_drop_disallowed_edges_surface_and_highway_allowlist():
+    graph = make_surface_mix_graph()
+    drop_disallowed_edges(graph)
+    assert graph.has_edge(1, 2)  # asphalt / residential allowlisted
+    assert graph.has_edge(2, 3)  # untagged surface kept (DEFAULT_TIER)
+    assert not graph.has_edge(3, 4)  # sand surface removed
+    assert not graph.has_edge(4, 5)  # gravel;dirt removed (names a disallowed surface)
+    assert not graph.has_edge(5, 6)  # motorway removed (disallowed highway — no bikes)
+    assert 6 not in graph  # orphaned node pruned
 
 
 def test_contract_interstitial_nodes_removes_passthrough_keeps_length():
-    graph = nx.MultiDiGraph()
-    for node in (1, 2, 3, 4):
-        graph.add_node(node, x=float(node), y=0.0)
-    for left, right, length in [(1, 2, 100.0), (2, 3, 150.0), (3, 4, 80.0)]:
-        graph.add_edge(left, right, key=0, length=length, surface="asphalt", highway="residential")
-        graph.add_edge(right, left, key=0, length=length, surface="asphalt", highway="residential")
-    graph.add_edge(3, 4, key=1, length=80.0, surface="asphalt", highway="residential")  # node 3 branches → kept
-
-    result = contract_interstitial_nodes(graph)
+    result = contract_interstitial_nodes(make_contract_chain_graph())
     assert 2 not in result  # interstitial node removed
     assert 1 in result and 3 in result
     assert min(d["length"] for d in result.get_edge_data(1, 3).values()) == 250.0  # summed run
@@ -68,25 +65,10 @@ def test_consolidate_graph_noop_at_zero_tolerance():
 
 
 def test_consolidate_graph_merges_close_nodes():
-    # Two clusters ~2 km apart, each a tight knot of 3 near-identical nodes (~5 m).
-    graph = nx.MultiDiGraph(crs="EPSG:4326")
-    coords = {
-        1: (8.0000, 48.0),
-        2: (8.00005, 48.0),
-        3: (8.0001, 48.0),  # cluster A
-        4: (8.0200, 48.0),
-        5: (8.02005, 48.0),
-        6: (8.0201, 48.0),  # cluster B
-    }
-    for nid, (lon, lat) in coords.items():
-        graph.add_node(nid, x=lon, y=lat)
-    for a, b in [(3, 4), (4, 3)]:  # link the clusters
-        graph.add_edge(a, b, key=0, length=1500.0, surface="asphalt", highway="residential")
-    for a, b in [(1, 2), (2, 3), (2, 1), (3, 2), (4, 5), (5, 6), (5, 4), (6, 5)]:
-        graph.add_edge(a, b, key=0, length=5.0, surface="asphalt", highway="residential")
+    graph = make_two_cluster_graph()
     result = consolidate_graph(graph=graph, tolerance_m=25.0)
-    assert result.number_of_nodes() < graph.number_of_nodes()  # tight knots merged
-    assert result.graph["crs"] == "EPSG:4326" or "4326" in str(result.graph.get("crs"))
+    assert result.number_of_nodes() == 2  # each tight 3-node knot collapses to one
+    assert "4326" in str(result.graph.get("crs"))  # unprojected back to lat/lon
 
 
 def test_enrich_elevations_populates_all_nodes():

@@ -41,14 +41,16 @@ def test_plan_route_end_to_end_offline(tmp_path: Path, monkeypatch):
 
     assert result.gmaps_urls == [result.gmaps_urls[0]]  # pure-bike line graph → exactly one leg
     assert result.gmaps_urls[0].startswith("https://www.google.com/maps/dir/?api=1")
+    assert result.rail_legs == []  # pure-bike line graph → no train ride
     assert result.gpx_path.exists() and result.gpx_path.stat().st_size > 0
     assert result.png_path.exists() and result.png_path.stat().st_size > 0
-    assert result.track.distance_km > 0
+    # line graph 1→2→3: two 800 m edges = 1.6 km; 100→130→100 m = +30 / −30 m exactly.
+    assert result.track.distance_km == pytest.approx(1.6)
     assert result.track.duration_min > 0
-    assert result.track.ascent_m >= 0 and result.track.descent_m >= 0
-    # composition is computed and its bike km ≈ the route distance (line graph is all bike)
-    assert result.composition.by_mode_km["bike"] > 0
-    assert sum(result.composition.by_surface_km.values()) > 0
+    assert result.track.ascent_m == pytest.approx(30.0) and result.track.descent_m == pytest.approx(30.0)
+    # composition is all bike (line graph has no rail): bike km == the full route distance.
+    assert result.composition.by_mode_km["bike"] == pytest.approx(1.6)
+    assert sum(result.composition.by_surface_km.values()) == pytest.approx(1.6)
 
 
 def test_plan_route_rejects_too_short_trip(monkeypatch):
@@ -105,3 +107,16 @@ def test_plan_route_no_route_raises_no_route_error(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(pipeline, "snap_endpoints", lambda graph, start_latlon, dest_latlon: (1, 99))
     with pytest.raises(NoRouteError):
         pipeline.plan_route(origin="Start", destination="End", params=DEFAULT_PARAMS)
+
+
+def test_resolve_endpoints_geocodes_box_text_and_snaps(monkeypatch):
+    # Whatever text is passed IS what's geocoded (the web app hands the box text here),
+    # then each result snaps to the nearest node's (lat, lon, elevation).
+    monkeypatch.setattr(pipeline, "make_geocode_fn", lambda: lambda place: None)
+    monkeypatch.setattr(
+        pipeline, "geocode_endpoint", lambda place, label, geocode_fn: (48.0, 8.0) if label == "Start" else (48.5, 8.5)
+    )
+    monkeypatch.setattr(pipeline, "snap_to_node", lambda lat, lon: (lat + 0.001, lon + 0.001, 200.0))
+    start, end = pipeline.resolve_endpoints(origin="Freudenstadt", destination="Pforzheim")
+    assert start == (48.001, 8.001, 200.0)
+    assert end == (48.501, 8.501, 200.0)

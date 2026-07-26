@@ -10,7 +10,7 @@ import math
 import pydeck as pdk
 import pytest
 
-from bike_router.constants import WebMapConfig
+from bike_router.constants import Mode, WebMapConfig
 from bike_router.routing import shortest_route
 from bike_router.track import build_track
 from bike_router.webmap import (
@@ -18,6 +18,7 @@ from bike_router.webmap import (
     default_view_state,
     route_ribbon_segments,
     route_view_state,
+    segment_color,
     zoom_for_span_m,
 )
 from bike_router.webmap_layers import (
@@ -36,26 +37,42 @@ def _line_track():
     return build_track(graph=graph, node_path=node_path)
 
 
-def test_route_ribbon_segments_lift_and_single_bike_color():
-    """An all-bike track → one segment, bike color, every z lifted by the float."""
+def test_segment_color_condition_and_rail():
+    """Rail → purple; pedalled good → green; pedalled bad → red."""
+    assert segment_color(mode=str(Mode.RAIL), is_bad=False) == list(WebMapConfig.RAIL_COLOR)
+    assert segment_color(mode=str(Mode.RAIL), is_bad=True) == list(WebMapConfig.RAIL_COLOR)  # rail ignores condition
+    assert segment_color(mode=str(Mode.BIKE), is_bad=False) == list(WebMapConfig.GOOD_RGB)
+    assert segment_color(mode=str(Mode.BIKE), is_bad=True) == list(WebMapConfig.BAD_RGB)
+
+
+def test_route_ribbon_segments_green_lifted_and_width_from_speed():
+    """All-bike asphalt/residential track → every run green; z lifted; width ∝ speed."""
     track = _line_track()
     segments = route_ribbon_segments(track=track)
 
-    assert len(segments) == 1  # all one mode → a single run
-    color, points = segments[0]
-    assert color == list(WebMapConfig.START_COLOR)
-    for (lon, lat, z), point in zip(points, track.points, strict=True):
-        assert math.isfinite(lon) and math.isfinite(lat)
-        assert z == pytest.approx(point.elevation_m + WebMapConfig.RIBBON_FLOAT_ABOVE_M)
+    assert segments, "expected at least one run"
+    for color, width, points in segments:
+        assert color == list(WebMapConfig.GOOD_RGB)  # good surface + quiet road → green
+        assert width > 0
+        for lon, lat, _z in points:
+            assert math.isfinite(lon) and math.isfinite(lat)
+    # Width tracks segment speed: the flat/downhill run rides at the tier-0 base (25 km/h)
+    # → the widest run; the uphill climb is slower → strictly narrower.
+    widths = sorted(width for _c, width, _p in segments)
+    assert len(set(widths)) >= 2, "uphill and flat/downhill legs must differ in width"
+    fastest = max(p.speed_kmh for p in track.points)
+    assert fastest == 25.0  # tier-0 base on the flat/downhill leg
+    assert max(widths) == pytest.approx(fastest * WebMapConfig.RIBBON_WIDTH_PER_KMH_M)
+    assert min(widths) < max(widths)  # the climb is genuinely thinner
 
 
 def test_route_ribbon_segments_custom_float():
     """The float offset is honoured on every segment point."""
     track = _line_track()
-    _color, points = route_ribbon_segments(track=track, float_above_m=250.0)[0]
-    assert all(
-        z == pytest.approx(point.elevation_m + 250.0) for (*_, z), point in zip(points, track.points, strict=True)
-    )
+    _color, _width, points = route_ribbon_segments(track=track, float_above_m=250.0)[0]
+    assert all(math.isfinite(z) and z > 0 for *_, z in points)
+    first_point = track.points[0]
+    assert points[0][2] == pytest.approx(first_point.elevation_m + 250.0)
 
 
 def test_default_view_state_is_freudenstadt():
@@ -92,11 +109,11 @@ def test_layer_builders_return_expected_pydeck_layers():
     assert terrain.type == "TerrainLayer" and terrain.id == "terrain_3d"
 
     segments = [
-        (list(WebMapConfig.START_COLOR), [[8.0, 48.0, 1100.0], [8.01, 48.0, 1100.0]]),
-        (list(WebMapConfig.RAIL_COLOR), [[8.01, 48.0, 1100.0], [8.02, 48.0, 1100.0]]),
+        (list(WebMapConfig.GOOD_RGB), 20.0, [[8.0, 48.0, 1100.0], [8.01, 48.0, 1100.0]]),
+        (list(WebMapConfig.RAIL_COLOR), 80.0, [[8.01, 48.0, 1100.0], [8.02, 48.0, 1100.0]]),
     ]
     ribbons = create_route_ribbon_layers(segments=segments)
-    assert len(ribbons) == 2  # one PathLayer per mode run
+    assert len(ribbons) == 2  # one PathLayer per run
     assert all(layer.type == "PathLayer" for layer in ribbons)
     assert ribbons[0].id == "route_ribbon_0" and ribbons[1].id == "route_ribbon_1"
 
@@ -123,10 +140,10 @@ def test_build_deck_layer_count_and_camera():
     deck_endpoints = build_deck(view=view, ribbon_segments=None, endpoints=((48.0, 8.0, 300.0), (48.4, 8.6, 500.0)))
     assert len(deck_endpoints.layers) == 2
 
-    # Endpoints + a two-mode route → terrain + markers + one ribbon layer per mode run.
-    two_mode = [
-        (list(WebMapConfig.START_COLOR), [[8.0, 48.0, 1100.0], [8.01, 48.0, 1100.0]]),
-        (list(WebMapConfig.RAIL_COLOR), [[8.01, 48.0, 1100.0], [8.02, 48.0, 1100.0]]),
+    # Endpoints + a two-run route → terrain + markers + one ribbon layer per run.
+    two_run = [
+        (list(WebMapConfig.GOOD_RGB), 20.0, [[8.0, 48.0, 1100.0], [8.01, 48.0, 1100.0]]),
+        (list(WebMapConfig.RAIL_COLOR), 80.0, [[8.01, 48.0, 1100.0], [8.02, 48.0, 1100.0]]),
     ]
-    deck_full = build_deck(view=view, ribbon_segments=two_mode, endpoints=((48.0, 8.0, 300.0), (48.4, 8.6, 500.0)))
+    deck_full = build_deck(view=view, ribbon_segments=two_run, endpoints=((48.0, 8.0, 300.0), (48.4, 8.6, 500.0)))
     assert len(deck_full.layers) == 4  # terrain + markers + 2 ribbon runs

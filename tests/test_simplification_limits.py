@@ -3,9 +3,19 @@
 import numpy as np
 from shapely.geometry import LineString
 
-from bike_router.constants import GmapsConfig
-from bike_router.simplify import _interpolate_to_n, _triangle_area, _visvalingam, route_to_linestring, select_waypoints
-from tests.conftest import make_line_graph
+from bike_router.constants import GmapsConfig, Mode
+from bike_router.simplify import (
+    RailLeg,
+    _interpolate_to_n,
+    _triangle_area,
+    _visvalingam,
+    format_rail_legs,
+    route_to_linestring,
+    select_waypoints,
+    split_bike_legs,
+    split_rail_legs,
+)
+from tests.conftest import make_line_graph, make_mixed_mode_graph
 
 
 def _zigzag_line(n_points: int = 200) -> LineString:
@@ -87,3 +97,93 @@ def test_route_to_linestring_follows_nodes():
     coords = list(line.coords)
     assert coords[0] == (8.0, 48.0)
     assert coords[-1] == (8.02, 48.0)
+
+
+# --- split_bike_legs ---------------------------------------------------------
+
+
+def test_split_bike_legs_pure_bike_is_one_leg():
+    graph = make_mixed_mode_graph([(1, 2, Mode.BIKE), (2, 3, Mode.BIKE)])
+    assert split_bike_legs(graph=graph, node_path=[1, 2, 3]) == [[1, 2, 3]]
+
+
+def test_split_bike_legs_train_in_middle_yields_two_legs():
+    # bike → station → rail → station → bike : two pedalled legs around the train ride.
+    graph = make_mixed_mode_graph(
+        [
+            (1, 2, Mode.BIKE),
+            (2, 3, Mode.STATION),
+            (3, 4, Mode.RAIL),
+            (4, 5, Mode.STATION),
+            (5, 6, Mode.BIKE),
+        ]
+    )
+    assert split_bike_legs(graph=graph, node_path=[1, 2, 3, 4, 5, 6]) == [[1, 2], [5, 6]]
+
+
+def test_split_bike_legs_all_rail_yields_no_bike_leg():
+    graph = make_mixed_mode_graph([(1, 2, Mode.STATION), (2, 3, Mode.RAIL), (3, 4, Mode.STATION)])
+    assert split_bike_legs(graph=graph, node_path=[1, 2, 3, 4]) == []
+
+
+# --- split_rail_legs / format_rail_legs --------------------------------------
+
+
+def test_split_rail_legs_pure_bike_has_no_train():
+    graph = make_mixed_mode_graph([(1, 2, Mode.BIKE), (2, 3, Mode.BIKE)])
+    assert split_rail_legs(graph=graph, node_path=[1, 2, 3]) == []
+
+
+def test_split_rail_legs_one_ride_names_board_and_alight():
+    # bike → station → rail(3→4) → station → bike : one train ride, board 3 / alight 4.
+    graph = make_mixed_mode_graph(
+        [
+            (1, 2, Mode.BIKE),
+            (2, 3, Mode.STATION),
+            (3, 4, Mode.RAIL),
+            (4, 5, Mode.STATION),
+            (5, 6, Mode.BIKE),
+        ]
+    )
+    legs = split_rail_legs(graph=graph, node_path=[1, 2, 3, 4, 5, 6])
+    assert [(leg.board, leg.alight) for leg in legs] == [("Station 3", "Station 4")]
+
+
+def test_split_rail_legs_change_stays_one_ride():
+    # Consecutive rail edges (an on-train change at a junction) are ONE ride: board first,
+    # alight last rail node — NOT split at the intermediate station.
+    graph = make_mixed_mode_graph([(1, 2, Mode.STATION), (2, 3, Mode.RAIL), (3, 4, Mode.RAIL), (4, 5, Mode.STATION)])
+    legs = split_rail_legs(graph=graph, node_path=[1, 2, 3, 4, 5])
+    assert [(leg.board, leg.alight) for leg in legs] == [("Station 2", "Station 4")]
+
+
+def test_split_rail_legs_two_separate_rides():
+    # bike → rail → bike → rail → bike : two distinct train rides (why 3 pedalled legs appear).
+    graph = make_mixed_mode_graph(
+        [
+            (1, 2, Mode.STATION),
+            (2, 3, Mode.RAIL),
+            (3, 4, Mode.STATION),
+            (4, 5, Mode.BIKE),
+            (5, 6, Mode.STATION),
+            (6, 7, Mode.RAIL),
+            (7, 8, Mode.STATION),
+        ]
+    )
+    legs = split_rail_legs(graph=graph, node_path=[1, 2, 3, 4, 5, 6, 7, 8])
+    assert [(leg.board, leg.alight) for leg in legs] == [("Station 2", "Station 3"), ("Station 6", "Station 7")]
+
+
+def test_split_rail_legs_ride_at_end_of_path():
+    # Route whose LAST edge is rail (no closing station hop) → the ride still emits a leg.
+    graph = make_mixed_mode_graph([(1, 2, Mode.STATION), (2, 3, Mode.RAIL)])
+    legs = split_rail_legs(graph=graph, node_path=[1, 2, 3])
+    assert [(leg.board, leg.alight) for leg in legs] == [("Station 2", "Station 3")]
+
+
+def test_format_rail_legs_numbers_lines_and_handles_unnamed():
+    legs = [RailLeg(board="Freudenstadt", alight="Pforzheim"), RailLeg(board=None, alight="Karlsruhe")]
+    assert format_rail_legs(rail_legs=legs) == [
+        "Train 1: Freudenstadt → Pforzheim",
+        "Train 2: (unnamed stop) → Karlsruhe",
+    ]
