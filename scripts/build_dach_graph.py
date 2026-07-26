@@ -29,6 +29,7 @@ import argparse
 import json
 import logging
 import time
+import urllib.error
 import urllib.request
 from pathlib import Path
 
@@ -108,11 +109,14 @@ def _download_pbf(region_key: str, geofabrik_path: str, pbf_dir: Path) -> Path:
 
 
 def _download_region(*, region_key: str, geofabrik_path: str, pbf_dir: Path, retries: int) -> Path | None:
-    """Download one region's pbf with retries. Returns its path, or None if it never succeeds."""
+    """Download one region's pbf with retries. Returns its path, or None if it never succeeds.
+
+    Only genuine network/IO failures are retried; anything else is a real bug and propagates.
+    """
     for attempt in range(1, retries + 1):
         try:
             return _download_pbf(region_key=region_key, geofabrik_path=geofabrik_path, pbf_dir=pbf_dir)
-        except Exception as error:  # noqa: BLE001 — overnight run must survive any single region
+        except (urllib.error.URLError, OSError, TimeoutError) as error:  # external: net/disk only
             logger.warning("download %s attempt %d/%d failed: %s", region_key, attempt, retries, error)
             time.sleep(5 * attempt)
     logger.error("✗ %s: download gave up after %d attempts — SKIPPED", region_key, retries)
@@ -126,27 +130,18 @@ def _build_one_region(
     ckpt_dir: Path,
     dem: DEMService,
     tolerance_m: float,
-    retries: int,
     bbox: tuple[float, float, float, float] | None,
-) -> bool:
-    """Build + checkpoint one already-downloaded region. Returns True on success.
+) -> None:
+    """Build + checkpoint one already-downloaded region.
 
-    Parse/build failures are retried; a region that still fails is reported and
-    skipped (returns False) so a single bad extract never aborts the overnight run.
+    No try/except: a build failure on a valid extract is a real bug (bad data would have
+    failed at download), so it propagates and aborts the run rather than silently skipping.
     ``bbox`` clips the region (fast test builds); None builds its full extent.
     """
-    for attempt in range(1, retries + 1):
-        try:
-            graph = build_region_graph(pbf_path=pbf, dem=dem, tolerance_m=tolerance_m, bbox=bbox)
-            nodes_df, edges_df = graph_to_tables(graph=graph)
-            write_region_checkpoint(nodes_df=nodes_df, edges_df=edges_df, ckpt_dir=ckpt_dir, region_key=region_key)
-            logger.info("✓ %s: %d nodes / %d edges", region_key, len(nodes_df), len(edges_df))
-            return True
-        except Exception as error:  # noqa: BLE001 — overnight run must survive any single region
-            logger.warning("build %s attempt %d/%d failed: %s", region_key, attempt, retries, error)
-            time.sleep(5 * attempt)
-    logger.error("✗ %s: build gave up after %d attempts — SKIPPED", region_key, retries)
-    return False
+    graph = build_region_graph(pbf_path=pbf, dem=dem, tolerance_m=tolerance_m, bbox=bbox)
+    nodes_df, edges_df = graph_to_tables(graph=graph)
+    write_region_checkpoint(nodes_df=nodes_df, edges_df=edges_df, ckpt_dir=ckpt_dir, region_key=region_key)
+    logger.info("✓ %s: %d nodes / %d edges", region_key, len(nodes_df), len(edges_df))
 
 
 def _assert_dem_covers(*, dem: DEMService, area: tuple[float, float, float, float]) -> None:
@@ -210,7 +205,7 @@ def main(argv: list[str] | None = None) -> int:
         k for k in regions if not args.fresh and read_region_checkpoint(ckpt_dir=ckpt_dir, region_key=k) is not None
     }
     todo = {k: regions[k] for k in regions if k not in done}
-    built: list[str] = sorted(done)
+    built: list[str] = list(done)  # sorted just before the merge (order-independent)
     skipped: list[str] = []
 
     # Phase 1 — download every outstanding region's raw pbf up front (one bar).
@@ -224,24 +219,26 @@ def main(argv: list[str] | None = None) -> int:
         else:
             pbfs[region_key] = pbf
 
-    # Phase 2 — build + checkpoint each downloaded region to a graph (second bar).
+    # Phase 2 — build + checkpoint each downloaded region to a graph (second bar). A build
+    # failure propagates (real bug); only download failures are skipped (external, in phase 1).
     for region_key, pbf in tqdm(pbfs.items(), desc="Building regions", unit="region"):
-        ok = _build_one_region(
+        _build_one_region(
             region_key=region_key,
             pbf=pbf,
             ckpt_dir=ckpt_dir,
             dem=dem,
             tolerance_m=args.tolerance,
-            retries=args.retries,
             bbox=bbox,
         )
-        (built if ok else skipped).append(region_key)
+        built.append(region_key)
 
-    # Merge every checkpointed region → tile → write final artifact. A region in `built`
-    # was just checkpointed, so a missing read is a real bug (fail loud, don't skip).
+    # Merge every checkpointed region → tile → write final artifact. Sorted for a
+    # deterministic station-id block assignment regardless of build/resume order. A region
+    # in `built` was just checkpointed, so a missing read is a real bug (fail loud).
     if not built:
         logger.error("No regions built successfully — nothing to write.")
         return 1
+    built = sorted(built)
     region_tables = []
     for region_key in built:
         tables = read_region_checkpoint(ckpt_dir=ckpt_dir, region_key=region_key)
