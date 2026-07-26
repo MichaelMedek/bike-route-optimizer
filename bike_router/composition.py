@@ -8,7 +8,7 @@ from dataclasses import dataclass
 
 import networkx as nx
 
-from bike_router.constants import GpxConfig, Mode, RoadConfig, SurfaceConfig
+from bike_router.constants import GpxConfig, Mode, RoadConfig, SurfaceConfig, WebMapConfig
 from bike_router.cost import road_tier, surface_tier
 from bike_router.track import iter_route_edges
 
@@ -17,13 +17,14 @@ from bike_router.track import iter_route_edges
 class RouteComposition:
     """Kilometre breakdown of a route, three independent ways to slice the bike legs.
 
-    ``by_mode`` covers the WHOLE route (bike + rail + station km); the surface and
-    road tallies describe the pedalled (bike) portion only.
+    ``by_mode`` covers the WHOLE route as two display buckets ("bike route" / "train path");
+    station access-hops are negligible and fold into "bike route". The surface and road
+    tallies describe the pedalled (bike) portion only.
     """
 
-    by_surface_km: dict[str, float]  # bike km per surface label
-    by_road_km: dict[str, float]  # bike km: "main road" vs "quiet way"
-    by_mode_km: dict[str, float]  # all km per travel mode
+    by_surface_km: dict[str, float]  # bike km per surface label ("paved road" / "unpaved path")
+    by_road_km: dict[str, float]  # bike km ("quiet way" / "main road")
+    by_mode_km: dict[str, float]  # whole-route km ("bike route" / "train path")
 
 
 def route_composition(graph: nx.MultiDiGraph, node_path: list[int]) -> RouteComposition:
@@ -36,7 +37,10 @@ def route_composition(graph: nx.MultiDiGraph, node_path: list[int]) -> RouteComp
     for _node_a, _node_b, data in iter_route_edges(graph=graph, node_path=node_path):
         km = float(data["length"]) / GpxConfig.METERS_PER_KM
         mode = data["mode"]
-        by_mode[mode] = by_mode.get(mode, 0.0) + km
+        # Two display buckets only: a train ride is "train path"; everything pedalled OR a
+        # negligible station access-hop counts as "bike route".
+        mode_label = WebMapConfig.MODE_DONUT_LABELS[Mode.RAIL if mode == Mode.RAIL else Mode.BIKE]
+        by_mode[mode_label] = by_mode.get(mode_label, 0.0) + km
         if mode != Mode.BIKE:  # surface/road only meaningful for pedalled legs
             continue
         label, _color = SurfaceConfig.TIER_LABEL_COLORS[surface_tier(surface=data.get("surface"))]
@@ -65,8 +69,8 @@ def format_composition(comp: RouteComposition) -> str:
     Surface/road are percent of the pedalled distance; mode is percent of the whole
     route (bike vs train), always shown so the train ratio is never hidden.
     """
-    # Mode display order from the Mode enum (single source; StrEnum keys are str).
-    mode_order: dict[str, int] = {str(mode): index for index, mode in enumerate(Mode)}
+    # Mode display order from the label map (single source; "bike route" then "train path").
+    mode_order = {label: index for index, label in enumerate(WebMapConfig.MODE_DONUT_LABELS.values())}
     lines = ["Surface:"]
     lines += _percent_lines(by_km=comp.by_surface_km)
     lines.append("Roads:")

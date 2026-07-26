@@ -61,10 +61,10 @@ def test_e2e_real_route_produced_from_fixture(tmp_path: Path, monkeypatch):
     assert len(track.points) > 50  # densified along the real 3D polyline
     assert all(p.elevation_m > 0 for p in track.points)  # baked elevations, no DEM at inference
 
-    # Composition covers the pedalled distance by surface + road class: the surface
-    # tally sums to exactly the bike-mode km (rail/station legs carry no surface).
-    assert sum(result.composition.by_surface_km.values()) == pytest.approx(result.composition.by_mode_km[Mode.BIKE])
-    assert result.composition.by_mode_km  # at least the bike mode present
+    # Composition covers the pedalled distance by surface + road class: the surface tally and
+    # the road tally each sum to the SAME pedalled-km total (both slice only the bike legs).
+    assert sum(result.composition.by_surface_km.values()) == pytest.approx(sum(result.composition.by_road_km.values()))
+    assert result.composition.by_mode_km  # at least the bike-route bucket present
 
 
 def test_e2e_flat_hater_still_routes(tmp_path: Path, monkeypatch):
@@ -103,7 +103,7 @@ def test_e2e_baiersbronn_to_freudenstadt_takes_one_train_and_two_bike_legs(tmp_p
     )
     # Exactly one train ride, and rail km actually accumulated.
     assert _rail_ride_count(track=result.track) == 1
-    assert result.composition.by_mode_km[Mode.RAIL] > 0
+    assert result.composition.by_mode_km["train path"] > 0
     # Two pedalled legs (one before boarding, one after alighting) → two bike-only Maps URLs.
     assert len(result.bike_legs) == 2
     assert all(leg.url.startswith("https://www.google.com/maps/dir/?api=1") for leg in result.bike_legs)
@@ -113,8 +113,9 @@ def test_e2e_baiersbronn_to_freudenstadt_takes_one_train_and_two_bike_legs(tmp_p
     assert result.bike_legs[1].to_place == "End"  # destination="End"
     assert result.bike_legs[0].to_place == (result.rail_legs[0].board or _UNNAMED_STOP)
     assert result.bike_legs[1].from_place == (result.rail_legs[0].alight or _UNNAMED_STOP)
-    # Station-access hops appear (board + alight), but they are short (≤ radius each).
-    assert result.composition.by_mode_km[Mode.STATION] > 0
+    # Station hops fold into the "bike route" bucket (not a separate mode); both buckets present.
+    assert result.composition.by_mode_km["bike route"] > 0
+    assert "station" not in result.composition.by_mode_km
 
 
 def test_e2e_default_sliders_take_train_uphill_but_bike_downhill(tmp_path: Path, monkeypatch):
@@ -126,12 +127,11 @@ def test_e2e_default_sliders_take_train_uphill_but_bike_downhill(tmp_path: Path,
     """
     uphill = _plan(monkeypatch=monkeypatch, tmp_path=tmp_path, start=_BAIERSBRONN, end=_FREUDENSTADT)
     assert _rail_ride_count(track=uphill.track) == 1  # steep climb → board the train
-    assert uphill.composition.by_mode_km[Mode.RAIL] > 0
+    assert uphill.composition.by_mode_km["train path"] > 0
 
     downhill = _plan(monkeypatch=monkeypatch, tmp_path=tmp_path, start=_FREUDENSTADT, end=_BAIERSBRONN)
     assert _rail_ride_count(track=downhill.track) == 0  # descent is easy → stay on the bike
-    assert Mode.RAIL not in downhill.composition.by_mode_km
-    assert Mode.STATION not in downhill.composition.by_mode_km  # no station touched
+    assert "train path" not in downhill.composition.by_mode_km  # no train → no train-path bucket
     assert len(downhill.bike_legs) == 1
 
 

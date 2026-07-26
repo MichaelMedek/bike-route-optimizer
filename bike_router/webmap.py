@@ -25,7 +25,7 @@ def _hex(rgb: tuple[int, int, int]) -> str:
 # surface/road labels+colours live in SurfaceConfig/RoadConfig; mode in WebMapConfig.
 SURFACE_DONUT_COLORS = dict(SurfaceConfig.TIER_LABEL_COLORS.values())
 ROAD_DONUT_COLORS = dict(RoadConfig.TIER_LABEL_COLORS.values())
-MODE_DONUT_COLORS = {str(mode): _hex(rgb=rgb) for mode, rgb in WebMapConfig.MODE_COLORS.items()}
+MODE_DONUT_COLORS = {label: _hex(rgb=rgb) for label, rgb in WebMapConfig.MODE_DONUT_COLORS.items()}
 
 
 def composition_donut(title: str, by_km: dict[str, float], colors: dict[str, str]) -> alt.Chart:

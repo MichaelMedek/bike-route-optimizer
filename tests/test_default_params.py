@@ -12,7 +12,7 @@ Two layers:
 import networkx as nx
 import pytest
 
-from bike_router.constants import GraphConfig, Mode, NodeType
+from bike_router.constants import GraphConfig, NodeType
 from bike_router.pipeline import plan_route
 from bike_router.routing import shortest_route
 from tests.conftest import DEFAULT_PARAMS, make_hill_vs_rail_graph
@@ -89,4 +89,4 @@ _REAL_CASES = [
 def test_default_params_real_route_mode(origin: str, destination: str, expect_train: bool) -> None:  # noqa: FBT001
     """FULL e2e: DEFAULT params, real dataset, real OSM geocoding — each route bikes or trains as given."""
     result = plan_route(origin=origin, destination=destination, params=DEFAULT_PARAMS)
-    assert (Mode.RAIL in result.composition.by_mode_km) is expect_train
+    assert ("train path" in result.composition.by_mode_km) is expect_train

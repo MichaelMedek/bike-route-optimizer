@@ -214,11 +214,11 @@ class SurfaceConfig:
     }
     # Untagged surface (~35% of raw ways) → assume tier 1 (loose, pessimistic but rideable).
     DEFAULT_TIER = 1
-    # Per-tier human label + swatch (donut colours): tier 0 green; tier 1 rust; tier 2 darker rust.
+    # Per-tier human label + swatch. Tier 2 is a COMPUTE-only split.
     TIER_LABEL_COLORS = {
-        0: ("paved", Palette.GOOD),
-        1: ("gravel/unpaved", Palette.BAD_SURFACE),
-        2: ("natural/rough", Palette.BAD_SURFACE),
+        0: ("paved road", Palette.GOOD),
+        1: ("unpaved path", Palette.BAD_SURFACE),
+        2: ("unpaved path", Palette.BAD_SURFACE),  # COMPUTE-only, same optic
     }
 
 
@@ -456,12 +456,13 @@ class WebMapConfig:
     START_COLOR = Palette.hex_to_rgb(hex_color=Palette.START)  # blue (start marker)
     END_COLOR = Palette.hex_to_rgb(hex_color=Palette.END)  # cyan (destination marker)
     RAIL_COLOR = Palette.hex_to_rgb(hex_color=Palette.RAIL)  # purple — trains only
-    # Mode→colour only for the composition donut (bike blue vs train purple); the
-    # ribbon/PNG use segment_color (condition-based), NOT this map.
-    MODE_COLORS: dict[str, tuple[int, int, int]] = {
-        Mode.BIKE: START_COLOR,
-        Mode.RAIL: RAIL_COLOR,
-        Mode.STATION: START_COLOR,
+    # Composition-donut mode display: two buckets only — pedalled vs train. Station
+    # access-hops are negligible and fold into "bike route".
+    # The ribbon/PNG use segment_color (condition-based), NOT this map.
+    MODE_DONUT_LABELS = {Mode.BIKE: "bike route", Mode.RAIL: "train path"}
+    MODE_DONUT_COLORS = {
+        "bike route": Palette.hex_to_rgb(hex_color=Palette.START),  # blue
+        "train path": RAIL_COLOR,  # purple
     }
     MARKER_RADIUS_M = 60.0
     MARKER_MIN_PIXELS = 8
@@ -513,5 +514,7 @@ assert max(SpeedConfig.BASE_KMH_BY_TIER.values()) < RailConfig.RAIL_SPEED_KMH, "
 assert RailConfig.BOARDING_WAIT_S > 0 and RailConfig.STATION_RADIUS_M > 0, "rail waits/radius must be positive"
 assert RailConfig.STATION_MAX_ENTRANCES >= 1, "must declare at least one entrance per station"
 assert GraphConfig.CONSOLIDATION_TOLERANCE_M >= 0 and GraphConfig.TILE_DEG > 0, "graph tolerance/tile must be sane"
-assert set(WebMapConfig.MODE_COLORS) == set(Mode), "MODE_COLORS must have a color for every Mode"
+assert set(WebMapConfig.MODE_DONUT_COLORS) == set(WebMapConfig.MODE_DONUT_LABELS.values()), (
+    "mode donut colours must key on exactly the display labels"
+)
 assert PhotonConfig.LIMIT > 0 and PhotonConfig.TIMEOUT_S > 0, "Photon limit/timeout must be positive"
