@@ -24,13 +24,13 @@ def _uses_train_path(graph: nx.MultiDiGraph, path: list[int]) -> bool:
 
 
 # (label, climb_m, rail_alternative, downhill, expect_train) — 10 synthetic scenarios.
-_STEEP, _MILD = 150.0, 40.0
+_VERY_STEEP, _STEEP, _MILD = 400.0, 300.0, 40.0
 CASES = [
     ("steep uphill, train available → train", _STEEP, True, False, True),
-    ("very steep uphill, train available → train", 250.0, True, False, True),
+    ("very steep uphill, train available → train", _VERY_STEEP, True, False, True),
     ("steep uphill, NO train → bike", _STEEP, False, False, False),
     ("steep DOWNHILL, train available → bike", _STEEP, True, True, False),
-    ("very steep downhill, train available → bike", 250.0, True, True, False),
+    ("very steep downhill, train available → bike", _VERY_STEEP, True, True, False),
     ("mild uphill, train available → bike", _MILD, True, False, False),
     ("mild uphill, NO train → bike", _MILD, False, False, False),
     ("mild downhill, train available → bike", _MILD, True, True, False),
