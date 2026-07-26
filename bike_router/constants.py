@@ -96,6 +96,8 @@ class GraphConfig:
     CONSOLIDATION_TOLERANCE_M = 25.0
     # Coarse grid for tiling the parquet so a corridor reads only a few tiles.
     TILE_DEG = 0.5
+    # Lat/lon decimal places kept when serializing geometry (6 dp ≈ 0.1 m).
+    COORD_PRECISION = 6
 
 
 class GeoConfig:
@@ -271,11 +273,18 @@ class SpeedConfig:
 class GmapsConfig:
     """Google Maps directions-URL output."""
 
-    # exactly N significant points → origin + (N-2) waypoints + destination.
-    # Maps `api=1` allows max 9 intermediate waypoints; N=10 → 8 waypoints (OK).
+    # N significant points → origin + (N-2) intermediate + destination.
     N_WAYPOINTS = 10
+    MAX_INTERMEDIATE_WAYPOINTS = 9  # hard Google Maps api=1 limit
     BASE_URL = "https://www.google.com/maps/dir/?api=1"
     TRAVEL_MODE = "bicycling"
+
+
+class PlotConfig:
+    """Debug elevation-heatmap PNG rendering."""
+
+    CMAP = "plasma"
+    DPI = 200
 
 
 class NominatimConfig:
@@ -318,19 +327,16 @@ class WebMapConfig:
     RIBBON_FLOAT_ABOVE_M = 100.0
     RIBBON_WIDTH_M = 20.0
     RIBBON_MIN_PIXELS = 3
-    # Per-mode ribbon/route colors — bike and rail MUST read as two distinct colors
-    # in both the 3D ribbon and the debug PNG (transfer hops ride with the bike color).
-    BIKE_COLOR = (255, 90, 0)  # orange
-    RAIL_COLOR = (0, 120, 255)  # blue
+    # ONE blue is the whole route's colour — start marker, bike + transfer ribbon,
+    # and the debug-PNG route all use START_COLOR (single source). Only trains differ.
+    START_COLOR = (0, 150, 255)  # blue
+    END_COLOR = (0, 229, 255)  # cyan (destination marker)
+    RAIL_COLOR = (150, 0, 200)  # purple — trains only
     MODE_COLORS: dict[str, tuple[int, int, int]] = {
-        Mode.BIKE: BIKE_COLOR,
+        Mode.BIKE: START_COLOR,
         Mode.RAIL: RAIL_COLOR,
-        Mode.TRANSFER: BIKE_COLOR,
+        Mode.TRANSFER: START_COLOR,
     }
-    # Start/end endpoint markers — SAME colors the debug PNG uses (single visual
-    # language across the PNG and the 3D map): start light blue, end cyan.
-    START_COLOR = (64, 196, 255)  # #40c4ff
-    END_COLOR = (0, 229, 255)  # #00e5ff
     MARKER_RADIUS_M = 60.0
     MARKER_MIN_PIXELS = 8
     # Zoom, same log formula as ski-resort's MapConfig.zoom_for_span_m:

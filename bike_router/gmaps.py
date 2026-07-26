@@ -7,14 +7,14 @@ Uses the official Maps URLs `api=1` scheme: origin + up to 9 intermediate waypoi
 
 from urllib.parse import urlencode
 
-from bike_router.constants import GmapsConfig
+from bike_router.constants import GmapsConfig, GraphConfig
 
 
 def _fmt(point: tuple[float, float]) -> str:
     latitude, longitude = point
     assert -90.0 <= latitude <= 90.0, "latitude out of range"
     assert -180.0 <= longitude <= 180.0, "longitude out of range"
-    return f"{latitude:.6f},{longitude:.6f}"
+    return f"{latitude:.{GraphConfig.COORD_PRECISION}f},{longitude:.{GraphConfig.COORD_PRECISION}f}"
 
 
 def build_gmaps_url(waypoints_latlon: list[tuple[float, float]]) -> str:
@@ -27,7 +27,7 @@ def build_gmaps_url(waypoints_latlon: list[tuple[float, float]]) -> str:
     origin = _fmt(point=waypoints_latlon[0])
     destination = _fmt(point=waypoints_latlon[-1])
     intermediate = [_fmt(point=point) for point in waypoints_latlon[1:-1]]
-    assert len(intermediate) <= 9, "Google Maps api=1 allows at most 9 intermediate waypoints"
+    assert len(intermediate) <= GmapsConfig.MAX_INTERMEDIATE_WAYPOINTS, "too many intermediate waypoints for Maps api=1"
 
     params = {
         "origin": origin,

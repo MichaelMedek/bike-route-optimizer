@@ -7,6 +7,8 @@ bike_router.plan_route (what the CLI calls); this file only wires widgets.
 Run:  streamlit run app_webmap.py
 """
 
+import altair as alt
+import pandas as pd
 import streamlit as st
 
 from bike_router.constants import PARAM_SPECS, RoutingDefaults, RoutingParams, WebMapConfig
@@ -26,6 +28,26 @@ def _download_graph_with_bar() -> None:
 
     download_graph_from_hf(progress=_progress)
     bar.empty()
+
+
+def _composition_donut(title: str, by_km: dict[str, float]) -> alt.Chart:
+    """Small interactive Altair donut of a km breakdown (hover → label / km / %)."""
+    total = sum(by_km.values()) or 1.0
+    frame = pd.DataFrame([{"category": label, "km": km, "pct": km / total * 100} for label, km in by_km.items()])
+    return (
+        alt.Chart(frame, title=title)
+        .mark_arc(innerRadius=30)
+        .encode(
+            theta=alt.Theta("km:Q", stack=True),
+            color=alt.Color("category:N", legend=alt.Legend(orient="bottom", title=None)),
+            tooltip=[
+                alt.Tooltip("category:N", title="type"),
+                alt.Tooltip("km:Q", format=".1f", title="km"),
+                alt.Tooltip("pct:Q", format=".0f", title="%"),
+            ],
+        )
+        .properties(height=180)
+    )
 
 
 def main() -> None:
@@ -121,13 +143,11 @@ def main() -> None:
         for col, (label, value) in zip(st.columns(len(metrics)), metrics, strict=True):
             col.metric(label, value)
 
-        # Composition as PERCENT of route distance, by surface / road class / mode.
+        # Composition: three interactive donuts (% by km), side by side across the width.
         comp = result.composition
-        breakdowns = (("By surface", comp.by_surface_km), ("By road", comp.by_road_km), ("By mode", comp.by_mode_km))
-        for col, (label, by_km) in zip(st.columns(len(breakdowns)), breakdowns, strict=True):
-            col.caption(label)
-            total = sum(by_km.values())
-            col.write({k: f"{v / total * 100:.0f}%" for k, v in sorted(by_km.items(), key=lambda kv: -kv[1])})
+        donuts = (("By surface", comp.by_surface_km), ("By road", comp.by_road_km), ("By mode", comp.by_mode_km))
+        for col, (title, by_km) in zip(st.columns(len(donuts)), donuts, strict=True):
+            col.altair_chart(_composition_donut(title=title, by_km=by_km), use_container_width=True)
 
         st.caption("🗺️ Open in Google Maps (copy the link):")
         st.code(result.gmaps_url, language=None)

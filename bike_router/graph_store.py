@@ -299,7 +299,7 @@ def graph_to_tables(graph: nx.MultiDiGraph) -> tuple[pd.DataFrame, pd.DataFrame]
 def _geometry_wkt(geom: object) -> str | None:
     """Real edge polyline as WKT, or None for straight (rail/transfer) hops."""
     if isinstance(geom, LineString) and len(geom.coords) >= 2:
-        return str(to_wkt(geom, rounding_precision=6))
+        return str(to_wkt(geom, rounding_precision=GraphConfig.COORD_PRECISION))
     return None
 
 

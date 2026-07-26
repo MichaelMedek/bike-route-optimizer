@@ -18,7 +18,7 @@ from matplotlib import cm  # noqa: E402
 from matplotlib.colors import Normalize  # noqa: E402
 
 from bike_router.composition import RouteComposition, format_composition  # noqa: E402
-from bike_router.constants import RoutingParams, WebMapConfig  # noqa: E402
+from bike_router.constants import PlotConfig, RoutingParams, WebMapConfig  # noqa: E402
 from bike_router.track import Track, cheapest_edge  # noqa: E402
 
 logger = logging.getLogger(__name__)
@@ -34,8 +34,8 @@ def plot_elevation_heatmap(
     origin: str = "Start",
     destination: str = "End",
     composition: RouteComposition | None = None,
-    cmap_name: str = "plasma",
-    dpi: int = 200,
+    cmap_name: str = PlotConfig.CMAP,
+    dpi: int = PlotConfig.DPI,
 ) -> None:
     """Save a PNG heatmap of the graph (nodes by elevation) with the route on top.
 

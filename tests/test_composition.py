@@ -43,16 +43,19 @@ def test_composition_tallies_surface_road_and_mode():
     assert comp.by_mode_km[Mode.RAIL] == 10.0
 
 
-def test_format_composition_includes_mode_split_only_when_rail_used():
+def test_format_composition_is_percentages_with_mode_always_shown():
+    # 3 km bike + 0.1 km transfer + 10 km rail = 13.1 km total → rail ≈ 76%.
     with_rail = format_composition(comp=route_composition(graph=_graph(), node_path=[1, 2, 3, 4, 5]))
     assert "Surface:" in with_rail and "Roads:" in with_rail and "Mode:" in with_rail
-    assert "rail: 10.0 km" in with_rail
+    assert "rail: 76%" in with_rail  # train ratio must be shown, as a percent
+    assert "paved: 33%" in with_rail and "gravel/unpaved: 67%" in with_rail
+    assert "km" not in with_rail  # percentages only, never raw km
 
-    # bike-only route → no "Mode:" section (it would be all-bike, redundant)
+    # bike-only route → Mode: still shown (bike: 100%), never hidden.
     g = nx.MultiDiGraph()
     for n in (1, 2):
         g.add_node(n, x=float(n), y=48.0, elevation=100.0)
     g.add_edge(1, 2, key=0, **_edge(Mode.BIKE, 1500.0, surface="asphalt", highway="residential"))
     bike_only = format_composition(comp=route_composition(graph=g, node_path=[1, 2]))
-    assert "Mode:" not in bike_only
-    assert "paved: 1.5 km" in bike_only
+    assert "Mode:" in bike_only and "bike: 100%" in bike_only
+    assert "paved: 100%" in bike_only

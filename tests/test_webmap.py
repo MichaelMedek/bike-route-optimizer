@@ -43,7 +43,7 @@ def test_route_ribbon_segments_lift_and_single_bike_color():
 
     assert len(segments) == 1  # all one mode → a single run
     color, points = segments[0]
-    assert color == list(WebMapConfig.BIKE_COLOR)
+    assert color == list(WebMapConfig.START_COLOR)
     for (lon, lat, z), point in zip(points, track.points, strict=True):
         assert math.isfinite(lon) and math.isfinite(lat)
         assert z == pytest.approx(point.elevation_m + WebMapConfig.RIBBON_FLOAT_ABOVE_M)
@@ -92,7 +92,7 @@ def test_layer_builders_return_expected_pydeck_layers():
     assert terrain.type == "TerrainLayer" and terrain.id == "terrain_3d"
 
     segments = [
-        (list(WebMapConfig.BIKE_COLOR), [[8.0, 48.0, 1100.0], [8.01, 48.0, 1100.0]]),
+        (list(WebMapConfig.START_COLOR), [[8.0, 48.0, 1100.0], [8.01, 48.0, 1100.0]]),
         (list(WebMapConfig.RAIL_COLOR), [[8.01, 48.0, 1100.0], [8.02, 48.0, 1100.0]]),
     ]
     ribbons = create_route_ribbon_layers(segments=segments)
@@ -125,7 +125,7 @@ def test_build_deck_layer_count_and_camera():
 
     # Endpoints + a two-mode route → terrain + markers + one ribbon layer per mode run.
     two_mode = [
-        (list(WebMapConfig.BIKE_COLOR), [[8.0, 48.0, 1100.0], [8.01, 48.0, 1100.0]]),
+        (list(WebMapConfig.START_COLOR), [[8.0, 48.0, 1100.0], [8.01, 48.0, 1100.0]]),
         (list(WebMapConfig.RAIL_COLOR), [[8.01, 48.0, 1100.0], [8.02, 48.0, 1100.0]]),
     ]
     deck_full = build_deck(view=view, ribbon_segments=two_mode, endpoints=((48.0, 8.0, 300.0), (48.4, 8.6, 500.0)))

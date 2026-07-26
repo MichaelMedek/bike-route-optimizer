@@ -50,16 +50,30 @@ def route_composition(graph: nx.MultiDiGraph, node_path: list[int]) -> RouteComp
     return RouteComposition(by_surface_km=by_surface, by_road_km=by_road, by_mode_km=by_mode)
 
 
+def _percent_lines(by_km: dict[str, float], order: dict[str, int] | None = None) -> list[str]:
+    """Format a km breakdown as ``  label: NN%`` lines (percent of the category total).
+
+    Args:
+        by_km: label → km for one category.
+        order: optional label → sort index; defaults to descending km.
+    """
+    total = sum(by_km.values())
+    key = (lambda kv: order[kv[0]]) if order is not None else (lambda kv: -kv[1])
+    return [f"  {label}: {km / total * 100:.0f}%" for label, km in sorted(by_km.items(), key=key)]
+
+
 def format_composition(comp: RouteComposition) -> str:
-    """One-line-per-category human summary (used by the CLI and the plot overlay)."""
+    """Per-category percentage summary (used by the CLI and the plot overlay).
+
+    Surface/road are percent of the pedalled distance; mode is percent of the whole
+    route (bike vs train), always shown so the train ratio is never hidden.
+    """
+    # Mode display order from the Mode enum (single source; StrEnum keys are str).
+    mode_order: dict[str, int] = {str(mode): index for index, mode in enumerate(Mode)}
     lines = ["Surface:"]
-    lines += [f"  {label}: {km:.1f} km" for label, km in sorted(comp.by_surface_km.items(), key=lambda kv: -kv[1])]
+    lines += _percent_lines(by_km=comp.by_surface_km)
     lines.append("Roads:")
-    lines += [f"  {label}: {km:.1f} km" for label, km in sorted(comp.by_road_km.items(), key=lambda kv: -kv[1])]
-    # Only show the mode split when rail/transfer is actually used (else it's all bike).
-    if set(comp.by_mode_km) - {Mode.BIKE}:
-        lines.append("Mode:")
-        # Display order derived from the Mode enum (single source; StrEnum keys are str).
-        order: dict[str, int] = {str(mode): index for index, mode in enumerate(Mode)}
-        lines += [f"  {m}: {km:.1f} km" for m, km in sorted(comp.by_mode_km.items(), key=lambda kv: order[kv[0]])]
+    lines += _percent_lines(by_km=comp.by_road_km)
+    lines.append("Mode:")
+    lines += _percent_lines(by_km=comp.by_mode_km, order=mode_order)
     return "\n".join(lines)
