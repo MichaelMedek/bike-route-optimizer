@@ -1,0 +1,36 @@
+name: CI
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+      # Lint/format/hygiene + mypy gate — pre-commit owns ruff (pinned v0.9.1) and
+      # mypy (pinned v1.13.0). Fails CI if any hook errors OR modifies a file.
+      - name: Pre-commit
+        run: pre-commit run --all-files --show-diff-on-failure
+      # addopts injects --cov=bike_router --cov-report=term-missing --cov-fail-under=95,
+      # so plain pytest enforces coverage and the 95% gate. Tests use the committed
+      # Schwarzwald fixture — no network or DEM download needed.
+      - name: Pytest (coverage gate)
+        run: pytest
