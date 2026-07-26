@@ -137,7 +137,7 @@ class CorridorConfig:
 
     HALF_WIDTH_KM = 22.0  # search this far each side of the direct line
     MIN_TRIP_KM = 5.0  # too short to bother planning
-    MAX_TRIP_KM = 100.0  # beyond this the corridor graph is too big / out of scope
+    MAX_TRIP_KM = 200.0  # beyond this the corridor graph is too big / out of scope
 
 
 # Quality colours — green good, red bad.
