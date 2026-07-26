@@ -1,0 +1,78 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="760" height="380" viewBox="0 0 760 380" font-family="Helvetica, Arial, sans-serif">
+  <rect width="760" height="380" fill="#ffffff"/>
+  <text x="380" y="34" text-anchor="middle" font-size="20" font-weight="bold" fill="#222">Graph model: bike · station · rail edges</text>
+
+  <!-- edge legend -->
+  <g font-size="13" fill="#333">
+    <line x1="40" y1="58" x2="80" y2="58" stroke="#0096ff" stroke-width="4"/>
+    <text x="88" y="62">bike edge (road)</text>
+    <line x1="250" y1="58" x2="290" y2="58" stroke="#e6a000" stroke-width="4" stroke-dasharray="6 4"/>
+    <text x="298" y="62">station edge (½ boarding each)</text>
+    <line x1="560" y1="58" x2="600" y2="58" stroke="#9600c8" stroke-width="4"/>
+    <text x="608" y="62">rail edge</text>
+  </g>
+
+  <!-- ================= BIKE NETWORK (left) ================= -->
+  <!-- bike edges -->
+  <g stroke="#0096ff" stroke-width="4">
+    <line x1="90" y1="180" x2="200" y2="130"/>
+    <line x1="90" y1="180" x2="200" y2="250"/>
+    <line x1="200" y1="130" x2="200" y2="250"/>
+    <line x1="200" y1="130" x2="320" y2="150"/>
+    <line x1="200" y1="250" x2="320" y2="150"/>
+  </g>
+  <!-- BIKE NETWORK (right) -->
+  <g stroke="#0096ff" stroke-width="4">
+    <line x1="560" y1="150" x2="670" y2="130"/>
+    <line x1="560" y1="150" x2="670" y2="250"/>
+    <line x1="670" y1="130" x2="670" y2="250"/>
+  </g>
+
+  <!-- ================= STATION EDGES (bike entrance ↔ rail node) ================= -->
+  <g stroke="#e6a000" stroke-width="4" stroke-dasharray="6 4">
+    <line x1="200" y1="130" x2="330" y2="300"/>
+    <line x1="200" y1="250" x2="330" y2="300"/>
+    <line x1="320" y1="150" x2="330" y2="300"/>
+    <line x1="560" y1="150" x2="430" y2="300"/>
+    <line x1="670" y1="130" x2="430" y2="300"/>
+  </g>
+
+  <!-- ================= RAIL EDGE (rail ↔ rail) ================= -->
+  <line x1="330" y1="300" x2="430" y2="300" stroke="#9600c8" stroke-width="5"/>
+
+  <!-- ================= BIKE NODES ================= -->
+  <g fill="#0096ff">
+    <circle cx="90"  cy="180" r="9"/>
+    <circle cx="200" cy="130" r="9"/>
+    <circle cx="200" cy="250" r="9"/>
+    <circle cx="320" cy="150" r="9"/>
+    <circle cx="560" cy="150" r="9"/>
+    <circle cx="670" cy="130" r="9"/>
+    <circle cx="670" cy="250" r="9"/>
+  </g>
+  <!-- entrance markers (bike nodes declared entrances) -->
+  <g fill="none" stroke="#e6a000" stroke-width="2.5">
+    <circle cx="200" cy="130" r="15"/>
+    <circle cx="200" cy="250" r="15"/>
+    <circle cx="320" cy="150" r="15"/>
+    <circle cx="560" cy="150" r="15"/>
+    <circle cx="670" cy="130" r="15"/>
+  </g>
+
+  <!-- ================= RAIL (STATION) NODES ================= -->
+  <g fill="#9600c8">
+    <rect x="318" y="288" width="24" height="24" rx="4"/>
+    <rect x="418" y="288" width="24" height="24" rx="4"/>
+  </g>
+  <text x="330" y="340" text-anchor="middle" font-size="13" font-weight="bold" fill="#9600c8">Station A</text>
+  <text x="430" y="340" text-anchor="middle" font-size="13" font-weight="bold" fill="#9600c8">Station B</text>
+
+  <!-- labels -->
+  <text x="150" y="205" font-size="12" fill="#0072c0" transform="rotate(-24 150 205)">bike-only network</text>
+  <text x="600" y="205" font-size="12" fill="#0072c0" transform="rotate(24 600 205)">bike-only network</text>
+  <text x="380" y="290" text-anchor="middle" font-size="12" fill="#9600c8">rail</text>
+  <text x="248" y="222" font-size="11" fill="#b37e00" transform="rotate(52 248 222)">entrances</text>
+
+  <text x="380" y="372" text-anchor="middle" font-size="12" fill="#666">A rail node is a SEPARATE node: reaching it always costs a station edge — a bike route can never pass through it.</text>
+</svg>

@@ -52,15 +52,21 @@ $$
 
 Climb counts only going up (downhill adds nothing, so the same street is cheaper downhill than up); `tier` is 0 for tarmac and 1 for gravel, and the worst surfaces are excluded outright.
 
-A **train** edge (station to station) is priced completely differently — a train doesn't care about hills, surface, or traffic, so it only pays for distance and the act of boarding:
+A **train** edge (station to station) is priced completely differently — a train doesn't care about hills, surface, or traffic, so it only pays for distance travelled:
 
 $$
-\text{felt\_cost} = \text{length} + p_{\text{boarding}}\cdot 1000 + \text{length\_km}\cdot p_{\text{rail}}\cdot 1000
+\text{felt\_cost} = \text{length} + \text{length\_km}\cdot p_{\text{rail}}\cdot 1000
 $$
 
-The boarding term is charged once, the moment you get on.
+The boarding cost lives on the **station edges** instead (see the graph-model section below): each station edge charges half of $p_{\text{boarding}}$, so getting on plus getting off sums to exactly one boarding.
 
 Once the path is chosen, its **ride time** comes from a speed that falls with the slope: roughly 25 km/h on flat good tarmac, and slower on gravel. Speed is dropping linearly toward walking pace on a steep 12 % climb. Downhill and flat hold the top speed. A train leg instead moves at a fixed 80 km/h, and each boarding adds a flat 30-minute wait. Distance and climb come straight from the real road geometry, so the reported kilometres, minutes, and metres-of-ascent all agree with the drawn track.
+
+## The graph model: bike, station, and rail edges
+
+![Graph model](docs/graph_model.png)
+
+Every node is **exactly one** kind — a cycling node or a rail-station node, never both. A normal bike route therefore only ever traverses **bike edges** (blue) between bike nodes. Each station is a **separate rail node**; the up-to-10 nearest bike nodes inside a 200 m radius are declared its **entrances**, joined to it by **station edges** (orange, each costing straight-line distance + ½ the boarding charge). Stations are linked to their neighbours along the track by **rail edges** (purple). Because a station is its own node reachable only across a station edge, a bike route can never cut *through* a station (in one entrance, out another) for free — passing through costs a full boarding, which naturally deters it. Board + alight together pay exactly one boarding, even if exchanging at a in between rail node into antoher train.
 
 ## Preprocessing, publishing, and auto-download
 
