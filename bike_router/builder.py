@@ -267,19 +267,26 @@ def build_region_graph(
     osm = _open_osm(pbf_path=pbf_path, bbox=bbox)
     graph = _cycling_graph(osm=osm)
     raw_count = graph.number_of_nodes()
-    logger.info("%s: %d raw cycling nodes", pbf_path.name, raw_count)
+    name = pbf_path.name
+    logger.info("%s: [1/8] parsed %d raw cycling nodes", name, raw_count)
     drop_disallowed_edges(graph=graph)
+    logger.info("%s: [2/8] dropped disallowed edges → %d edges", name, graph.number_of_edges())
     graph = contract_interstitial_nodes(graph=graph)
+    logger.info("%s: [3/8] contracted degree-2 nodes → %d nodes", name, graph.number_of_nodes())
     graph = consolidate_graph(graph=graph, tolerance_m=tolerance_m)
+    logger.info("%s: [4/8] consolidated intersections → %d nodes", name, graph.number_of_nodes())
     graph = ox.truncate.largest_component(graph, strongly=True)
+    logger.info("%s: [5/8] largest strongly-connected component → %d nodes", name, graph.number_of_nodes())
     check_simplify_shrunk(nodes_before=raw_count, nodes_after=graph.number_of_nodes())
     _tag_bike_defaults(graph=graph)
     enrich_elevations(graph=graph, dem=dem)
+    logger.info("%s: [6/8] baked node elevations", name)
     n_stations = _add_railway(graph=graph, osm=osm, dem=dem)
+    logger.info("%s: [7/8] wired %d railway stations", name, n_stations)
     bake_edge_geometry_elevations(graph=graph, dem=dem)  # 3D vertices → inference needs no DEM
     logger.info(
-        "%s: %d nodes, %d edges, %d stations",
-        pbf_path.name,
+        "%s: [8/8] done — %d nodes, %d edges, %d stations",
+        name,
         graph.number_of_nodes(),
         graph.number_of_edges(),
         n_stations,
