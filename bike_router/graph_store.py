@@ -178,7 +178,6 @@ def graph_from_tables(nodes_df: pd.DataFrame, edges_df: pd.DataFrame) -> nx.Mult
     the loaded window are dropped (they dangle off the tile set).
     """
     graph = nx.MultiDiGraph(crs="EPSG:4326")
-    names = nodes_df["station_name"].where(nodes_df["station_name"].map(lambda v: isinstance(v, str)), None)
     graph.add_nodes_from(
         (
             int(osmid),
@@ -186,17 +185,22 @@ def graph_from_tables(nodes_df: pd.DataFrame, edges_df: pd.DataFrame) -> nx.Mult
                 "x": float(lon),
                 "y": float(lat),
                 "elevation": float(elev),
-                "is_station": name is not None,
-                "station_name": name,
+                "is_station": isinstance(name, str),
+                "station_name": name if isinstance(name, str) else None,
             },
         )
         for osmid, lat, lon, elev, name in zip(
-            nodes_df["osmid"], nodes_df["lat"], nodes_df["lon"], nodes_df["elevation_m"], names, strict=True
+            nodes_df["osmid"],
+            nodes_df["lat"],
+            nodes_df["lon"],
+            nodes_df["elevation_m"],
+            nodes_df["station_name"],
+            strict=True,
         )
     )
     present = set(graph.nodes)
-    surfaces = edges_df["surface"].where(edges_df["surface"].map(lambda v: isinstance(v, str)), None)
-    highways = edges_df["highway"].where(edges_df["highway"].map(lambda v: isinstance(v, str)), None)
+    surfaces = edges_df["surface"].map(lambda v: v if isinstance(v, str) else None)
+    highways = edges_df["highway"].map(lambda v: v if isinstance(v, str) else None)
     geoms = edges_df["geometry_wkt"].map(lambda w: from_wkt(w) if isinstance(w, str) else None)
     graph.add_edges_from(
         (

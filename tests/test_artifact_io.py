@@ -4,7 +4,7 @@ import pandas as pd
 import pytest
 
 from bike_router import graph_store, pipeline
-from bike_router.builder import _open_osm, _project_fraction, _shift_station_ids
+from bike_router.builder import _open_osm, _shift_station_ids
 
 
 def test_download_graph_skips_when_present(tmp_path):
@@ -51,13 +51,6 @@ def test_open_osm_with_bbox_clips():
 
     osm = _open_osm(pbf_path=pyrosm.get_data("test_pbf"), bbox=(26.9, 60.5, 27.0, 60.6))
     assert osm is not None  # constructed with a bounding box without error
-
-
-def test_project_fraction_orders_by_distance_along_line():
-    line = [(48.0, 8.0), (48.0, 8.01), (48.0, 8.02)]
-    near_start = _project_fraction(line, 48.0, 8.0)
-    near_end = _project_fraction(line, 48.0, 8.02)
-    assert near_end > near_start  # further along the line → larger fraction
 
 
 def test_assert_within_coverage_passes_and_fails(tmp_path):

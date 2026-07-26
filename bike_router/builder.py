@@ -100,26 +100,6 @@ def _rail_lines(osm: OSM) -> list[list[tuple[float, float]]]:
     return lines
 
 
-def _project_fraction(coords: list[tuple[float, float]], lat: float, lon: float) -> float:
-    """Distance (m) along ``coords`` of the vertex nearest to (lat, lon).
-
-    A cheap 1-D ordering key: stations are ordered along a line by how far their
-    nearest line vertex sits from the line start. Good enough to sequence stops.
-    """
-    cum = 0.0
-    best_dist = float("inf")
-    best_at = 0.0
-    for idx, vertex in enumerate(coords):
-        if idx > 0:
-            cum += haversine_distance_m(
-                lat_a=coords[idx - 1][0], lon_a=coords[idx - 1][1], lat_b=vertex[0], lon_b=vertex[1]
-            )
-        d = haversine_distance_m(lat_a=lat, lon_a=lon, lat_b=vertex[0], lon_b=vertex[1])
-        if d < best_dist:
-            best_dist, best_at = d, cum
-    return best_at
-
-
 def _nearest_bike_node(graph: nx.MultiDiGraph, lat: float, lon: float) -> tuple[int, float]:
     """Nearest bike node id + its distance (m) to (lat, lon)."""
     node = int(ox.distance.nearest_nodes(graph, X=lon, Y=lat))
@@ -168,33 +148,72 @@ def _add_railway(graph: nx.MultiDiGraph, osm: OSM, dem: DEMService) -> int:
     return len(station_nodes)
 
 
+def _rail_network(lines: list[list[tuple[float, float]]]) -> nx.Graph:
+    """Undirected graph of the whole rail network: vertices joined where segments meet.
+
+    OSM splits a physical line into thousands of tiny ways; we stitch them by keying
+    each vertex on its rounded (lat, lon) so shared endpoints become one node. Edge
+    weight is the real great-circle segment length in metres.
+    """
+    net: nx.Graph = nx.Graph()
+    for line in lines:
+        for (lat_a, lon_a), (lat_b, lon_b) in zip(line[:-1], line[1:], strict=True):
+            ka = (round(lat_a, 6), round(lon_a, 6))
+            kb = (round(lat_b, 6), round(lon_b, 6))
+            if ka != kb:
+                net.add_edge(ka, kb, length=haversine_distance_m(lat_a=lat_a, lon_a=lon_a, lat_b=lat_b, lon_b=lon_b))
+    return net
+
+
 def _connect_stations_along_lines(
     graph: nx.MultiDiGraph,
     station_nodes: list[tuple[int, str, float, float]],
     lines: list[list[tuple[float, float]]],
 ) -> None:
-    """Add bidirectional rail edges between consecutive stations on each rail line."""
-    for line in lines:
-        # Stations sitting within the transfer radius of any line vertex belong to it.
-        on_line = [
-            (_project_fraction(coords=line, lat=lat, lon=lon), node_id, lat, lon)
-            for node_id, _name, lat, lon in station_nodes
-            if _min_vertex_dist(coords=line, lat=lat, lon=lon) <= RailConfig.STATION_TRANSFER_RADIUS_M
-        ]
-        on_line.sort(key=lambda item: item[0])
-        for (_f_a, a_id, a_lat, a_lon), (_f_b, b_id, b_lat, b_lon) in zip(on_line[:-1], on_line[1:], strict=True):
-            length = haversine_distance_m(lat_a=a_lat, lon_a=a_lon, lat_b=b_lat, lon_b=b_lon)
-            if length <= 0:
+    """Add rail edges between stations ADJACENT along the connected rail network.
+
+    Builds the whole rail network (segments stitched at shared vertices), snaps each
+    station to its nearest rail vertex, then joins two stations iff the shortest rail
+    path between them passes through NO other station vertex — i.e. they are consecutive
+    stops (handles both directions and branches at junctions). Robust to OSM splitting a
+    physical line into thousands of tiny ways.
+    """
+    net = _rail_network(lines=lines)
+    if net.number_of_nodes() == 0:
+        return
+    net_vertices = list(net.nodes)
+    net_lats = np.array([v[0] for v in net_vertices])
+    net_lons = np.array([v[1] for v in net_vertices])
+
+    # Snap each station to its nearest rail vertex (only if close enough to the tracks).
+    vertex_to_station: dict[tuple[float, float], int] = {}
+    snapped: list[tuple[int, tuple[float, float]]] = []
+    for node_id, _name, lat, lon in station_nodes:
+        d2 = (net_lats - lat) ** 2 + ((net_lons - lon) * np.cos(np.radians(lat))) ** 2
+        vertex = net_vertices[int(d2.argmin())]
+        dist = haversine_distance_m(lat_a=lat, lon_a=lon, lat_b=vertex[0], lon_b=vertex[1])
+        if dist <= RailConfig.STATION_TRANSFER_RADIUS_M:
+            vertex_to_station[vertex] = node_id
+            snapped.append((node_id, vertex))
+
+    # Two stations are adjacent iff the shortest rail path between them has no OTHER
+    # station vertex in its interior. Connect ALL such neighbours (deduped by node pair).
+    added: set[tuple[int, int]] = set()
+    for node_id, vertex in snapped:
+        if vertex not in net:
+            continue
+        dists, paths = nx.single_source_dijkstra(net, vertex, weight="length")
+        for other_vertex, other in vertex_to_station.items():
+            if other == node_id or other_vertex not in paths:
                 continue
-            # Bidirectional rail hop. Ride time is derived from length at route time
-            # (build_track), not stored.
-            graph.add_edge(a_id, b_id, length=length, mode=Mode.RAIL)
-            graph.add_edge(b_id, a_id, length=length, mode=Mode.RAIL)
-
-
-def _min_vertex_dist(coords: list[tuple[float, float]], lat: float, lon: float) -> float:
-    """Distance (m) from (lat, lon) to the nearest vertex of a polyline."""
-    return min(haversine_distance_m(lat_a=lat, lon_a=lon, lat_b=v[0], lon_b=v[1]) for v in coords)
+            pair = (min(node_id, other), max(node_id, other))
+            if pair in added or dists[other_vertex] <= 0:
+                continue
+            if any(interior in vertex_to_station for interior in paths[other_vertex][1:-1]):
+                continue  # a closer station sits between them → not consecutive
+            added.add(pair)
+            graph.add_edge(node_id, other, length=dists[other_vertex], mode=Mode.RAIL)
+            graph.add_edge(other, node_id, length=dists[other_vertex], mode=Mode.RAIL)
 
 
 def _tag_bike_edges(graph: nx.MultiDiGraph) -> None:
