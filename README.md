@@ -47,7 +47,7 @@ Routing happens on a graph: junctions are nodes, the roads between them are edge
 For a **bike** edge the felt cost adds up like this, where every term is already in metres so they combine cleanly:
 
 $$
-\text{felt\_cost} = \text{length} + \frac{\text{climb\_m}}{100}\cdot p_{\text{uphill}}\cdot 1000 + \text{length\_km}\cdot p_{\text{unpaved}}\cdot 1000 \cdot \text{tier} + \text{length\_km}_{\text{main}}\cdot p_{\text{mainroad}}\cdot 1000
+\text{felt cost} = \text{length} + \frac{\text{climb m}}{100}\cdot p_{\text{uphill}}\cdot 1000 + \text{length km}\cdot p_{\text{unpaved}}\cdot 1000 \cdot \text{tier} + \text{length km}_{\text{main}}\cdot p_{\text{mainroad}}\cdot 1000
 $$
 
 Climb counts only going up (downhill adds nothing, so the same street is cheaper downhill than up). Surface and road class are handled as tier allowlists, where the **tier number is a literal multiplier** on the per-km penalty:
@@ -63,7 +63,7 @@ For a list-valued tag the **worst (highest) tier wins**. The exact class-to-tier
 A **train** edge (station to station) is priced completely differently — a train doesn't care about hills, surface, or traffic, so it only pays for distance travelled:
 
 $$
-\text{felt\_cost} = \text{length} + \text{length\_km}\cdot p_{\text{rail}}\cdot 1000
+\text{felt cost} = \text{length} + \text{length km}\cdot p_{\text{rail}}\cdot 1000
 $$
 
 The boarding cost lives on the **station edges** instead (see the graph-model section below): each station edge charges half of $p_{\text{boarding}}$, so getting on plus getting off sums to exactly one boarding.
