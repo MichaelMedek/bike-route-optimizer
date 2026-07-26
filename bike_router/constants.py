@@ -146,12 +146,13 @@ BAD_COLOR = "#c62828"  # red
 
 
 class SurfaceConfig:
-    """Surface → penalty TIER (0 = good/paved, 1 = moderate/kept-but-penalised).
+    """Surface → penalty TIER (0 = paved/good, 1 = loose/moderate, 2 = rough/natural).
 
-    ALLOWLIST: only the categories listed here enter the graph. Any OTHER named
-    surface (sand/dirt/grass/…) is dropped at build time; a missing/untagged surface
-    is assumed DEFAULT_TIER (moderate) and kept. Tier 0 rides free; tier 1 adds
-    --extra_km_per_unpaved_km once.
+    ALLOWLIST: only the categories listed here enter the graph. Any OTHER named surface
+    (mud/sand/rock/impassable/…) is dropped at build time; a missing/untagged surface is
+    assumed DEFAULT_TIER and kept. The tier is a literal multiplier on the unpaved penalty:
+    tier 0 rides free, tier 1 adds --extra_km_per_unpaved_km once, tier 2 doubles it (natural
+    ground/dirt/grass — rideable but rough, per the OSM surface wiki).
     """
 
     SURFACE_TIER = {
@@ -170,7 +171,7 @@ class SurfaceConfig:
         "bricks": 0,
         "wood": 0,
         "metal": 0,
-        # tier 1 — moderate / compacted-loose (penalty ×1, kept, colored red)
+        # tier 1 — loose / compacted-gravel (penalty ×1, colored red)
         "compacted": 1,
         "fine_gravel": 1,
         "gravel": 1,
@@ -180,11 +181,21 @@ class SurfaceConfig:
         "stone": 1,
         "metal_grid": 1,
         "shells": 1,
+        # tier 2 — natural / rough but rideable (penalty ×2 — the tier IS the multiplier)
+        "ground": 2,
+        "dirt": 2,
+        "earth": 2,
+        "grass": 2,
+        "woodchips": 2,
     }
-    # Untagged surface (~37% of ways) → assume moderate (kept, penalised).
+    # Untagged surface (~35% of raw ways) → assume tier 1 (loose, pessimistic but rideable).
     DEFAULT_TIER = 1
-    # Per-tier human label + swatch: only tier 0 (paved) is good/green, tier 1 bad/red.
-    TIER_LABEL_COLORS = {0: ("paved", GOOD_COLOR), 1: ("gravel/unpaved", BAD_COLOR)}
+    # Per-tier human label + swatch: tier 0 (paved) green; tiers 1 & 2 (unpaved) red.
+    TIER_LABEL_COLORS = {
+        0: ("paved", GOOD_COLOR),
+        1: ("gravel/unpaved", BAD_COLOR),
+        2: ("natural/rough", BAD_COLOR),
+    }
 
 
 class RoadConfig:
@@ -324,7 +335,7 @@ class SpeedConfig:
     per edge, treating each edge as a single linear grade.
     """
 
-    BASE_KMH_BY_TIER = {0: 25.0, 1: 20.0}  # good / moderate surface
+    BASE_KMH_BY_TIER = {0: 25.0, 1: 20.0, 2: 15.0}  # paved / loose / natural-rough surface
     WALK_KMH = 5.0  # speed at WALK_GRADE and steeper (pushing the bike)
     WALK_GRADE = 0.12  # rise/run at which the rider drops to walking pace
 
@@ -345,6 +356,8 @@ class PlotConfig:
     CMAP = "plasma"
     DPI = 200
     ROUTE_ZOOM_MARGIN = 0.08  # pad the debug plot's route bounds by this fraction of the span
+    FIGSIZE = (9.0, 11.0)  # one portrait page: map on top, stats panel below
+    MAP_STATS_RATIO = 4.0  # map height : stats-panel height
 
 
 class NominatimConfig:
@@ -435,13 +448,20 @@ class WebMapConfig:
 
 # --- Load-time invariants: fail loud on a bad edit ---------------------------
 assert SurfaceConfig.SURFACE_TIER, "SURFACE_TIER must not be empty"
-assert set(SurfaceConfig.SURFACE_TIER.values()) <= {0, 1}, "surface tiers must be 0 or 1"
-assert SurfaceConfig.DEFAULT_TIER in {0, 1}, "surface DEFAULT_TIER must be 0 or 1"
+assert set(SurfaceConfig.SURFACE_TIER.values()) <= {0, 1, 2}, "surface tiers must be 0, 1, or 2"
+assert SurfaceConfig.DEFAULT_TIER in set(SurfaceConfig.SURFACE_TIER.values()), (
+    "surface DEFAULT_TIER must be a real tier"
+)
 assert RoadConfig.ROAD_TIER, "ROAD_TIER must not be empty"
 assert set(RoadConfig.ROAD_TIER.values()) <= {0, 1}, "road tiers must be 0 or 1"
 assert RoadConfig.DEFAULT_TIER in {0, 1}, "road DEFAULT_TIER must be 0 or 1"
-assert set(SurfaceConfig.TIER_LABEL_COLORS) == {0, 1}, "surface labels must cover tiers 0 and 1"
-assert set(RoadConfig.TIER_LABEL_COLORS) == {0, 1}, "road labels must cover tiers 0 and 1"
+# labels + speeds must cover EVERY surface tier that exists (single source: the tier map)
+assert set(SurfaceConfig.TIER_LABEL_COLORS) == set(SurfaceConfig.SURFACE_TIER.values()), (
+    "surface labels must cover exactly the surface tiers in use"
+)
+assert set(RoadConfig.TIER_LABEL_COLORS) == set(RoadConfig.ROAD_TIER.values()), (
+    "road labels must cover exactly the road tiers in use"
+)
 assert GmapsConfig.N_WAYPOINTS >= 2, "need at least origin + destination"
 assert RoutingDefaults.MAX_EXTRA_KM > 0, "MAX_EXTRA_KM must be positive"
 assert PARAM_SPECS, "PARAM_SPECS must not be empty"
@@ -451,7 +471,9 @@ assert all(0 <= spec.default <= RoutingDefaults.MAX_EXTRA_KM for spec in PARAM_S
 assert {spec.field for spec in PARAM_SPECS} == set(RoutingParams.__dataclass_fields__), (
     "PARAM_SPECS fields must match RoutingParams attributes exactly"
 )
-assert set(SpeedConfig.BASE_KMH_BY_TIER) == {0, 1}, "need a base speed for every surface tier"
+assert set(SpeedConfig.BASE_KMH_BY_TIER) == set(SurfaceConfig.SURFACE_TIER.values()), (
+    "need a base speed for every surface tier in use"
+)
 assert all(speed > SpeedConfig.WALK_KMH for speed in SpeedConfig.BASE_KMH_BY_TIER.values()), "base speeds > walk"
 assert SpeedConfig.WALK_GRADE > 0, "WALK_GRADE must be a positive uphill grade"
 assert 0 < CorridorConfig.MIN_TRIP_KM < CorridorConfig.MAX_TRIP_KM, "trip bounds must be 0 < min < max"

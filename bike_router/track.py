@@ -173,7 +173,7 @@ def densify_track(graph: nx.MultiDiGraph, node_path: list[int], track: Track) ->
         # Condition + speed are per-edge; the arriving point (index+1) carries the leg's.
         leg_bad = track.points[index + 1].is_bad
         leg_speed = track.points[index + 1].speed_kmh
-        verts = _edge_vertices_3d(graph=graph, node_a=node_a, node_b=node_b, data=data)
+        verts = edge_vertices_3d(graph=graph, node_a=node_a, node_b=node_b, data=data)
         t_start, t_end = track.points[index].elapsed_s, track.points[index + 1].elapsed_s
         seg_lengths = [
             haversine_distance_m(lat_a=verts[i][1], lon_a=verts[i][0], lat_b=verts[i + 1][1], lon_b=verts[i + 1][0])
@@ -209,7 +209,7 @@ def densify_track(graph: nx.MultiDiGraph, node_path: list[int], track: Track) ->
     )
 
 
-def _edge_vertices_3d(
+def edge_vertices_3d(
     graph: nx.MultiDiGraph, node_a: int, node_b: int, data: dict[str, Any]
 ) -> list[tuple[float, float, float]]:
     """(lon, lat, elev) vertices of edge a→b from its baked 3D geometry.

@@ -68,6 +68,7 @@ def _station_points(osm: OSM) -> list[tuple[str, float, float]]:
     stations = osm.get_data_by_custom_criteria(
         custom_filter={"railway": list(RailConfig.STATION_TAGS)},
         filter_type="keep",
+        tags_as_columns=["name"],  # promote the OSM name tag to a column
         keep_nodes=True,
         keep_ways=True,
         keep_relations=False,

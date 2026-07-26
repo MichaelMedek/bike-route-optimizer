@@ -17,7 +17,7 @@ def effective_speed_kmh(surface_tier: int, grade: float) -> float:
     """Ride speed (km/h) for a surface tier and linear grade.
 
     Args:
-        surface_tier: 0 good / 1 moderate (see SurfaceConfig).
+        surface_tier: 0 paved / 1 loose / 2 natural-rough (see SurfaceConfig).
         grade: rise/run fraction over the edge (<= 0 = flat/downhill).
     """
     assert surface_tier in SpeedConfig.BASE_KMH_BY_TIER, "unknown surface tier"

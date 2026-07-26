@@ -61,7 +61,7 @@ def tag_tier(tag: object, tier_map: dict[str, int], default_tier: int) -> int:
     """
     tiers = [tier_map[value] for value in _as_values(tag=tag) if value in tier_map]
     tier = max(tiers) if tiers else default_tier
-    assert tier in {0, 1}, "tier must be 0 or 1"
+    assert tier in {0, 1, 2}, "tier must be 0, 1, or 2"
     return tier
 
 

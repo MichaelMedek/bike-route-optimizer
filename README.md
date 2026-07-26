@@ -50,11 +50,12 @@ $$
 \text{felt\_cost} = \text{length} + \frac{\text{climb\_m}}{100}\cdot p_{\text{uphill}}\cdot 1000 + \text{length\_km}\cdot p_{\text{unpaved}}\cdot 1000 \cdot \text{tier} + \text{length\_km}_{\text{main}}\cdot p_{\text{mainroad}}\cdot 1000
 $$
 
-Climb counts only going up (downhill adds nothing, so the same street is cheaper downhill than up). Surface and road class are handled **symmetrically**, each as a 0/1 tier allowlist:
+Climb counts only going up (downhill adds nothing, so the same street is cheaper downhill than up). Surface and road class are handled as tier allowlists, where the **tier number is a literal multiplier** on the per-km penalty:
 
 - **Tier 0** is the free, preferred kind — smooth paved surfaces and quiet bike-friendly ways.
-- **Tier 1** still rides but adds a per-km penalty — loose/unpaved surfaces and busy main roads.
-- Anything **not listed** in the allowlist (impassable surfaces, motor-only highways) is **excluded** from the graph at build time, so no route can use it.
+- **Tier 1** rides but adds the penalty once — loose/gravel surfaces and busy main roads.
+- **Tier 2** (surface only) adds *double* the penalty — natural/rough-but-rideable ground (dirt, grass, …).
+- Anything **not listed** (genuinely impassable surfaces like mud/sand/rock, motor-only highways) is **excluded** from the graph at build time, so no route can use it.
 - A **missing/untagged** value is assumed tier 1 (pessimistic — kept but penalised).
 
 For a list-valued tag the **worst (highest) tier wins**. The exact class-to-tier mapping lives in the config, not here, so it never drifts from the code.

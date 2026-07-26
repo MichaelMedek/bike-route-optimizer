@@ -7,8 +7,9 @@ from bike_router.speed import effective_speed_kmh
 
 
 def test_flat_uses_surface_base_speed():
-    assert effective_speed_kmh(surface_tier=0, grade=0.0) == 25.0
-    assert effective_speed_kmh(surface_tier=1, grade=0.0) == 20.0
+    assert effective_speed_kmh(surface_tier=0, grade=0.0) == 25.0  # paved
+    assert effective_speed_kmh(surface_tier=1, grade=0.0) == 20.0  # loose
+    assert effective_speed_kmh(surface_tier=2, grade=0.0) == 15.0  # natural-rough
 
 
 def test_downhill_holds_base_speed():

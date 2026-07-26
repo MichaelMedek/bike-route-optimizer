@@ -36,19 +36,24 @@ def test_as_values_normalizes_types():
 def test_surface_tier_mapping_and_worst_wins():
     assert surface_tier(surface="asphalt") == 0
     assert surface_tier(surface="concrete:plates") == 0  # paved variant → good
-    assert surface_tier(surface="gravel") == 1
-    assert surface_tier(surface=["asphalt", "gravel"]) == 1  # worst wins
-    assert surface_tier(surface="spacedust") == 1  # unknown → DEFAULT_TIER (moderate)
+    assert surface_tier(surface="gravel") == 1  # loose
+    assert surface_tier(surface="ground") == 2  # natural/rough but rideable
+    assert surface_tier(surface="dirt") == 2
+    assert surface_tier(surface=["asphalt", "gravel"]) == 1  # worst wins (0 vs 1 → 1)
+    assert surface_tier(surface=["gravel", "ground"]) == 2  # worst wins (1 vs 2 → 2)
+    assert surface_tier(surface="spacedust") == 1  # unknown → DEFAULT_TIER (loose)
     assert surface_tier(surface=None) == 1
 
 
 def test_surface_included_allowlist():
-    assert surface_included(surface="asphalt") is True  # allowlisted good
-    assert surface_included(surface="gravel") is True  # allowlisted moderate
+    assert surface_included(surface="asphalt") is True  # allowlisted paved (tier 0)
+    assert surface_included(surface="gravel") is True  # allowlisted loose (tier 1)
+    assert surface_included(surface="ground") is True  # allowlisted natural-rough (tier 2)
+    assert surface_included(surface="dirt") is True  # tier 2 — kept, not dropped
     assert surface_included(surface=None) is True  # untagged → kept as DEFAULT_TIER
-    assert surface_included(surface="sand") is False  # not in allowlist → excluded
-    assert surface_included(surface="dirt") is False
-    assert surface_included(surface="gravel;dirt") is False  # any disallowed value → excluded
+    assert surface_included(surface="sand") is False  # genuinely impassable → excluded
+    assert surface_included(surface="mud") is False
+    assert surface_included(surface="gravel;mud") is False  # any disallowed value → excluded
 
 
 def test_road_tier_mapping_and_worst_wins():
@@ -138,6 +143,32 @@ def test_unpaved_penalty_scales_with_tier():
     )
     assert paved == 1000.0  # tier 0 adds nothing
     assert moderate == pytest.approx(1000.0 + 1000.0)
+
+
+def test_unpaved_tier2_doubles_the_penalty():
+    # A natural/rough surface (tier 2) adds TWICE the tier-1 penalty — the tier is a
+    # literal multiplier. 1 km, 1 extra km/km: tier 1 → +1000 m, tier 2 → +2000 m.
+    params = _bike_params(unpaved=1.0)
+    loose = edge_cost(
+        mode=Mode.BIKE,
+        length=1000.0,
+        surface="gravel",
+        highway="residential",
+        elev_source=0.0,
+        elev_target=0.0,
+        params=params,
+    )
+    rough = edge_cost(
+        mode=Mode.BIKE,
+        length=1000.0,
+        surface="ground",
+        highway="residential",
+        elev_source=0.0,
+        elev_target=0.0,
+        params=params,
+    )
+    assert loose == pytest.approx(1000.0 + 1000.0)  # tier 1 → ×1
+    assert rough == pytest.approx(1000.0 + 2000.0)  # tier 2 → ×2 (doubled)
 
 
 def test_main_road_penalty():
