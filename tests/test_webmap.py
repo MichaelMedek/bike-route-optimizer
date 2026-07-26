@@ -10,7 +10,7 @@ import math
 import pydeck as pdk
 import pytest
 
-from bike_router.constants import Mode, WebMapConfig
+from bike_router.constants import Mode, Palette, WebMapConfig
 from bike_router.routing import shortest_route
 from bike_router.track import build_track
 from bike_router.webmap import (
@@ -24,11 +24,15 @@ from bike_router.webmap import (
 from bike_router.webmap_layers import (
     build_deck,
     create_endpoint_layer,
-    create_rail_baseline_layer,
     create_route_ribbon_layers,
     create_terrain_layer,
 )
 from tests.conftest import make_line_graph
+
+
+def _rgb(hex_color: str) -> list[int]:
+    """Palette hex → RGB list, for comparing against segment_color output."""
+    return list(Palette.hex_to_rgb(hex_color=hex_color))
 
 
 def _line_track():
@@ -38,12 +42,21 @@ def _line_track():
     return build_track(graph=graph, node_path=node_path)
 
 
-def test_segment_color_condition_and_rail():
-    """Rail → purple; pedalled good → green; pedalled bad → red."""
-    assert segment_color(mode=str(Mode.RAIL), is_bad=False) == list(WebMapConfig.RAIL_COLOR)
-    assert segment_color(mode=str(Mode.RAIL), is_bad=True) == list(WebMapConfig.RAIL_COLOR)  # rail ignores condition
-    assert segment_color(mode=str(Mode.BIKE), is_bad=False) == list(WebMapConfig.GOOD_RGB)
-    assert segment_color(mode=str(Mode.BIKE), is_bad=True) == list(WebMapConfig.BAD_RGB)
+def test_segment_color_distinguishes_surface_road_and_both():
+    """Rail → purple; good → green; bad surface / bad road / both → three distinct reds."""
+    assert segment_color(mode=str(Mode.RAIL), surface_bad=False, road_bad=False) == _rgb(Palette.RAIL)
+    assert segment_color(mode=str(Mode.RAIL), surface_bad=True, road_bad=True) == _rgb(Palette.RAIL)  # rail ignores
+    assert segment_color(mode=str(Mode.BIKE), surface_bad=False, road_bad=False) == _rgb(Palette.GOOD)
+    assert segment_color(mode=str(Mode.BIKE), surface_bad=True, road_bad=False) == _rgb(Palette.BAD_SURFACE)
+    assert segment_color(mode=str(Mode.BIKE), surface_bad=False, road_bad=True) == _rgb(Palette.BAD_ROAD)
+    assert segment_color(mode=str(Mode.BIKE), surface_bad=True, road_bad=True) == _rgb(Palette.BAD_BOTH)
+    # the four pedalled reds/greens are all distinct so conditions are tellable apart
+    distinct = {
+        tuple(segment_color(mode=str(Mode.BIKE), surface_bad=s, road_bad=r))
+        for s in (False, True)
+        for r in (False, True)
+    }
+    assert len(distinct) == 4
 
 
 def test_route_ribbon_segments_green_lifted_and_width_from_speed():
@@ -53,7 +66,7 @@ def test_route_ribbon_segments_green_lifted_and_width_from_speed():
 
     assert segments, "expected at least one run"
     for color, width, points in segments:
-        assert color == list(WebMapConfig.GOOD_RGB)  # good surface + quiet road → green
+        assert color == _rgb(Palette.GOOD)  # good surface + quiet road → green
         assert width > 0
         for lon, lat, _z in points:
             assert math.isfinite(lon) and math.isfinite(lat)
@@ -110,7 +123,7 @@ def test_layer_builders_return_expected_pydeck_layers():
     assert terrain.type == "TerrainLayer" and terrain.id == "terrain_3d"
 
     segments = [
-        (list(WebMapConfig.GOOD_RGB), 20.0, [[8.0, 48.0, 1100.0], [8.01, 48.0, 1100.0]]),
+        (_rgb(Palette.GOOD), 20.0, [[8.0, 48.0, 1100.0], [8.01, 48.0, 1100.0]]),
         (list(WebMapConfig.RAIL_COLOR), 80.0, [[8.01, 48.0, 1100.0], [8.02, 48.0, 1100.0]]),
     ]
     ribbons = create_route_ribbon_layers(segments=segments)
@@ -143,30 +156,8 @@ def test_build_deck_layer_count_and_camera():
 
     # Endpoints + a two-run route → terrain + markers + one ribbon layer per run.
     two_run = [
-        (list(WebMapConfig.GOOD_RGB), 20.0, [[8.0, 48.0, 1100.0], [8.01, 48.0, 1100.0]]),
+        (_rgb(Palette.GOOD), 20.0, [[8.0, 48.0, 1100.0], [8.01, 48.0, 1100.0]]),
         (list(WebMapConfig.RAIL_COLOR), 80.0, [[8.01, 48.0, 1100.0], [8.02, 48.0, 1100.0]]),
     ]
     deck_full = build_deck(view=view, ribbon_segments=two_run, endpoints=((48.0, 8.0, 300.0), (48.4, 8.6, 500.0)))
     assert len(deck_full.layers) == 4  # terrain + markers + 2 ribbon runs
-
-
-def test_rail_baseline_layer_is_thin_purple_pathlayer():
-    paths = [[[8.0, 48.0, 120.0], [8.1, 48.0, 130.0]]]
-    layer = create_rail_baseline_layer(paths=paths)
-    assert layer.type == "PathLayer" and layer.id == "rail_baseline"
-    assert layer.get_color == list(WebMapConfig.RAIL_COLOR)  # purple, matching trains
-    assert layer.width_min_pixels == WebMapConfig.RAIL_BASELINE_MIN_PIXELS  # stays visible when zoomed out
-
-
-def test_build_deck_draws_rail_baseline_below_the_ribbon():
-    """Rail baseline sits right after terrain and before the route ribbon (drawn under it)."""
-    view = default_view_state()
-    baseline = [[[8.0, 48.0, 120.0], [8.1, 48.0, 130.0]]]
-    ribbon = [(list(WebMapConfig.GOOD_RGB), 20.0, [[8.0, 48.0, 1100.0], [8.01, 48.0, 1100.0]])]
-    deck = build_deck(view=view, ribbon_segments=ribbon, rail_baseline=baseline)
-    ids = [layer.id for layer in deck.layers]
-    assert ids == ["terrain_3d", "rail_baseline", "route_ribbon_0"]  # baseline under the ribbon
-
-    # Empty baseline adds no layer (nothing to draw).
-    deck_empty = build_deck(view=view, ribbon_segments=None, rail_baseline=[])
-    assert [layer.id for layer in deck_empty.layers] == ["terrain_3d"]

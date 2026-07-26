@@ -52,7 +52,7 @@ def test_drop_disallowed_edges_surface_and_highway_allowlist():
 
 
 def test_contract_interstitial_nodes_removes_passthrough_keeps_length():
-    result = contract_interstitial_nodes(make_contract_chain_graph())
+    result = contract_interstitial_nodes(graph=make_contract_chain_graph())
     assert 2 not in result  # interstitial node removed
     assert 1 in result and 3 in result
     assert min(d["length"] for d in result.get_edge_data(1, 3).values()) == 250.0  # summed run

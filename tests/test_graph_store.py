@@ -6,6 +6,7 @@ from shapely.geometry import box
 
 from bike_router import graph_store
 from bike_router.constants import Mode, NodeType
+from bike_router.errors import OutOfCoverageError
 from bike_router.graph_store import (
     _covering_tiles,
     _scalar,
@@ -13,7 +14,6 @@ from bike_router.graph_store import (
     graph_to_tables,
     load_corridor_graph,
     load_meta,
-    load_rail_baseline,
     snap_to_node,
     write_graph_parquet,
 )
@@ -21,15 +21,15 @@ from tests.conftest import FIXTURE_GRAPH_DIR, make_store_roundtrip_graph
 
 
 def test_scalar_collapses_lists():
-    assert _scalar(["asphalt", "gravel"]) == "asphalt"
-    assert _scalar([]) is None
-    assert _scalar("paved") == "paved"
-    assert _scalar(None) is None
+    assert _scalar(value=["asphalt", "gravel"]) == "asphalt"
+    assert _scalar(value=[]) is None
+    assert _scalar(value="paved") == "paved"
+    assert _scalar(value=None) is None
 
 
 def test_graph_to_tables_and_back_roundtrip():
     graph = make_store_roundtrip_graph()
-    nodes_df, edges_df = graph_to_tables(graph)
+    nodes_df, edges_df = graph_to_tables(graph=graph)
     assert list(nodes_df.columns) == graph_store._NODE_COLS
     assert list(edges_df.columns) == graph_store._EDGE_COLS
     # height_diff derived from node elevations (rail -1 100 → -2 130 = +30)
@@ -163,7 +163,7 @@ def test_covering_tiles_grows_by_margin():
 
 def test_write_then_load_corridor_roundtrip(tmp_path):
     graph = make_store_roundtrip_graph()
-    nodes_df, edges_df = graph_to_tables(graph)
+    nodes_df, edges_df = graph_to_tables(graph=graph)
     meta = {"bbox": [7.9, 47.9, 8.2, 48.1], "tile_deg": 0.5, "tolerance_m": 25.0}
     write_graph_parquet(nodes_df=nodes_df, edges_df=edges_df, meta=meta, out_dir=tmp_path)
     assert (tmp_path / "meta.json").exists()
@@ -179,7 +179,7 @@ def test_write_then_load_corridor_roundtrip(tmp_path):
 
 def test_load_corridor_outside_coverage_raises(tmp_path):
     graph = make_store_roundtrip_graph()
-    nodes_df, edges_df = graph_to_tables(graph)
+    nodes_df, edges_df = graph_to_tables(graph=graph)
     meta = {"bbox": [7.9, 47.9, 8.2, 48.1], "tile_deg": 0.5, "tolerance_m": 25.0}
     write_graph_parquet(nodes_df=nodes_df, edges_df=edges_df, meta=meta, out_dir=tmp_path)
     far = box(20.0, 60.0, 20.1, 60.1)  # no tiles there
@@ -194,18 +194,8 @@ def test_snap_to_node_returns_nearest_node_with_elevation():
     assert elev > 0  # baked elevation, no DEM involved
 
 
-def test_load_rail_baseline_returns_lifted_3d_polylines():
-    # All rail lines as [[lon, lat, z], ...], each vertex lifted above the baked terrain.
-    lift = 20.0
-    paths = load_rail_baseline(graph_dir=FIXTURE_GRAPH_DIR, float_above_m=lift)
-    assert paths, "fixture has rail edges"
-    assert all(len(vertex) == 3 for path in paths for vertex in path)  # (lon, lat, z)
-    # Same edge without the lift → every z is exactly `lift` lower (offset applied uniformly).
-    flat = load_rail_baseline(graph_dir=FIXTURE_GRAPH_DIR, float_above_m=0.0)
-    assert paths[0][0][2] == pytest.approx(flat[0][0][2] + lift)
-
-
-def test_load_rail_baseline_empty_dir_returns_empty(tmp_path):
-    # No edge tiles on disk (e.g. artifact not downloaded yet) → no rail lines, no crash.
-    (tmp_path / "edges").mkdir()
-    assert load_rail_baseline(graph_dir=tmp_path) == []
+def test_snap_to_node_outside_coverage_raises_user_facing_error():
+    # A point far outside the fixture (Berlin) fails loud with a HANDLED user-facing error,
+    # not a bare AssertionError — so the web app shows a toast instead of a traceback.
+    with pytest.raises(OutOfCoverageError, match="outside the covered region"):
+        snap_to_node(lat=52.52, lon=13.40, graph_dir=FIXTURE_GRAPH_DIR)

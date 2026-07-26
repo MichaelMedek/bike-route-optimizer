@@ -217,8 +217,6 @@ def _connect_stations_along_lines(
     station_coord = {node_id: (lat, lon) for node_id, _name, lat, lon in station_nodes}
     added: set[tuple[int, int]] = set()
     for node_id, vertex in snapped:
-        if vertex not in net:
-            continue
         dists, paths = nx.single_source_dijkstra(net, vertex, weight="length")
         for other_vertex, other in vertex_to_station.items():
             if other == node_id or other_vertex not in paths:

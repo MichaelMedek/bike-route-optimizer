@@ -26,26 +26,6 @@ def create_terrain_layer(mesh_max_error: float = 1.0) -> pdk.Layer:
     )
 
 
-def create_rail_baseline_layer(paths: list[list[list[float]]]) -> pdk.Layer:
-    """Thin purple PathLayer of ALL rail lines — always-on context, below the ribbon.
-
-    Args:
-        paths: ``[[lon, lat, z], ...]`` polylines from webmap.rail_baseline_paths (z lifted).
-    """
-    return pdk.Layer(
-        "PathLayer",
-        [{"path": path} for path in paths],
-        get_path="path",
-        get_color=list(WebMapConfig.RAIL_COLOR),
-        get_width=WebMapConfig.RAIL_BASELINE_WIDTH_M,
-        width_min_pixels=WebMapConfig.RAIL_BASELINE_MIN_PIXELS,
-        cap_rounded=True,
-        joint_rounded=True,
-        id="rail_baseline",
-        pickable=False,
-    )
-
-
 def create_route_ribbon_layers(segments: list[tuple[list[int], float, list[list[float]]]]) -> list[pdk.Layer]:
     """One PathLayer per contiguous run, in its condition colour and speed-scaled width.
 
@@ -104,12 +84,9 @@ def build_deck(
     view: ViewState,
     ribbon_segments: list[tuple[list[int], float, list[list[float]]]] | None,
     endpoints: tuple[tuple[float, float, float], tuple[float, float, float]] | None = None,
-    rail_baseline: list[list[list[float]]] | None = None,
 ) -> pdk.Deck:
-    """Assemble the Deck bottom→top: terrain, rail baseline, endpoints, then the route ribbon."""
+    """Assemble the Deck bottom→top: terrain, endpoints, then the route ribbon."""
     layers = [create_terrain_layer()]
-    if rail_baseline:  # always-on rail context, drawn BELOW the route ribbon
-        layers.append(create_rail_baseline_layer(paths=rail_baseline))
     if endpoints is not None:
         layers.append(create_endpoint_layer(start=endpoints[0], end=endpoints[1]))
     if ribbon_segments is not None:

@@ -11,9 +11,10 @@ from pathlib import Path
 import pytest
 
 from bike_router import pipeline
-from bike_router.constants import PARAM_SPECS, Mode, RoutingParams
+from bike_router.constants import Mode
 from bike_router.errors import OutOfCoverageError
-from tests.conftest import FIXTURE_GRAPH_DIR
+from bike_router.simplify import _UNNAMED_STOP
+from tests.conftest import FIXTURE_GRAPH_DIR, params
 
 # Two real points inside the fixture coverage (Schwarzwald, ~18 km apart, net downhill).
 _SOUTH = (48.4503, 8.4608)
@@ -21,12 +22,6 @@ _NORTH = (48.5601, 8.3981)
 # Baiersbronn → Freudenstadt: both inside the fixture, on the same rail line ~7 km apart.
 _BAIERSBRONN = (48.5057, 8.3703)
 _FREUDENSTADT = (48.4634, 8.4111)
-
-
-def _params(**overrides: float) -> RoutingParams:
-    values = {spec.field: spec.default for spec in PARAM_SPECS}
-    values.update(overrides)
-    return RoutingParams(**values)
 
 
 def _stub_geocode(monkeypatch, start: tuple[float, float], end: tuple[float, float]) -> None:
@@ -38,18 +33,18 @@ def _stub_geocode(monkeypatch, start: tuple[float, float], end: tuple[float, flo
 
 
 def _plan(monkeypatch, tmp_path, start, end, **overrides):
-    _stub_geocode(monkeypatch, start, end)
+    _stub_geocode(monkeypatch=monkeypatch, start=start, end=end)
     monkeypatch.setattr(
-        pipeline, "route_output_paths", lambda origin, destination: (tmp_path / "r.gpx", tmp_path / "r.png")
+        pipeline, "route_output_paths", lambda origin, destination, params: (tmp_path / "r.gpx", tmp_path / "r.png")
     )
     return pipeline.plan_route(
-        origin="Start", destination="End", params=_params(**overrides), graph_dir=FIXTURE_GRAPH_DIR
+        origin="Start", destination="End", params=params(**overrides), graph_dir=FIXTURE_GRAPH_DIR
     )
 
 
 def test_e2e_real_route_produced_from_fixture(tmp_path: Path, monkeypatch):
     """Full pipeline on the real fixture yields a plausible bike route + real artifacts."""
-    result = _plan(monkeypatch, tmp_path, _SOUTH, _NORTH)
+    result = _plan(monkeypatch=monkeypatch, tmp_path=tmp_path, start=_SOUTH, end=_NORTH)
     track = result.track
 
     # Real GPX + PNG written to the temp folder.
@@ -68,13 +63,13 @@ def test_e2e_real_route_produced_from_fixture(tmp_path: Path, monkeypatch):
 
     # Composition covers the pedalled distance by surface + road class: the surface
     # tally sums to exactly the bike-mode km (rail/station legs carry no surface).
-    assert sum(result.composition.by_surface_km.values()) == pytest.approx(result.composition.by_mode_km["bike"])
+    assert sum(result.composition.by_surface_km.values()) == pytest.approx(result.composition.by_mode_km[Mode.BIKE])
     assert result.composition.by_mode_km  # at least the bike mode present
 
 
 def test_e2e_flat_hater_still_routes(tmp_path: Path, monkeypatch):
     """A high uphill penalty must still produce a valid (longer/flatter) route."""
-    result = _plan(monkeypatch, tmp_path, _SOUTH, _NORTH, extra_km_per_uphill_100m=50.0)
+    result = _plan(monkeypatch=monkeypatch, tmp_path=tmp_path, start=_SOUTH, end=_NORTH, extra_km_per_uphill_100m=50.0)
     assert result.track.total.distance_km > 0
     assert result.gpx_path.exists()
 
@@ -99,10 +94,15 @@ def test_e2e_baiersbronn_to_freudenstadt_takes_one_train_and_two_bike_legs(tmp_p
     contiguous rail ride bracketed by two pedalled legs — so bike_legs has exactly 2 entries.
     """
     result = _plan(
-        monkeypatch, tmp_path, _BAIERSBRONN, _FREUDENSTADT, extra_km_per_boarding=0.2, extra_km_per_rail_km=0.05
+        monkeypatch=monkeypatch,
+        tmp_path=tmp_path,
+        start=_BAIERSBRONN,
+        end=_FREUDENSTADT,
+        extra_km_per_boarding=0.2,
+        extra_km_per_rail_km=0.05,
     )
     # Exactly one train ride, and rail km actually accumulated.
-    assert _rail_ride_count(result.track) == 1
+    assert _rail_ride_count(track=result.track) == 1
     assert result.composition.by_mode_km[Mode.RAIL] > 0
     # Two pedalled legs (one before boarding, one after alighting) → two bike-only Maps URLs.
     assert len(result.bike_legs) == 2
@@ -111,8 +111,8 @@ def test_e2e_baiersbronn_to_freudenstadt_takes_one_train_and_two_bike_legs(tmp_p
     # and the inner ends are the train's boarding / alighting stations (from the one rail leg).
     assert result.bike_legs[0].from_place == "Start"  # _plan stubs origin="Start"
     assert result.bike_legs[1].to_place == "End"  # destination="End"
-    assert result.bike_legs[0].to_place == (result.rail_legs[0].board or "(unnamed stop)")
-    assert result.bike_legs[1].from_place == (result.rail_legs[0].alight or "(unnamed stop)")
+    assert result.bike_legs[0].to_place == (result.rail_legs[0].board or _UNNAMED_STOP)
+    assert result.bike_legs[1].from_place == (result.rail_legs[0].alight or _UNNAMED_STOP)
     # Station-access hops appear (board + alight), but they are short (≤ radius each).
     assert result.composition.by_mode_km[Mode.STATION] > 0
 
@@ -124,12 +124,12 @@ def test_e2e_default_sliders_take_train_uphill_but_bike_downhill(tmp_path: Path,
     the default penalties make the train worth it uphill. The reverse is all descent (no uphill
     penalty), so biking wins — no train, no station km. This is the core mode-choice contract.
     """
-    uphill = _plan(monkeypatch, tmp_path, _BAIERSBRONN, _FREUDENSTADT)
-    assert _rail_ride_count(uphill.track) == 1  # steep climb → board the train
+    uphill = _plan(monkeypatch=monkeypatch, tmp_path=tmp_path, start=_BAIERSBRONN, end=_FREUDENSTADT)
+    assert _rail_ride_count(track=uphill.track) == 1  # steep climb → board the train
     assert uphill.composition.by_mode_km[Mode.RAIL] > 0
 
-    downhill = _plan(monkeypatch, tmp_path, _FREUDENSTADT, _BAIERSBRONN)
-    assert _rail_ride_count(downhill.track) == 0  # descent is easy → stay on the bike
+    downhill = _plan(monkeypatch=monkeypatch, tmp_path=tmp_path, start=_FREUDENSTADT, end=_BAIERSBRONN)
+    assert _rail_ride_count(track=downhill.track) == 0  # descent is easy → stay on the bike
     assert Mode.RAIL not in downhill.composition.by_mode_km
     assert Mode.STATION not in downhill.composition.by_mode_km  # no station touched
     assert len(downhill.bike_legs) == 1
@@ -137,6 +137,6 @@ def test_e2e_default_sliders_take_train_uphill_but_bike_downhill(tmp_path: Path,
 
 def test_e2e_out_of_coverage_raises(tmp_path: Path, monkeypatch):
     """Endpoints outside the fixture bbox fail loud (OutOfCoverageError), not silently."""
-    _stub_geocode(monkeypatch, (52.5, 13.4), (52.6, 13.5))  # Berlin — outside Schwarzwald fixture
+    _stub_geocode(monkeypatch=monkeypatch, start=(52.5, 13.4), end=(52.6, 13.5))  # Berlin — outside Schwarzwald fixture
     with pytest.raises(OutOfCoverageError, match="coverage"):
-        pipeline.plan_route(origin="Start", destination="End", params=_params(), graph_dir=FIXTURE_GRAPH_DIR)
+        pipeline.plan_route(origin="Start", destination="End", params=params(), graph_dir=FIXTURE_GRAPH_DIR)

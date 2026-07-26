@@ -8,6 +8,7 @@ from bike_router.simplify import (
     BikeLeg,
     RailLeg,
     _interpolate_to_n,
+    _thin_close_points,
     _triangle_area,
     _visvalingam,
     bike_leg_endpoints,
@@ -32,7 +33,7 @@ def _zigzag_line(n_points: int = 200) -> LineString:
 
 def test_select_waypoints_exactly_n():
     points = select_waypoints(line=_zigzag_line(n_points=200), count=GmapsConfig.N_WAYPOINTS)
-    assert len(points) == 10
+    assert len(points) == GmapsConfig.N_WAYPOINTS
     assert all(len(point) == 2 for point in points)  # (lat, lon)
 
 
@@ -59,6 +60,25 @@ def test_select_waypoints_short_line_padded():
     assert points[-1] == (0.0, 2.0)  # (lat, lon)
 
 
+def test_select_waypoints_thins_over_close_interior_points():
+    # A tiny ~40 m leg near (48, 8): every interior point is well under the 1 km min spacing,
+    # so only origin + destination survive (no clutter of near-identical waypoints).
+    line = LineString([(8.0000 + i * 0.0001, 48.0) for i in range(6)])  # ~7 m steps, ~37 m total
+    points = select_waypoints(line=line, count=10)
+    assert len(points) == 2  # origin + destination only
+    assert points[0] == (48.0, 8.0)
+    assert points[-1] == (48.0, 8.0005)
+
+
+def test_thin_close_points_keeps_far_apart_and_endpoints():
+    # Points ~1.1 km apart (0.01° lon ≈ 743 m at 48°N; use 0.02° ≈ 1.5 km) all survive.
+    pts = [(48.0, 8.0), (48.0, 8.02), (48.0, 8.04)]
+    assert _thin_close_points(points=pts, min_spacing_km=1.0) == pts
+    # A near-duplicate middle point is dropped; endpoints always kept.
+    pts2 = [(48.0, 8.0), (48.0, 8.00001), (48.0, 8.04)]
+    assert _thin_close_points(points=pts2, min_spacing_km=1.0) == [(48.0, 8.0), (48.0, 8.04)]
+
+
 def test_select_waypoints_keeps_significant_corner():
     line = LineString([(0.0, 0.0), (1.0, 0.0), (1.0, 1.0)])
     points = select_waypoints(line=line, count=3)
@@ -76,10 +96,8 @@ def test_triangle_area_known_values():
 def test_visvalingam_drops_least_significant_first():
     coords = [(0.0, 0.0), (1.0, 0.001), (2.0, 0.0), (3.0, 5.0), (4.0, 0.0)]
     out = _visvalingam(coords=coords, count=4)
-    assert len(out) == 4
-    assert (1.0, 0.001) not in out  # smallest-area interior point removed
-    assert (3.0, 5.0) in out  # significant spike survives
-    assert out[0] == (0.0, 0.0) and out[-1] == (4.0, 0.0)
+    # Deterministic: the smallest-area interior point (1.0, 0.001) is dropped, rest kept in order.
+    assert out == [(0.0, 0.0), (2.0, 0.0), (3.0, 5.0), (4.0, 0.0)]
 
 
 def test_interpolate_to_n_evenly_spaced():

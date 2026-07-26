@@ -1,11 +1,13 @@
 """Progress-reporter tests — no-op sink + tqdm-backed counter."""
 
+import pytest
+
 from bike_router.progress import null_progress, tqdm_progress
 
 
 def test_null_progress_is_noop():
     # accepts (done, total) and returns nothing, without error
-    assert null_progress(3, 10) is None
+    assert null_progress(done=3, total=10) is None
 
 
 def test_tqdm_progress_advances_and_closes():
@@ -16,8 +18,6 @@ def test_tqdm_progress_advances_and_closes():
 
 
 def test_tqdm_progress_rejects_out_of_range():
-    import pytest
-
     report = tqdm_progress(desc="test")
     with pytest.raises(AssertionError):
         report(11, 10)  # done > total

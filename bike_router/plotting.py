@@ -21,9 +21,9 @@ from matplotlib.colors import Normalize  # noqa: E402
 from matplotlib.ticker import MaxNLocator  # noqa: E402
 
 from bike_router.composition import RouteComposition, format_composition  # noqa: E402
-from bike_router.constants import Mode, PlotConfig, RoutingParams, WebMapConfig  # noqa: E402
+from bike_router.constants import PlotConfig, RoutingParams, WebMapConfig  # noqa: E402
 from bike_router.cost import road_tier, surface_tier  # noqa: E402
-from bike_router.track import Track, cheapest_edge, edge_vertices_3d  # noqa: E402
+from bike_router.track import Track, cheapest_edge, classify_condition, edge_vertices_3d  # noqa: E402
 from bike_router.webmap import segment_color  # noqa: E402
 
 logger = logging.getLogger(__name__)
@@ -69,11 +69,11 @@ def _draw_route_overlay(
     for node_a, node_b in zip(route_nodes[:-1], route_nodes[1:], strict=True):
         data = cheapest_edge(edges=graph.get_edge_data(node_a, node_b))
         mode = str(data["mode"])
-        is_bad = surface_tier(surface=data.get("surface")) != 0 or road_tier(highway=data.get("highway")) != 0
-        rgb = segment_color(mode=mode, is_bad=is_bad)
+        surface_bad = surface_tier(surface=data.get("surface")) != 0
+        road_bad = road_tier(highway=data.get("highway")) != 0
+        rgb = segment_color(mode=mode, surface_bad=surface_bad, road_bad=road_bad)
         color = (rgb[0] / 255, rgb[1] / 255, rgb[2] / 255)
-        # Legend lists each condition once: "train", or "bad"/"good" for pedalled legs.
-        edge_label = "train" if mode == str(Mode.RAIL) else ("bad" if is_bad else "good")
+        edge_label = classify_condition(mode=mode, surface_bad=surface_bad, road_bad=road_bad)
         label = edge_label if edge_label not in seen_labels else None
         seen_labels.add(edge_label)
         verts = edge_vertices_3d(graph=graph, node_a=node_a, node_b=node_b, data=data)

@@ -38,7 +38,7 @@ def test_track_points_and_totals():
     track = build_track(graph=graph, node_path=[1, 2, 3])
     # 3 nodes → 3 points; two 800 m edges → 1.6 km
     assert len(track.points) == 3
-    assert abs(track.total.distance_km - 1.6) < 1e-6
+    assert track.total.distance_km == 1.6  # two 800 m edges, exact in float
     # 100→130→100 → +30 m / -30 m
     assert track.total.ascent_m == 30.0
     assert track.total.descent_m == 30.0

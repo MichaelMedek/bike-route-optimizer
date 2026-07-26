@@ -89,5 +89,4 @@ _REAL_CASES = [
 def test_default_params_real_route_mode(origin: str, destination: str, expect_train: bool) -> None:  # noqa: FBT001
     """FULL e2e: DEFAULT params, real dataset, real OSM geocoding — each route bikes or trains as given."""
     result = plan_route(origin=origin, destination=destination, params=DEFAULT_PARAMS)
-    used_train = result.composition.by_mode_km.get(Mode.RAIL, 0.0) > 0.0
-    assert used_train is expect_train
+    assert (Mode.RAIL in result.composition.by_mode_km) is expect_train

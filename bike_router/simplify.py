@@ -12,7 +12,8 @@ import networkx as nx
 import numpy as np
 from shapely.geometry import LineString
 
-from bike_router.constants import Mode
+from bike_router.constants import GmapsConfig, GpxConfig, Mode
+from bike_router.geo import haversine_distance_m
 from bike_router.track import cheapest_edge, iter_route_edges
 
 logger = logging.getLogger(__name__)
@@ -158,11 +159,11 @@ def route_to_linestring(graph: nx.MultiDiGraph, node_path: list[int]) -> LineStr
 
 
 def select_waypoints(line: LineString, count: int = 10) -> list[tuple[float, float]]:
-    """Reduce ``line`` to exactly ``count`` significant points, returned (lat, lon).
+    """Reduce ``line`` to at most ``count`` significant points, returned (lat, lon).
 
-    Visvalingam-Whyatt: repeatedly drop the interior point with the smallest
-    triangle area until ``count`` remain (endpoints kept). Lines with <= count
-    points are padded by interpolation.
+    Visvalingam-Whyatt picks the ``count`` most significant points (endpoints kept), then
+    over-close interior points are thinned so a short leg isn't cluttered with near-identical
+    waypoints. Origin + destination are always kept, so the result has 2..count points.
     """
     coords: list[tuple[float, float]] = [(c[0], c[1]) for c in line.coords]  # (lon, lat); ignore any z
     assert count >= 2, "need at least origin + destination waypoints"
@@ -170,8 +171,25 @@ def select_waypoints(line: LineString, count: int = 10) -> list[tuple[float, flo
         coords = _interpolate_to_n(coords=coords, count=count)
     else:
         coords = _visvalingam(coords=coords, count=count)
-    assert len(coords) == count, "select_waypoints must return exactly `count` points"
-    return [(lat, lon) for lon, lat in coords]
+    latlon = [(lat, lon) for lon, lat in coords]
+    return _thin_close_points(points=latlon, min_spacing_km=GmapsConfig.MIN_WAYPOINT_SPACING_KM)
+
+
+def _thin_close_points(points: list[tuple[float, float]], min_spacing_km: float) -> list[tuple[float, float]]:
+    """Drop interior (lat, lon) points closer than ``min_spacing_km`` to the last kept one.
+
+    Origin (first) and destination (last) are ALWAYS kept; only in-between points are thinned,
+    so a short leg collapses toward just its two endpoints. Distance is real great-circle km.
+    """
+    assert len(points) >= 2, "need origin + destination to thin between"
+    min_m = min_spacing_km * GpxConfig.METERS_PER_KM
+    kept = [points[0]]
+    for point in points[1:-1]:
+        last_lat, last_lon = kept[-1]
+        if haversine_distance_m(lat_a=last_lat, lon_a=last_lon, lat_b=point[0], lon_b=point[1]) >= min_m:
+            kept.append(point)
+    kept.append(points[-1])
+    return kept
 
 
 def _triangle_area(point_a: tuple[float, float], point_b: tuple[float, float], point_c: tuple[float, float]) -> float:

@@ -2,28 +2,9 @@
 
 import pytest
 
-from bike_router.constants import Mode, RoutingParams
+from bike_router.constants import Mode
 from bike_router.cost import _as_values, edge_cost, road_included, road_tier, surface_included, surface_tier
-
-# Distance-only params (all penalties off) → bike edge cost == length.
-_DIST_ONLY = RoutingParams(
-    extra_km_per_uphill_100m=0.0,
-    extra_km_per_unpaved_km=0.0,
-    extra_km_per_main_road_km=0.0,
-    extra_km_per_rail_km=0.0,
-    extra_km_per_boarding=0.0,
-)
-
-
-def _bike_params(*, uphill: float = 0.0, unpaved: float = 0.0, main_road: float = 0.0) -> RoutingParams:
-    """RoutingParams with only the bike knobs set (rail knobs zeroed)."""
-    return RoutingParams(
-        extra_km_per_uphill_100m=uphill,
-        extra_km_per_unpaved_km=unpaved,
-        extra_km_per_main_road_km=main_road,
-        extra_km_per_rail_km=0.0,
-        extra_km_per_boarding=0.0,
-    )
+from tests.conftest import ZERO_PARAMS, zero_params
 
 
 def test_as_values_normalizes_types():
@@ -86,14 +67,14 @@ def test_distance_only_cost_is_length():
         highway="primary",
         elev_source=0.0,
         elev_target=50.0,
-        params=_DIST_ONLY,
+        params=ZERO_PARAMS,
     )
     assert cost == 1000.0  # every penalty disabled → pure distance
 
 
 def test_uphill_penalty_matches_extra_km_contract():
     # 100 m climb, 5 extra km per 100 m → +5000 m on top of length
-    params = _bike_params(uphill=5.0)
+    params = zero_params(extra_km_per_uphill_100m=5.0)
     cost = edge_cost(
         mode=Mode.BIKE,
         length=1000.0,
@@ -107,7 +88,7 @@ def test_uphill_penalty_matches_extra_km_contract():
 
 
 def test_uphill_only_downhill_is_free():
-    params = _bike_params(uphill=5.0)
+    params = zero_params(extra_km_per_uphill_100m=5.0)
     downhill = edge_cost(
         mode=Mode.BIKE,
         length=1000.0,
@@ -122,7 +103,7 @@ def test_uphill_only_downhill_is_free():
 
 def test_unpaved_penalty_scales_with_tier():
     # tier 0 (paved) → no penalty; tier 1 (moderate) at 1 extra km/km → +1000 m.
-    params = _bike_params(unpaved=1.0)
+    params = zero_params(extra_km_per_unpaved_km=1.0)
     paved = edge_cost(
         mode=Mode.BIKE,
         length=1000.0,
@@ -148,7 +129,7 @@ def test_unpaved_penalty_scales_with_tier():
 def test_unpaved_tier2_doubles_the_penalty():
     # A natural/rough surface (tier 2) adds TWICE the tier-1 penalty — the tier is a
     # literal multiplier. 1 km, 1 extra km/km: tier 1 → +1000 m, tier 2 → +2000 m.
-    params = _bike_params(unpaved=1.0)
+    params = zero_params(extra_km_per_unpaved_km=1.0)
     loose = edge_cost(
         mode=Mode.BIKE,
         length=1000.0,
@@ -172,7 +153,7 @@ def test_unpaved_tier2_doubles_the_penalty():
 
 
 def test_main_road_penalty():
-    params = _bike_params(main_road=2.0)
+    params = zero_params(extra_km_per_main_road_km=2.0)
     on_main = edge_cost(
         mode=Mode.BIKE,
         length=1000.0,
@@ -196,7 +177,7 @@ def test_main_road_penalty():
 
 
 def test_penalties_are_additive():
-    params = _bike_params(uphill=5.0, unpaved=1.0, main_road=1.0)
+    params = zero_params(extra_km_per_uphill_100m=5.0, extra_km_per_unpaved_km=1.0, extra_km_per_main_road_km=1.0)
     # 1 km, +100 m climb, gravel (tier 1), secondary main road
     cost = edge_cost(
         mode=Mode.BIKE,
@@ -211,29 +192,27 @@ def test_penalties_are_additive():
 
 
 def test_cost_never_below_length():
-    params = _bike_params(uphill=10.0, unpaved=3.0, main_road=3.0)
+    # Penalties actually fire (gravel + main road + a climb) so the ">= length" invariant is
+    # non-vacuous; assert the exact total: 500 + 100m-climb + 0.5km·gravel + 0.5km·main.
+    params = zero_params(extra_km_per_uphill_100m=10.0, extra_km_per_unpaved_km=3.0, extra_km_per_main_road_km=3.0)
     cost = edge_cost(
         mode=Mode.BIKE,
         length=500.0,
-        surface="asphalt",
-        highway="residential",
+        surface="gravel",
+        highway="primary",
         elev_source=0.0,
-        elev_target=0.0,
+        elev_target=100.0,
         params=params,
     )
-    assert cost >= 500.0
+    # 500 + (100/100·10·1000) + (0.5·3·1000) + (0.5·3·1000) = 500 + 10000 + 1500 + 1500
+    assert cost == pytest.approx(500.0 + 10000.0 + 1500.0 + 1500.0)
+    assert cost > 500.0  # never below raw length
 
 
 def test_rail_cost_uses_per_km_only_no_boarding_no_terrain_penalty():
     # 10 km rail, 2 extra km/km rail → length + 20000. Boarding is NOT on the rail edge
     # (it lives on the station edges); uphill/surface/main-road knobs must NOT affect rail.
-    params = RoutingParams(
-        extra_km_per_uphill_100m=50.0,
-        extra_km_per_unpaved_km=50.0,
-        extra_km_per_main_road_km=50.0,
-        extra_km_per_rail_km=2.0,
-        extra_km_per_boarding=15.0,
-    )
+    params = zero_params(extra_km_per_rail_km=2.0, extra_km_per_boarding=15.0)
     cost = edge_cost(
         mode=Mode.RAIL,
         length=10_000.0,
@@ -247,20 +226,8 @@ def test_rail_cost_uses_per_km_only_no_boarding_no_terrain_penalty():
 
 
 def test_rail_sliders_scale_cost_so_high_values_deter_rail():
-    cheap = RoutingParams(
-        extra_km_per_uphill_100m=0.0,
-        extra_km_per_unpaved_km=0.0,
-        extra_km_per_main_road_km=0.0,
-        extra_km_per_rail_km=0.1,
-        extra_km_per_boarding=1.0,
-    )
-    dear = RoutingParams(
-        extra_km_per_uphill_100m=0.0,
-        extra_km_per_unpaved_km=0.0,
-        extra_km_per_main_road_km=0.0,
-        extra_km_per_rail_km=5.0,
-        extra_km_per_boarding=80.0,
-    )
+    cheap = zero_params(extra_km_per_rail_km=0.1, extra_km_per_boarding=1.0)
+    dear = zero_params(extra_km_per_rail_km=5.0, extra_km_per_boarding=80.0)
     kwargs = dict(length=5_000.0, surface=None, highway=None, elev_source=0.0, elev_target=0.0)
     assert edge_cost(mode=Mode.RAIL, params=dear, **kwargs) > edge_cost(mode=Mode.RAIL, params=cheap, **kwargs)
 
@@ -276,17 +243,11 @@ def test_station_cost_is_length_plus_half_boarding():
             highway=None,
             elev_source=0.0,
             elev_target=100.0,  # elevation ignored for station edges
-            params=_DIST_ONLY,
+            params=ZERO_PARAMS,
         )
         == 150.0
     )
-    params = RoutingParams(
-        extra_km_per_uphill_100m=0.0,
-        extra_km_per_unpaved_km=0.0,
-        extra_km_per_main_road_km=0.0,
-        extra_km_per_rail_km=0.0,
-        extra_km_per_boarding=10.0,
-    )
+    params = zero_params(extra_km_per_boarding=10.0)
     cost = edge_cost(
         mode=Mode.STATION, length=150.0, surface=None, highway=None, elev_source=0.0, elev_target=0.0, params=params
     )
@@ -302,5 +263,5 @@ def test_unknown_mode_raises():
             highway=None,
             elev_source=0.0,
             elev_target=0.0,
-            params=_DIST_ONLY,
+            params=ZERO_PARAMS,
         )

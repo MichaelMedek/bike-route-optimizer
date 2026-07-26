@@ -28,7 +28,8 @@ class TrackPoint:
     elevation_m: float
     elapsed_s: float
     mode: str
-    is_bad: bool  # pedalled segment coloured red (bad surface OR main road); False for rail
+    surface_bad: bool  # pedalled segment on an unpaved/rough surface (tier != 0); False for rail
+    road_bad: bool  # pedalled segment on a main road (road tier != 0); False for rail
     speed_kmh: float  # segment speed (bike: adaptive; rail: RAIL_SPEED_KMH) — drives ribbon width
 
 
@@ -114,21 +115,37 @@ def iter_route_edges(graph: nx.MultiDiGraph, node_path: list[int]) -> Iterator[t
 
 def edge_condition_speed(
     *, data: dict[str, Any], elev_source: float, elev_target: float, length_m: float
-) -> tuple[bool, float]:
-    """(is_bad, speed_kmh) for one edge — the single source both timing and rendering use.
+) -> tuple[bool, bool, float]:
+    """(surface_bad, road_bad, speed_kmh) for one edge — single source for timing + colour.
 
-    bike: is_bad if surface not tier-0 OR a main road; speed from the adaptive model.
-    rail: never bad, fixed RAIL_SPEED_KMH. station: never bad, walking pace.
+    bike: surface_bad if surface tier != 0; road_bad if a main road; speed from the adaptive
+    model. rail / station: never bad, fixed RAIL_SPEED_KMH / walking pace.
     """
     mode = data["mode"]
     if mode == Mode.BIKE:
+        s_tier = surface_tier(surface=data.get("surface"))
         grade = (elev_target - elev_source) / length_m if length_m > 0 else 0.0
-        is_bad = surface_tier(surface=data.get("surface")) != 0 or road_tier(highway=data.get("highway")) != 0
-        speed_kmh = effective_speed_kmh(surface_tier=surface_tier(surface=data.get("surface")), grade=grade)
-        return is_bad, speed_kmh
+        speed_kmh = effective_speed_kmh(surface_tier=s_tier, grade=grade)
+        return s_tier != 0, road_tier(highway=data.get("highway")) != 0, speed_kmh
     if mode == Mode.RAIL:
-        return False, RailConfig.RAIL_SPEED_KMH
-    return False, SpeedConfig.WALK_KMH  # station edge: short walk to the platform
+        return False, False, RailConfig.RAIL_SPEED_KMH
+    return False, False, SpeedConfig.WALK_KMH  # station edge: short walk to the platform
+
+
+def classify_condition(*, mode: str, surface_bad: bool, road_bad: bool) -> str:
+    """Canonical condition label for a route segment — the SINGLE branch point."""
+    if mode == Mode.RAIL:
+        return "train"
+    elif surface_bad and road_bad:
+        return "main road + unpaved"
+    elif road_bad and not surface_bad:
+        return "main road"
+    elif surface_bad and not road_bad:
+        return "unpaved"
+    elif not surface_bad and not road_bad:
+        return "good"
+    else:
+        raise AssertionError(f"unclassified segment: mode={mode!r} surface_bad={surface_bad} road_bad={road_bad}")
 
 
 def build_track(graph: nx.MultiDiGraph, node_path: list[int]) -> Track:
@@ -142,7 +159,7 @@ def build_track(graph: nx.MultiDiGraph, node_path: list[int]) -> Track:
 
     first = graph.nodes[node_path[0]]
     first_data = cheapest_edge(edges=graph.get_edge_data(node_path[0], node_path[1]))
-    first_bad, first_speed = edge_condition_speed(
+    first_surface_bad, first_road_bad, first_speed = edge_condition_speed(
         data=first_data,
         elev_source=float(first["elevation"]),
         elev_target=float(graph.nodes[node_path[1]]["elevation"]),
@@ -155,7 +172,8 @@ def build_track(graph: nx.MultiDiGraph, node_path: list[int]) -> Track:
             elevation_m=float(first["elevation"]),
             elapsed_s=0.0,
             mode=str(first_data["mode"]),
-            is_bad=first_bad,
+            surface_bad=first_surface_bad,
+            road_bad=first_road_bad,
             speed_kmh=first_speed,
         )
     ]
@@ -170,7 +188,9 @@ def build_track(graph: nx.MultiDiGraph, node_path: list[int]) -> Track:
         elev_a = float(graph.nodes[node_a]["elevation"])
         elev_b = float(graph.nodes[node_b]["elevation"])
         delta = elev_b - elev_a
-        is_bad, speed_kmh = edge_condition_speed(data=data, elev_source=elev_a, elev_target=elev_b, length_m=length_m)
+        surface_bad, road_bad, speed_kmh = edge_condition_speed(
+            data=data, elev_source=elev_a, elev_target=elev_b, length_m=length_m
+        )
         total_deltas.append(delta)  # every edge feeds the whole-journey climb (same scope as total_m)
 
         if data["mode"] == Mode.BIKE:
@@ -195,7 +215,8 @@ def build_track(graph: nx.MultiDiGraph, node_path: list[int]) -> Track:
                 elevation_m=elev_b,
                 elapsed_s=total_s,
                 mode=str(data["mode"]),
-                is_bad=is_bad,
+                surface_bad=surface_bad,
+                road_bad=road_bad,
                 speed_kmh=speed_kmh,
             )
         )
@@ -241,8 +262,8 @@ def densify_track(graph: nx.MultiDiGraph, node_path: list[int], track: Track) ->
     for index, (node_a, node_b, data) in enumerate(iter_route_edges(graph=graph, node_path=node_path)):
         mode = str(data["mode"])
         # Condition + speed are per-edge; the arriving point (index+1) carries the leg's.
-        leg_bad = track.points[index + 1].is_bad
-        leg_speed = track.points[index + 1].speed_kmh
+        leg_point = track.points[index + 1]
+        leg_surface_bad, leg_road_bad, leg_speed = leg_point.surface_bad, leg_point.road_bad, leg_point.speed_kmh
         verts = edge_vertices_3d(graph=graph, node_a=node_a, node_b=node_b, data=data)
         t_start, t_end = track.points[index].elapsed_s, track.points[index + 1].elapsed_s
         seg_lengths = [
@@ -262,7 +283,8 @@ def densify_track(graph: nx.MultiDiGraph, node_path: list[int], track: Track) ->
                     elevation_m=elev,
                     elapsed_s=t_start + (t_end - t_start) * (cum / total),
                     mode=mode,
-                    is_bad=leg_bad,
+                    surface_bad=leg_surface_bad,
+                    road_bad=leg_road_bad,
                     speed_kmh=leg_speed,
                 )
             )

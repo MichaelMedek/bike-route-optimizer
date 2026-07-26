@@ -7,15 +7,12 @@ bike_router (what the CLI calls); this file only wires widgets and renders outpu
 Run:  streamlit run app_webmap.py
 """
 
-import functools
-
 import streamlit as st
-from streamlit_searchbox import st_searchbox
 
-from bike_router.constants import PARAM_SPECS, PhotonConfig, RoutingDefaults, RoutingParams, WebMapConfig
+from bike_router.constants import PARAM_SPECS, RoutingDefaults, RoutingParams, WebMapConfig
 from bike_router.errors import BikeRouterError
 from bike_router.geocoding import photon_autocomplete
-from bike_router.graph_store import download_graph_from_hf, load_meta, load_rail_baseline
+from bike_router.graph_store import download_graph_from_hf, load_meta
 from bike_router.pipeline import plan_route, resolve_endpoints
 from bike_router.simplify import format_bike_legs, format_rail_legs
 from bike_router.webmap import (
@@ -45,12 +42,6 @@ def _download_graph_with_bar() -> None:
 def _suggest(term: str, bbox: tuple[float, float, float, float]) -> list[str]:
     """Cached Photon place-label suggestions for a typed term, biased to the bbox."""
     return photon_autocomplete(term=term, bbox=bbox)
-
-
-@st.cache_data
-def _rail_baseline() -> list[list[list[float]]]:
-    """All rail lines (lifted 3D polylines), loaded once — the always-on map baseline."""
-    return load_rail_baseline()
 
 
 def _render_route_output(result: object) -> None:
@@ -104,6 +95,40 @@ def _render_route_output(result: object) -> None:
         )
 
 
+def _place_input(*, field: str, label: str, placeholder: str, bbox: tuple[float, float, float, float]) -> str:
+    """An editable place box (type/paste freely) with click-to-fill suggestions below it.
+
+    The text_input is the SINGLE source of truth — its exact text is returned and later
+    geocoded verbatim. Photon suggestions are a pure convenience: clicking one just fills
+    the box (a normal edit the user can still change); typing/pasting anything is fine.
+
+    Args:
+        field: session_state key for this box's text.
+        label: visible field label.
+        placeholder: greyed-out hint shown when empty.
+        bbox: coverage box biasing the suggestions.
+    """
+    typed = st.text_input(label, key=field, placeholder=placeholder)
+    # Offer suggestions for what's typed so far; each is a button that fills the box on
+    # click (writing the field key before the text_input re-renders next run). Never
+    # required, never blocks — a slow/failed Photon just yields no buttons.
+    for suggestion in _suggest(term=typed, bbox=bbox):
+        if suggestion != typed:
+            st.button(
+                f"↳ {suggestion}",
+                key=f"{field}_sug_{suggestion}",
+                on_click=_fill_box,
+                kwargs={"field": field, "value": suggestion},
+                use_container_width=True,
+            )
+    return typed
+
+
+def _fill_box(*, field: str, value: str) -> None:
+    """Fill a place box with a clicked suggestion (a normal edit; still freely editable)."""
+    st.session_state[field] = value
+
+
 def main() -> None:
     st.set_page_config(page_title="Bike Route Optimizer", layout="centered")
     _download_graph_with_bar()
@@ -119,19 +144,15 @@ def main() -> None:
         st.session_state.setdefault(key, initial)
     st.title("🚲 Bike Route Optimizer")
 
-    # 1. Start | End — the only side-by-side row. Each is a search-as-you-type box:
-    # type freely (CLI-parity); picking a suggestion fills the box with the corrected
-    # name. When Photon is slow/unreachable it degrades to a plain box (no suggestions).
+    # 1. Start | End — the only side-by-side row. Each is a plain editable box: type,
+    # paste, or click a suggestion below it — the box text is the single source of truth
+    # and gets geocoded EXACTLY as-is on submit (suggestions are help, never required).
     bbox = tuple(load_meta()["bbox"])  # coverage box biases + limits suggestions
-    suggest = functools.partial(_suggest, bbox=bbox)
     col_start, col_end = st.columns(2)
     with col_start:
-        st_searchbox(suggest, key="start_box", placeholder="Start location", debounce=PhotonConfig.DEBOUNCE_MS)
+        origin = _place_input(field="start_box", label="Start", placeholder="Start location", bbox=bbox)
     with col_end:
-        st_searchbox(suggest, key="end_box", placeholder="End location", debounce=PhotonConfig.DEBOUNCE_MS)
-    # Whatever text is in each box (typed, or the label of a picked suggestion).
-    origin = st.session_state.get("start_box", {}).get("search", "")
-    destination = st.session_state.get("end_box", {}).get("search", "")
+        destination = _place_input(field="end_box", label="End", placeholder="End location", bbox=bbox)
 
     # 2. Set start & end: resolve_endpoints geocodes the box texts + snaps to the graph;
     # we mark them on the map and recenter. Recentering lives ONLY here (camera_epoch).
@@ -189,7 +210,6 @@ def main() -> None:
         view=st.session_state.view,
         ribbon_segments=st.session_state.ribbon_segments,
         endpoints=endpoints,
-        rail_baseline=_rail_baseline(),
     )
     st.pydeck_chart(deck, height=WebMapConfig.MAP_HEIGHT_PX, key=f"bike_map_{st.session_state.camera_epoch}")
 

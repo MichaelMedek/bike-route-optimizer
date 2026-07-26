@@ -193,6 +193,16 @@ def snap_endpoints(
     return source, target
 
 
+def _fill_nan_with_mean(values: "np.ndarray") -> tuple["np.ndarray", int]:
+    """Neutral-fill NaN DEM samples with the finite mean (0.0 if all NaN); returns (filled, nan_count)."""
+    nan_mask = np.isnan(values)
+    nan_count = int(nan_mask.sum())
+    if nan_count:
+        fill_value = float(np.nanmean(values)) if not np.all(nan_mask) else 0.0
+        values = np.where(nan_mask, fill_value, values)
+    return values, nan_count
+
+
 def enrich_elevations(graph: nx.MultiDiGraph, dem: DEMService) -> None:
     """Attach an ``elevation`` attribute to every node via one bulk DEM sample.
 
@@ -208,14 +218,9 @@ def enrich_elevations(graph: nx.MultiDiGraph, dem: DEMService) -> None:
     elevations = dem.get_elevations(lons=lons, lats=lats)
     assert len(elevations) == len(nodes), "one elevation per node expected"
 
-    nan_mask = np.isnan(elevations)
-    nan_count = int(nan_mask.sum())
+    elevations, nan_count = _fill_nan_with_mean(values=elevations)
     if nan_count:
-        fill_value = float(np.nanmean(elevations)) if not np.all(nan_mask) else 0.0
-        elevations = np.where(nan_mask, fill_value, elevations)
-        logger.warning(
-            "%d/%d nodes had no DEM coverage (nodata) → filled with mean %.1f m", nan_count, len(nodes), fill_value
-        )
+        logger.warning("%d/%d nodes had no DEM coverage (nodata) → neutral-filled", nan_count, len(nodes))
 
     assert not np.any(np.isnan(elevations)), "all node elevations must be finite after fill"
     for node, elevation in zip(nodes, elevations, strict=True):
@@ -238,10 +243,7 @@ def bake_edge_geometry_elevations(graph: nx.MultiDiGraph, dem: DEMService) -> No
     flat_lon = np.array([c[0] for _u, _v, _k, d in edges for c in d["geometry"].coords], dtype=np.float64)
     flat_lat = np.array([c[1] for _u, _v, _k, d in edges for c in d["geometry"].coords], dtype=np.float64)
 
-    elevs = dem.get_elevations(lons=flat_lon, lats=flat_lat)
-    nan_mask = np.isnan(elevs)
-    if nan_mask.any():
-        elevs = np.where(nan_mask, float(np.nanmean(elevs)) if not np.all(nan_mask) else 0.0, elevs)
+    elevs, _nan_count = _fill_nan_with_mean(values=dem.get_elevations(lons=flat_lon, lats=flat_lat))
 
     offset = 0
     for (_u, _v, _k, data), n in zip(edges, counts, strict=True):

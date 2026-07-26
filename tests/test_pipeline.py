@@ -28,10 +28,10 @@ def _wire_offline(monkeypatch, tmp_path, graph):
     )
     monkeypatch.setattr(pipeline, "build_corridor", lambda start_latlon, dest_latlon: box(7.9, 47.9, 8.1, 48.1))
     monkeypatch.setattr(pipeline, "_assert_within_coverage", lambda start_latlon, dest_latlon, graph_dir: None)
-    monkeypatch.setattr(pipeline, "load_corridor_graph", lambda corridor: graph)
+    monkeypatch.setattr(pipeline, "load_corridor_graph", lambda corridor, graph_dir: graph)
     monkeypatch.setattr(pipeline, "snap_endpoints", lambda graph, start_latlon, dest_latlon: (1, 3))
     monkeypatch.setattr(
-        pipeline, "route_output_paths", lambda origin, destination: (tmp_path / "r.gpx", tmp_path / "r.png")
+        pipeline, "route_output_paths", lambda origin, destination, params: (tmp_path / "r.gpx", tmp_path / "r.png")
     )
 
 
@@ -119,7 +119,7 @@ def test_resolve_endpoints_geocodes_box_text_and_snaps(monkeypatch):
     monkeypatch.setattr(
         pipeline, "geocode_endpoint", lambda place, label, geocode_fn: (48.0, 8.0) if label == "Start" else (48.5, 8.5)
     )
-    monkeypatch.setattr(pipeline, "snap_to_node", lambda lat, lon: (lat + 0.001, lon + 0.001, 200.0))
+    monkeypatch.setattr(pipeline, "snap_to_node", lambda lat, lon, graph_dir: (lat + 0.001, lon + 0.001, 200.0))
     start, end = pipeline.resolve_endpoints(origin="Freudenstadt", destination="Pforzheim")
     assert start == (48.001, 8.001, 200.0)
     assert end == (48.501, 8.501, 200.0)

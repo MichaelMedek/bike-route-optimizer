@@ -26,6 +26,12 @@ ARCSEC_WKT = (
 NODATA = 32767
 
 
+@pytest.fixture(autouse=True)
+def _reset_dem_singleton() -> None:
+    """Reset the DEMService singleton before every test so each gets a fresh instance."""
+    DEMService._instance = None
+
+
 @pytest.fixture
 def arcsecond_dem(tmp_path: Path) -> Path:
     """A 100×100 int16 DEM in arcsecond CRS covering lon 8–9°, lat 48–49°.
@@ -59,7 +65,6 @@ def arcsecond_dem(tmp_path: Path) -> Path:
     ) as dst:
         dst.write(data, 1)
 
-    DEMService._instance = None  # reset singleton between tests
     return path
 
 
@@ -96,11 +101,10 @@ def test_nodata_and_out_of_bounds_are_nan(arcsecond_dem: Path):
 def test_spec_vectorized_wrapper(arcsecond_dem: Path):
     arr = get_elevations_from_raster(lats=[48.2, 48.8], lngs=[8.2, 8.8], raster_path=str(arcsecond_dem))
     assert arr.shape == (2,)
-    assert np.all(np.isfinite(arr))
+    np.testing.assert_allclose(arr, [200, 800], atol=12)  # ramp: (lat-48)*1000
 
 
 def test_missing_dem_raises_filenotfound(tmp_path: Path):
-    DEMService._instance = None
     dem = DEMService(dem_path=tmp_path / "absent.tif")
     with pytest.raises(FileNotFoundError):
         dem.get_elevations(lons=[8.0], lats=[48.0])
@@ -108,8 +112,6 @@ def test_missing_dem_raises_filenotfound(tmp_path: Path):
 
 def test_wgs84_dem_needs_no_reprojection(tmp_path: Path):
     """A plain EPSG:4326 DEM skips the pyproj transform (identity branch)."""
-    from affine import Affine
-
     transform = Affine.translation(8.0, 49.0) * Affine.scale(0.01, -0.01)
     data = np.arange(100, dtype=np.int16).reshape(10, 10)
     path = tmp_path / "wgs84.tif"
@@ -127,7 +129,6 @@ def test_wgs84_dem_needs_no_reprojection(tmp_path: Path):
     ) as dst:
         dst.write(data, 1)
 
-    DEMService._instance = None
     dem = DEMService(dem_path=path)
     west, south, east, north = dem.bounds
     assert abs(west - 8.0) < 1e-9 and abs(north - 49.0) < 1e-9  # identity bounds
@@ -136,7 +137,6 @@ def test_wgs84_dem_needs_no_reprojection(tmp_path: Path):
 
 
 def test_singleton_resets_on_new_path(arcsecond_dem: Path, tmp_path: Path):
-    DEMService._instance = None
     first = DEMService(dem_path=arcsecond_dem)
     second = DEMService(dem_path=tmp_path / "other.tif")
     assert first is not second  # a different path forces a fresh instance

@@ -11,9 +11,9 @@ from dataclasses import dataclass
 import altair as alt
 import pandas as pd
 
-from bike_router.constants import Mode, RoadConfig, SurfaceConfig, WebMapConfig
+from bike_router.constants import Palette, RoadConfig, SurfaceConfig, WebMapConfig
 from bike_router.geo import haversine_distance_m
-from bike_router.track import Track
+from bike_router.track import Track, classify_condition
 
 
 def _hex(rgb: tuple[int, int, int]) -> str:
@@ -58,15 +58,14 @@ def composition_donut(title: str, by_km: dict[str, float], colors: dict[str, str
     return chart
 
 
-def segment_color(*, mode: str, is_bad: bool) -> list[int]:
+def segment_color(*, mode: str, surface_bad: bool, road_bad: bool) -> list[int]:
     """RGB for a route segment — the single source both the 3D ribbon and PNG use.
 
-    Rail is always purple; a pedalled segment is green when good and red when bad
-    (bad surface OR main road).
+    Delegates the branching to classify_condition (one source) and looks the colour up in
+    Palette.CONDITION_COLORS, so colour and legend label can never disagree.
     """
-    if mode == str(Mode.RAIL):
-        return list(WebMapConfig.RAIL_COLOR)
-    return list(WebMapConfig.BAD_RGB if is_bad else WebMapConfig.GOOD_RGB)
+    condition = classify_condition(mode=mode, surface_bad=surface_bad, road_bad=road_bad)
+    return list(Palette.hex_to_rgb(hex_color=Palette.CONDITION_COLORS[condition]))
 
 
 def route_ribbon_segments(
@@ -86,7 +85,7 @@ def route_ribbon_segments(
     segments: list[tuple[list[int], float, list[list[float]]]] = []
     for point in track.points:
         xyz = [point.lon, point.lat, point.elevation_m + float_above_m]
-        color = segment_color(mode=point.mode, is_bad=point.is_bad)
+        color = segment_color(mode=point.mode, surface_bad=point.surface_bad, road_bad=point.road_bad)
         width = point.speed_kmh * WebMapConfig.RIBBON_WIDTH_PER_KMH_M
         # Every point extends the current run (bridging the seam keeps the ribbon
         # continuous); a colour OR width change then starts a new run.

@@ -6,6 +6,7 @@ routing tests. No network, no GeoTIFF — CI-safe.
 """
 
 import pathlib
+from dataclasses import replace
 
 import networkx as nx
 import numpy as np
@@ -62,6 +63,18 @@ def flat_dem() -> MockDEMService:
 
 
 DEFAULT_PARAMS = RoutingParams(**{spec.field: spec.default for spec in PARAM_SPECS})
+# All-penalties-off params — the distance-only baseline for routing/cost tests.
+ZERO_PARAMS = RoutingParams(**{spec.field: 0.0 for spec in PARAM_SPECS})
+
+
+def params(**overrides: float) -> RoutingParams:
+    """RoutingParams at the spec DEFAULTS, with named fields overridden."""
+    return replace(DEFAULT_PARAMS, **overrides)
+
+
+def zero_params(**overrides: float) -> RoutingParams:
+    """RoutingParams with ALL penalties zeroed, with named fields overridden."""
+    return replace(ZERO_PARAMS, **overrides)
 
 
 def make_line_graph(params: RoutingParams = DEFAULT_PARAMS) -> nx.MultiDiGraph:
@@ -147,10 +160,10 @@ def make_composition_graph() -> nx.MultiDiGraph:
         graph.add_node(n, x=float(n), y=48.0, elevation=100.0, node_type=NodeType.BIKE)
     for n in (4, 5):
         graph.add_node(n, x=float(n), y=48.0, elevation=100.0, node_type=NodeType.RAIL)
-    graph.add_edge(1, 2, key=0, **_mode_edge(Mode.BIKE, 1000.0, surface="asphalt", highway="residential"))
-    graph.add_edge(2, 3, key=0, **_mode_edge(Mode.BIKE, 2000.0, surface="gravel", highway="secondary"))
-    graph.add_edge(3, 4, key=0, **_mode_edge(Mode.STATION, 100.0))
-    graph.add_edge(4, 5, key=0, **_mode_edge(Mode.RAIL, 10000.0))
+    graph.add_edge(1, 2, key=0, **_mode_edge(mode=Mode.BIKE, length=1000.0, surface="asphalt", highway="residential"))
+    graph.add_edge(2, 3, key=0, **_mode_edge(mode=Mode.BIKE, length=2000.0, surface="gravel", highway="secondary"))
+    graph.add_edge(3, 4, key=0, **_mode_edge(mode=Mode.STATION, length=100.0))
+    graph.add_edge(4, 5, key=0, **_mode_edge(mode=Mode.RAIL, length=10000.0))
     return graph
 
 
@@ -165,8 +178,8 @@ def make_rail_graph() -> nx.MultiDiGraph:
     graph.add_node(1, x=8.00, y=48.0, elevation=200.0, node_type=NodeType.BIKE)
     graph.add_node(2, x=8.001, y=48.0, elevation=205.0, node_type=NodeType.RAIL)  # station A
     graph.add_node(3, x=8.10, y=48.0, elevation=600.0, node_type=NodeType.RAIL)  # station B
-    graph.add_edge(1, 2, key=0, **_mode_edge(Mode.STATION, 80.0))
-    graph.add_edge(2, 3, key=0, **_mode_edge(Mode.RAIL, 7000.0))
+    graph.add_edge(1, 2, key=0, **_mode_edge(mode=Mode.STATION, length=80.0))
+    graph.add_edge(2, 3, key=0, **_mode_edge(mode=Mode.RAIL, length=7000.0))
     return graph
 
 
@@ -186,14 +199,14 @@ def make_exchange_rail_graph() -> nx.MultiDiGraph:
     graph.add_node(-3, x=8.199, y=48.0, elevation=100.0, node_type=NodeType.RAIL, station_name="C")
     graph.add_node(-4, x=8.050, y=48.1, elevation=100.0, node_type=NodeType.RAIL, station_name="D")  # 3rd branch at B
     # station-access hops (board at A, alight at C)
-    graph.add_edge(1, -1, key=0, **_mode_edge(Mode.STATION, 90.0))
-    graph.add_edge(-1, 1, key=0, **_mode_edge(Mode.STATION, 90.0))
-    graph.add_edge(-3, 2, key=0, **_mode_edge(Mode.STATION, 90.0))
-    graph.add_edge(2, -3, key=0, **_mode_edge(Mode.STATION, 90.0))
+    graph.add_edge(1, -1, key=0, **_mode_edge(mode=Mode.STATION, length=90.0))
+    graph.add_edge(-1, 1, key=0, **_mode_edge(mode=Mode.STATION, length=90.0))
+    graph.add_edge(-3, 2, key=0, **_mode_edge(mode=Mode.STATION, length=90.0))
+    graph.add_edge(2, -3, key=0, **_mode_edge(mode=Mode.STATION, length=90.0))
     # rail edges: A↔B, B↔C, B↔D (B is a degree-3 junction), both directions
     for a, b, length in [(-1, -2, 4000.0), (-2, -3, 3000.0), (-2, -4, 2000.0)]:
-        graph.add_edge(a, b, key=0, **_mode_edge(Mode.RAIL, length))
-        graph.add_edge(b, a, key=0, **_mode_edge(Mode.RAIL, length))
+        graph.add_edge(a, b, key=0, **_mode_edge(mode=Mode.RAIL, length=length))
+        graph.add_edge(b, a, key=0, **_mode_edge(mode=Mode.RAIL, length=length))
     return graph
 
 
@@ -306,14 +319,14 @@ def make_two_cluster_graph() -> nx.MultiDiGraph:
 def make_condition_route_graph() -> nx.MultiDiGraph:
     """Flat 1→2→3 bike route: leg 1→2 good/quiet, leg 2→3 a main road (primary).
 
-    So build_track marks point 2 is_bad=False and point 3 is_bad=True — the single
+    So build_track marks point 2 not-bad and point 3 road_bad=True — the single
     graph the condition/colour tests diff against. custom_cost==length (deterministic).
     """
     graph = nx.MultiDiGraph(crs="EPSG:4326")
     for node in (1, 2, 3):
         graph.add_node(node, x=8.00 + node * 0.01, y=48.0, elevation=100.0, node_type=NodeType.BIKE)
-    graph.add_edge(1, 2, key=0, **_mode_edge(Mode.BIKE, 800.0, surface="asphalt", highway="residential"))
-    graph.add_edge(2, 3, key=0, **_mode_edge(Mode.BIKE, 800.0, surface="asphalt", highway="primary"))
+    graph.add_edge(1, 2, key=0, **_mode_edge(mode=Mode.BIKE, length=800.0, surface="asphalt", highway="residential"))
+    graph.add_edge(2, 3, key=0, **_mode_edge(mode=Mode.BIKE, length=800.0, surface="asphalt", highway="primary"))
     return graph
 
 
@@ -330,7 +343,11 @@ def make_densify_detour_graph() -> nx.MultiDiGraph:
     graph.add_node(2, x=8.00, y=48.02, elevation=140.0, node_type=NodeType.BIKE)
     detour = LineString([(8.00, 48.00, 100.0), (8.03, 48.01, 200.0), (8.00, 48.02, 140.0)])
     graph.add_edge(
-        1, 2, key=0, **_mode_edge(Mode.BIKE, 3000.0, surface="asphalt", highway="residential"), geometry=detour
+        1,
+        2,
+        key=0,
+        **_mode_edge(mode=Mode.BIKE, length=3000.0, surface="asphalt", highway="residential"),
+        geometry=detour,
     )
     return graph
 

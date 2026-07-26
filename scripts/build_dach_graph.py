@@ -115,7 +115,7 @@ def _build_one_region(
         try:
             pbf = _download_pbf(region_key=region_key, geofabrik_path=geofabrik_path, pbf_dir=pbf_dir)
             graph = build_region_graph(pbf_path=pbf, dem=dem, tolerance_m=tolerance_m)
-            nodes_df, edges_df = graph_to_tables(graph)
+            nodes_df, edges_df = graph_to_tables(graph=graph)
             write_region_checkpoint(
                 nodes_df=nodes_df, edges_df=edges_df, ckpt_dir=pbf_dir.parent / "checkpoints", region_key=region_key
             )
@@ -170,12 +170,16 @@ def main(argv: list[str] | None = None) -> int:
         )
         (built if ok else skipped).append(region_key)
 
-    # Merge every checkpointed region → tile → write final artifact.
-    loaded = [(k, read_region_checkpoint(ckpt_dir=ckpt_dir, region_key=k)) for k in built]
-    region_tables = [tables for _k, tables in loaded if tables is not None]
-    if not region_tables:
+    # Merge every checkpointed region → tile → write final artifact. A region in `built`
+    # was just checkpointed, so a missing read is a real bug (fail loud, don't skip).
+    if not built:
         logger.error("No regions built successfully — nothing to write.")
         return 1
+    region_tables = []
+    for region_key in built:
+        tables = read_region_checkpoint(ckpt_dir=ckpt_dir, region_key=region_key)
+        assert tables is not None, f"checkpoint for built region {region_key!r} is missing/corrupt"
+        region_tables.append(tables)
 
     nodes_df, edges_df = merge_region_tables(regions=region_tables)
     bbox = compute_bbox(nodes_df=nodes_df)

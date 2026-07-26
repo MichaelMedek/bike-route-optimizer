@@ -30,15 +30,12 @@ DATA_DIR = _user_data_root() / "data"
 
 
 class OutputConfig:
-    """Where generated artifacts and the OSM/Overpass HTTP cache live.
+    """Where generated route artifacts live.
 
-    Both directories are version-controlled as empty dirs (via .gitkeep) but
-    their *contents* are gitignored — routes and cached Overpass responses are
-    reproducible, not source.
+    Contents are gitignored (reproducible, not source); the empty dir is kept via .gitkeep.
     """
 
     OUTPUT_DIR = PROJECT_ROOT / "output"
-    CACHE_DIR = PROJECT_ROOT / "cache"
 
 
 class DEMConfig:
@@ -140,9 +137,36 @@ class CorridorConfig:
     MAX_TRIP_KM = 200.0  # beyond this the corridor graph is too big / out of scope
 
 
-# Quality colours — green good, red bad.
-GOOD_COLOR = "#2e7d32"  # green
-BAD_COLOR = "#c62828"  # red
+class Palette:
+    """All display colours, defined ONCE as hex; use ``hex_to_rgb`` where RGB is needed.
+
+    Bad surface and bad road are DISTINCT red tones so the two conditions are tellable
+    apart on the map/PNG (both still red to read as "avoid"); an edge that is BOTH gets a
+    near-black red. Green = good, purple = trains, blue/cyan = start/end markers.
+    """
+
+    GOOD = "#2e7d32"  # green — good surface AND quiet road
+    BAD_SURFACE = "#d63f15"  # red variant — unpaved/loose surface on a quiet road
+    BAD_ROAD = "#c80d29"  # red variant — main road with a good surface
+    BAD_BOTH = "#280303"  # near-black red — main road AND unpaved (worst)
+    RAIL = "#9600c8"  # purple — trains only
+    START = "#0096ff"  # blue — start marker
+    END = "#00e5ff"  # cyan — destination marker
+
+    # Route-segment CONDITION → hex.
+    CONDITION_COLORS = {
+        "train": RAIL,
+        "good": GOOD,
+        "unpaved": BAD_SURFACE,
+        "main road": BAD_ROAD,
+        "main road + unpaved": BAD_BOTH,
+    }
+
+    @staticmethod
+    def hex_to_rgb(hex_color: str) -> tuple[int, int, int]:
+        """(r, g, b) for a '#rrggbb' string — the one hex→RGB conversion for the whole app."""
+        h = hex_color.lstrip("#")
+        return (int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16))
 
 
 class SurfaceConfig:
@@ -190,11 +214,11 @@ class SurfaceConfig:
     }
     # Untagged surface (~35% of raw ways) → assume tier 1 (loose, pessimistic but rideable).
     DEFAULT_TIER = 1
-    # Per-tier human label + swatch: tier 0 (paved) green; tiers 1 & 2 (unpaved) red.
+    # Per-tier human label + swatch (donut colours): tier 0 green; tier 1 rust; tier 2 darker rust.
     TIER_LABEL_COLORS = {
-        0: ("paved", GOOD_COLOR),
-        1: ("gravel/unpaved", BAD_COLOR),
-        2: ("natural/rough", BAD_COLOR),
+        0: ("paved", Palette.GOOD),
+        1: ("gravel/unpaved", Palette.BAD_SURFACE),
+        2: ("natural/rough", Palette.BAD_SURFACE),
     }
 
 
@@ -233,8 +257,8 @@ class RoadConfig:
     }
     # Untagged highway (~0% in practice) → assume main road (kept, penalised).
     DEFAULT_TIER = 1
-    # Per-tier human label + swatch: tier 0 (quiet) good/green, tier 1 (main) bad/red.
-    TIER_LABEL_COLORS = {0: ("quiet way", GOOD_COLOR), 1: ("main road", BAD_COLOR)}
+    # Per-tier human label + swatch (donut colours): tier 0 (quiet) green, tier 1 (main) crimson.
+    TIER_LABEL_COLORS = {0: ("quiet way", Palette.GOOD), 1: ("main road", Palette.BAD_ROAD)}
 
 
 class RoutingDefaults:
@@ -263,31 +287,31 @@ PARAM_SPECS = (
     RoutingParamSpec(
         field="extra_km_per_uphill_100m",
         label="Uphill penalty",
-        help="Extra km you'd ride to avoid every 100 m of climbing (0 = ignore hills).",
+        help="Extra km you'd ride to avoid every 100 m of climbing (0 = ignore hills; high = long detours to stay flat).",
         default=12.0,
     ),
     RoutingParamSpec(
         field="extra_km_per_unpaved_km",
         label="Unpaved penalty",
-        help="Extra km you'd ride to avoid 1 km of unpaved surface (0 = don't mind gravel).",
+        help="Extra km you'd ride to avoid 1 km of unpaved surface (0 = don't mind gravel; high = detour far to stay paved).",
         default=1.0,
     ),
     RoutingParamSpec(
         field="extra_km_per_main_road_km",
         label="Main road penalty",
-        help="Extra km you'd ride to avoid 1 km on a busy main road (0 = don't mind them).",
+        help="Extra km you'd ride to avoid 1 km on a busy main road (0 = don't mind them; high = detour far to avoid main roads).",
         default=1.0,
     ),
     RoutingParamSpec(
         field="extra_km_per_rail_km",
         label="Rail distance penalty",
-        help="Extra km you'd bike to avoid 1 km carried by train (≈ ticket cost per km; high = avoid trains).",
+        help="Extra km you'd bike to avoid 1 km carried by train (0 = train distance is free; high = avoid long train legs).",
         default=1.0,
     ),
     RoutingParamSpec(
         field="extra_km_per_boarding",
         label="Train boarding penalty",
-        help="Extra km you'd bike rather than board a train once (the wait/hassle; high = avoid boarding).",
+        help="Extra km you'd bike to avoid boarding a train once (0 = board freely; high = avoid catching trains).",
         default=20.0,
     ),
 )
@@ -346,6 +370,9 @@ class GmapsConfig:
     # N significant points → origin + (N-2) intermediate + destination.
     N_WAYPOINTS = 10
     MAX_INTERMEDIATE_WAYPOINTS = 9  # hard Google Maps api=1 limit
+    # Interior waypoints closer than this to the previous kept point are dropped, so a
+    # short leg isn't cluttered with near-identical points (origin + destination always kept).
+    MIN_WAYPOINT_SPACING_KM = 1.0
     BASE_URL = "https://www.google.com/maps/dir/?api=1"
     TRAVEL_MODE = "bicycling"
 
@@ -353,7 +380,9 @@ class GmapsConfig:
 class PlotConfig:
     """Debug elevation-heatmap PNG rendering."""
 
-    CMAP = "plasma"
+    # Elevation colormap: cividis (blue→yellow, colourblind-safe) — deliberately avoids
+    # green/red/purple so it never clashes with the route's condition + rail colours.
+    CMAP = "cividis"
     DPI = 200
     ROUTE_ZOOM_MARGIN = 0.08  # pad the debug plot's route bounds by this fraction of the span
     # Figure sized to each route's geographic aspect (OSMnx keeps the map equal-aspect), so
@@ -383,7 +412,6 @@ class PhotonConfig:
     BASE_URL = "https://photon.komoot.io/api"
     LANG = "de"
     LIMIT = 5
-    DEBOUNCE_MS = 250  # st_searchbox debounce; eases Photon load while typing
     PLACE_OSM_TAG = "place"  # settlements, not POIs
     TIMEOUT_S = 3.0
 
@@ -422,18 +450,12 @@ class WebMapConfig:
     RIBBON_FLOAT_ABOVE_M = 100.0
     RIBBON_WIDTH_PER_KMH_M = 1.0
     RIBBON_MIN_PIXELS = 3
-    # All rail lines always shown as a thin purple baseline (context, even without a
-    # route): lifted just above the terrain and BELOW the ribbon so the route stays on top.
-    RAIL_BASELINE_FLOAT_ABOVE_M = 20.0
-    RAIL_BASELINE_MIN_PIXELS = 1
-    RAIL_BASELINE_WIDTH_M = 4.0
     # Endpoint markers keep their own blue/cyan; the ribbon itself is coloured by
-    # CONDITION (green good / red bad for pedalled legs) and purple for trains.
-    START_COLOR = (0, 150, 255)  # blue (start marker)
-    END_COLOR = (0, 229, 255)  # cyan (destination marker)
-    RAIL_COLOR = (150, 0, 200)  # purple — trains only
-    GOOD_RGB = (46, 125, 50)  # green — good surface AND quiet road (= GOOD_COLOR)
-    BAD_RGB = (198, 40, 40)  # red — bad surface OR main road (= BAD_COLOR)
+    # CONDITION (green good / graded reds for bad) and purple for trains. All colours come
+    # from the single Palette (hex), converted here via hex_to_rgb for the RGB pydeck/PNG APIs.
+    START_COLOR = Palette.hex_to_rgb(hex_color=Palette.START)  # blue (start marker)
+    END_COLOR = Palette.hex_to_rgb(hex_color=Palette.END)  # cyan (destination marker)
+    RAIL_COLOR = Palette.hex_to_rgb(hex_color=Palette.RAIL)  # purple — trains only
     # Mode→colour only for the composition donut (bike blue vs train purple); the
     # ribbon/PNG use segment_color (condition-based), NOT this map.
     MODE_COLORS: dict[str, tuple[int, int, int]] = {

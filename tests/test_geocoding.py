@@ -97,8 +97,10 @@ def test_photon_autocomplete_maps_features_to_labels():
     """Two features → their display labels in order (labels only; box text is geocoded on submit)."""
     payload = {
         "features": [
-            _photon_feature("Freudenstadt", 8.4116, 48.4633, city="Freudenstadt", state="Baden-Württemberg"),
-            _photon_feature("Pforzheim", 8.6947, 48.8922, state="Baden-Württemberg"),
+            _photon_feature(
+                name="Freudenstadt", lon=8.4116, lat=48.4633, city="Freudenstadt", state="Baden-Württemberg"
+            ),
+            _photon_feature(name="Pforzheim", lon=8.6947, lat=48.8922, state="Baden-Württemberg"),
         ]
     }
     fake_get = MagicMock(return_value=payload)

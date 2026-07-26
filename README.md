@@ -30,15 +30,15 @@ Add `--extra_km_per_uphill_100m 100` (or any other preference flag) to bias the 
 
 ## The five preferences
 
-Each preference is expressed in the same intuitive unit: **how many extra kilometres would you happily pedal to avoid one unit of the bad thing.** `0` = ignore it, `1` = mild nudge, `10` = go far out of your way to avoid it.
+Each preference is expressed in the same intuitive unit: **how many extra kilometres would you happily pedal to avoid one unit of the bad thing.** `0` = ignore it, higher = go further out of your way to avoid it. Each cell below mirrors the slider/`--help` tooltip verbatim.
 
-| Flag | `0` | `1` | `10` (high) |
-|---|---|---|---|
-| `--extra_km_per_uphill_100m` | climbs freely, shortest path | mild flattening | long detours to dodge hills |
-| `--extra_km_per_unpaved_km` | happily rides gravel | mild paved preference | detours far to stay paved |
-| `--extra_km_per_main_road_km` | uses busy roads freely | mild quiet-road preference | detours far to avoid main roads |
-| `--extra_km_per_rail_km` | train distance is free (flat-rate ticket) | mild bias off trains | avoids long train legs |
-| `--extra_km_per_boarding` | boards trains freely | mild bias against boarding | avoids catching trains at all |
+| Flag | What it means (`0` = … ; high = …) |
+|---|---|
+| `--extra_km_per_uphill_100m` | Extra km you'd ride to avoid every 100 m of climbing (0 = ignore hills; high = long detours to stay flat). |
+| `--extra_km_per_unpaved_km` | Extra km you'd ride to avoid 1 km of unpaved surface (0 = don't mind gravel; high = detour far to stay paved). |
+| `--extra_km_per_main_road_km` | Extra km you'd ride to avoid 1 km on a busy main road (0 = don't mind them; high = detour far to avoid main roads). |
+| `--extra_km_per_rail_km` | Extra km you'd bike to avoid 1 km carried by train (0 = train distance is free; high = avoid long train legs). |
+| `--extra_km_per_boarding` | Extra km you'd bike to avoid boarding a train once (0 = board freely; high = avoid catching trains). |
 
 ## The physics & mathematics
 

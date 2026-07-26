@@ -12,7 +12,7 @@ from pathlib import Path
 import networkx as nx
 
 from bike_router.composition import RouteComposition, route_composition
-from bike_router.constants import CorridorConfig, GmapsConfig, GpxConfig, RoutingParams
+from bike_router.constants import CorridorConfig, GmapsConfig, GpxConfig, GraphConfig, RoutingParams
 from bike_router.corridor import build_corridor
 from bike_router.cost import assign_edge_costs
 from bike_router.errors import NoRouteError, OutOfCoverageError, TripTooLongError, TripTooShortError
@@ -45,10 +45,10 @@ logger = logging.getLogger(__name__)
 
 
 def _assert_within_coverage(
-    start_latlon: tuple[float, float], dest_latlon: tuple[float, float], graph_dir: Path | None
+    start_latlon: tuple[float, float], dest_latlon: tuple[float, float], graph_dir: Path
 ) -> None:
     """Raise OutOfCoverageError if either endpoint falls outside the prebuilt graph's bbox."""
-    meta = load_meta() if graph_dir is None else load_meta(graph_dir=graph_dir)
+    meta = load_meta(graph_dir=graph_dir)
     west, south, east, north = meta["bbox"]
     for lat, lon in (start_latlon, dest_latlon):
         if not (west <= lon <= east and south <= lat <= north):
@@ -71,7 +71,7 @@ class RouteResult:
 
 
 def resolve_endpoints(
-    *, origin: str, destination: str, graph_dir: Path | None = None
+    *, origin: str, destination: str, graph_dir: Path = GraphConfig.GRAPH_DIR
 ) -> tuple[tuple[float, float, float], tuple[float, float, float]]:
     """Geocode two place strings and snap each to the nearest graph node.
 
@@ -82,13 +82,11 @@ def resolve_endpoints(
     Args:
         origin: Start place string.
         destination: Destination place string.
-        graph_dir: Override for the prebuilt-graph cache dir (tests); None = default.
+        graph_dir: Prebuilt-graph dir (tests override; defaults to the shipped artifact).
     """
     geocode_fn = make_geocode_fn()  # one rate-limited fn spans both calls (1 req/s)
     start_ll = geocode_endpoint(place=origin, label="Start", geocode_fn=geocode_fn)
     end_ll = geocode_endpoint(place=destination, label="End", geocode_fn=geocode_fn)
-    if graph_dir is None:
-        return snap_to_node(lat=start_ll[0], lon=start_ll[1]), snap_to_node(lat=end_ll[0], lon=end_ll[1])
     return (
         snap_to_node(lat=start_ll[0], lon=start_ll[1], graph_dir=graph_dir),
         snap_to_node(lat=end_ll[0], lon=end_ll[1], graph_dir=graph_dir),
@@ -100,7 +98,7 @@ def plan_route(
     origin: str,
     destination: str,
     params: RoutingParams,
-    graph_dir: Path | None = None,
+    graph_dir: Path = GraphConfig.GRAPH_DIR,
 ) -> RouteResult:
     """Compute a single route between origin and destination for ``params``.
 
@@ -111,7 +109,7 @@ def plan_route(
         origin: Start place string (geocoded via Nominatim).
         destination: Destination place string.
         params: The rider's five "extra km" routing preferences (incl. rail sliders).
-        graph_dir: Override for the prebuilt-graph cache dir (tests); None = default.
+        graph_dir: Prebuilt-graph dir (tests override; defaults to the shipped artifact).
     """
     geocode_fn = make_geocode_fn()  # one rate-limited fn spans both calls (1 req/s)
     # Fail-fast: a bad Start raises before Destination is ever looked up.
@@ -137,11 +135,7 @@ def plan_route(
     _assert_within_coverage(start_latlon=start_latlon, dest_latlon=dest_latlon, graph_dir=graph_dir)
     corridor = build_corridor(start_latlon=start_latlon, dest_latlon=dest_latlon)
 
-    graph = (
-        load_corridor_graph(corridor=corridor)
-        if graph_dir is None
-        else load_corridor_graph(corridor=corridor, graph_dir=graph_dir)
-    )
+    graph = load_corridor_graph(corridor=corridor, graph_dir=graph_dir)
     check_strongly_connected(graph=graph)
 
     source, target = snap_endpoints(graph=graph, start_latlon=start_latlon, dest_latlon=dest_latlon)
@@ -169,7 +163,7 @@ def plan_route(
         track.bike.descent_m,
     )
 
-    gpx_path, png_path = route_output_paths(origin=origin, destination=destination)
+    gpx_path, png_path = route_output_paths(origin=origin, destination=destination, params=params)
     gpx_path.parent.mkdir(parents=True, exist_ok=True)
     gpx_path.write_text(build_gpx(track=track))
     logger.info("Wrote %s (%d trackpoints)", gpx_path, len(track.points))

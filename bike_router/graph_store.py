@@ -22,7 +22,8 @@ from huggingface_hub import hf_hub_download, list_repo_files
 from shapely import from_wkt, to_wkt
 from shapely.geometry import LineString, Polygon
 
-from bike_router.constants import GraphConfig, Mode, NodeType, WebMapConfig
+from bike_router.constants import GraphConfig, Mode, NodeType
+from bike_router.errors import OutOfCoverageError
 from bike_router.progress import ProgressFn, null_progress
 
 logger = logging.getLogger(__name__)
@@ -299,27 +300,6 @@ def load_corridor_graph(corridor: Polygon, graph_dir: Path = GraphConfig.GRAPH_D
     return graph
 
 
-def load_rail_baseline(
-    graph_dir: Path = GraphConfig.GRAPH_DIR, float_above_m: float = WebMapConfig.RAIL_BASELINE_FLOAT_ABOVE_M
-) -> list[list[list[float]]]:
-    """All rail lines in the artifact as lifted ``[[lon, lat, z], ...]`` polylines.
-
-    Reads every edge tile, keeps rail edges with baked 3D geometry, and lifts each vertex
-    ``float_above_m`` above the terrain — the always-on rail baseline for the 3D map.
-    """
-    edges_dir = graph_dir / GraphConfig.EDGES_SUBDIR
-    frames = [pd.read_parquet(path) for path in sorted(edges_dir.glob("*.parquet"))]
-    if not frames:
-        return []
-    edges_df = pd.concat(frames, ignore_index=True)
-    rail = edges_df[(edges_df["mode"] == Mode.RAIL) & edges_df["geometry_wkt"].notna()]
-    paths: list[list[list[float]]] = []
-    for wkt in rail["geometry_wkt"]:
-        line = from_wkt(wkt)
-        paths.append([[c[0], c[1], (c[2] if len(c) > 2 else 0.0) + float_above_m] for c in line.coords])
-    return paths
-
-
 def snap_to_node(lat: float, lon: float, graph_dir: Path = GraphConfig.GRAPH_DIR) -> tuple[float, float, float]:
     """Nearest graph node to (lat, lon) as ``(lat, lon, elevation_m)``.
 
@@ -330,7 +310,8 @@ def snap_to_node(lat: float, lon: float, graph_dir: Path = GraphConfig.GRAPH_DIR
     tile_deg = load_meta(graph_dir=graph_dir)["tile_deg"]
     tiles = _covering_tiles(bounds=(lon, lat, lon, lat), tile_deg=tile_deg, margin=1)
     nodes_df = _read_tiles(directory=graph_dir / GraphConfig.NODES_SUBDIR, tiles=tiles, columns=_NODE_COLS)
-    assert not nodes_df.empty, "no graph nodes near this point (outside coverage)"
+    if nodes_df.empty:  # user-facing: a place outside the prebuilt graph's coverage
+        raise OutOfCoverageError(f"No routable graph near ({lat:.4f}, {lon:.4f}) — outside the covered region.")
     lats = nodes_df["lat"].to_numpy()
     lons = nodes_df["lon"].to_numpy()
     d2 = (lats - lat) ** 2 + ((lons - lon) * math.cos(math.radians(lat))) ** 2  # planar; fine for nearest

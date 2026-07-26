@@ -61,7 +61,7 @@ def main(argv: list[str] | None = None) -> int:
     start = time.time()
     # Per-region build with a visible tqdm bar (one region at a time → bounded memory).
     regions = [
-        graph_to_tables(build_region_graph(pbf_path=pbf, dem=dem, tolerance_m=args.tolerance, bbox=bbox))
+        graph_to_tables(graph=build_region_graph(pbf_path=pbf, dem=dem, tolerance_m=args.tolerance, bbox=bbox))
         for pbf in tqdm(args.pbf, desc="Building regions", unit="region")
     ]
     nodes_df, edges_df = merge_region_tables(regions=regions)

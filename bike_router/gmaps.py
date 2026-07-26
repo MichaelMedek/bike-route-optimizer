@@ -18,11 +18,12 @@ def _fmt(point: tuple[float, float]) -> str:
 
 
 def build_gmaps_url(waypoints_latlon: list[tuple[float, float]]) -> str:
-    """Build a bicycling directions URL from exactly N (lat, lon) points."""
-    expected = GmapsConfig.N_WAYPOINTS
-    if len(waypoints_latlon) != expected:
-        raise ValueError(f"expected exactly {expected} waypoints, got {len(waypoints_latlon)}")
-    assert expected >= 2, "need origin + destination at minimum"
+    """Build a bicycling directions URL from 2..N (lat, lon) points (origin + interior + dest).
+
+    select_waypoints thins over-close interior points, so a short leg may pass fewer than
+    N points here — origin + destination are always present.
+    """
+    assert len(waypoints_latlon) >= 2, "need origin + destination at minimum"
 
     origin = _fmt(point=waypoints_latlon[0])
     destination = _fmt(point=waypoints_latlon[-1])

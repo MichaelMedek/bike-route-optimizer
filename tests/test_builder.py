@@ -73,7 +73,7 @@ def test_tag_bike_defaults_sets_mode_and_node_type():
     graph.add_node(1, x=0.0, y=0.0)
     graph.add_node(2, x=1.0, y=0.0)
     graph.add_edge(1, 2, key=0, length=10.0)
-    _tag_bike_defaults(graph)
+    _tag_bike_defaults(graph=graph)
     assert graph.get_edge_data(1, 2)[0]["mode"] == Mode.BIKE
     assert all(d["node_type"] == NodeType.BIKE for _n, d in graph.nodes(data=True))
 

@@ -7,6 +7,7 @@ import pytest
 from bike_router.constants import GpxConfig, Mode, NodeType, RailConfig
 from bike_router.track import RouteStats, Track, TrackPoint, build_track, densify_track
 from tests.conftest import (
+    _mode_edge,
     make_condition_route_graph,
     make_densify_detour_graph,
     make_exchange_rail_graph,
@@ -14,11 +15,15 @@ from tests.conftest import (
 )
 
 
+def _rail_ride_s(*, rail_m: float) -> float:
+    """Expected train ride time (s) for a rail distance — one source for the timing asserts."""
+    return rail_m / (RailConfig.RAIL_SPEED_KMH * GpxConfig.METERS_PER_KM / GpxConfig.SECONDS_PER_HOUR)
+
+
 def test_build_track_rail_derives_ride_time_and_boarding_wait():
     graph = make_rail_graph()
     track = build_track(graph=graph, node_path=[1, 2, 3])
-    rail_ride = 7000.0 / (RailConfig.RAIL_SPEED_KMH * GpxConfig.METERS_PER_KM / GpxConfig.SECONDS_PER_HOUR)
-    expected_s = RailConfig.BOARDING_WAIT_S + rail_ride  # boarding at station 2 + ride 2→3
+    expected_s = RailConfig.BOARDING_WAIT_S + _rail_ride_s(rail_m=7000.0)  # boarding at station 2 + ride 2→3
     assert track.points[-1].elapsed_s == expected_s
     # The WHOLE-journey climb spans every edge (like total distance): station hop 200→205 m
     # (+5) then the rail ride 205→600 m (+395) = +400 m total, all downhill-free here.
@@ -57,7 +62,7 @@ def test_build_track_exchange_trip_charges_boarding_exactly_once():
     path = [1, -1, -2, -3, 2]  # start, A, B(exchange), C, end
     track = build_track(graph=graph, node_path=path)
     rail_m = 4000.0 + 3000.0
-    ride_s = rail_m / (RailConfig.RAIL_SPEED_KMH * GpxConfig.METERS_PER_KM / GpxConfig.SECONDS_PER_HOUR)
+    ride_s = _rail_ride_s(rail_m=rail_m)
     # exactly ONE boarding wait despite the mid-trip change at the degree-3 exchange node B
     assert track.points[-1].elapsed_s == pytest.approx(RailConfig.BOARDING_WAIT_S + ride_s)
     # the alight hop C→end (a station edge NOT entering a rail node) adds no wait
@@ -66,12 +71,14 @@ def test_build_track_exchange_trip_charges_boarding_exactly_once():
 
 
 def test_build_track_sets_condition_and_speed_per_point():
-    # A good quiet bike leg → is_bad False; a main-road leg → is_bad True.
+    # A good quiet bike leg → not bad; a main-road leg → road_bad True (surface still good).
     graph = make_condition_route_graph()
     track = build_track(graph=graph, node_path=[1, 2, 3])
     # point[1] arrives via the good quiet leg; point[2] via the main-road leg.
-    assert track.points[1].is_bad is False and track.points[1].speed_kmh == 25.0
-    assert track.points[2].is_bad is True  # primary → main road → bad
+    assert track.points[1].surface_bad is False and track.points[1].road_bad is False
+    assert track.points[1].speed_kmh == 25.0
+    assert track.points[2].road_bad is True  # primary → main road
+    assert track.points[2].surface_bad is False  # asphalt → surface still good
 
 
 def test_densify_track_follows_baked_3d_polyline_and_keeps_timing():
@@ -82,10 +89,24 @@ def test_densify_track_follows_baked_3d_polyline_and_keeps_timing():
     track = Track(
         points=[
             TrackPoint(
-                lat=48.00, lon=8.00, elevation_m=100.0, elapsed_s=0.0, mode=Mode.BIKE, is_bad=False, speed_kmh=25.0
+                lat=48.00,
+                lon=8.00,
+                elevation_m=100.0,
+                elapsed_s=0.0,
+                mode=Mode.BIKE,
+                surface_bad=False,
+                road_bad=False,
+                speed_kmh=25.0,
             ),
             TrackPoint(
-                lat=48.02, lon=8.00, elevation_m=140.0, elapsed_s=600.0, mode=Mode.BIKE, is_bad=False, speed_kmh=18.0
+                lat=48.02,
+                lon=8.00,
+                elevation_m=140.0,
+                elapsed_s=600.0,
+                mode=Mode.BIKE,
+                surface_bad=False,
+                road_bad=False,
+                speed_kmh=18.0,
             ),
         ],
         bike=stats,  # ascent 40 m from node-level 100→140; densify must NOT recompute from vertices
@@ -100,24 +121,38 @@ def test_densify_track_follows_baked_3d_polyline_and_keeps_timing():
     # ascent/descent carried from the node-level track, NOT re-summed from the 200 m apex jitter
     assert dense.total.ascent_m == pytest.approx(40.0) and dense.total.descent_m == pytest.approx(0.0)
     # the leg's condition/speed propagate to every densified vertex
-    assert all(not p.is_bad and p.speed_kmh == 18.0 for p in dense.points)
+    assert all(not p.surface_bad and not p.road_bad and p.speed_kmh == 18.0 for p in dense.points)
 
 
 def test_densify_track_straight_hop_without_geometry():
     # Rail/station edges have no geometry → densify falls back to a straight segment
     # at the two node elevations (still no DEM).
     graph = nx.MultiDiGraph(crs="EPSG:4326")
-    graph.add_node(1, x=8.0, y=48.0, elevation=100.0)
-    graph.add_node(2, x=8.1, y=48.0, elevation=400.0)
-    graph.add_edge(1, 2, key=0, length=8000.0, surface=None, highway=None, mode=Mode.RAIL, custom_cost=8000.0)
+    graph.add_node(1, x=8.0, y=48.0, elevation=100.0, node_type=NodeType.RAIL)
+    graph.add_node(2, x=8.1, y=48.0, elevation=400.0, node_type=NodeType.RAIL)
+    graph.add_edge(1, 2, key=0, **_mode_edge(mode=Mode.RAIL, length=8000.0))
     stats = RouteStats(distance_km=8.0, duration_min=6.0, ascent_m=0.0, descent_m=0.0)
     track = Track(
         points=[
             TrackPoint(
-                lat=48.0, lon=8.0, elevation_m=100.0, elapsed_s=0.0, mode=Mode.RAIL, is_bad=False, speed_kmh=80.0
+                lat=48.0,
+                lon=8.0,
+                elevation_m=100.0,
+                elapsed_s=0.0,
+                mode=Mode.RAIL,
+                surface_bad=False,
+                road_bad=False,
+                speed_kmh=80.0,
             ),
             TrackPoint(
-                lat=48.0, lon=8.1, elevation_m=400.0, elapsed_s=360.0, mode=Mode.RAIL, is_bad=False, speed_kmh=80.0
+                lat=48.0,
+                lon=8.1,
+                elevation_m=400.0,
+                elapsed_s=360.0,
+                mode=Mode.RAIL,
+                surface_bad=False,
+                road_bad=False,
+                speed_kmh=80.0,
             ),
         ],
         bike=stats,
