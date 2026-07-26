@@ -95,6 +95,17 @@ def cheapest_edge(edges: dict[int, dict[str, Any]]) -> dict[str, Any]:
     return edges[best_key]
 
 
+def climb_totals(deltas: list[float]) -> tuple[float, float]:
+    """(ascent, descent) in metres from per-edge Δelevations: gross up- vs down-sum.
+
+    Ascent sums the positive deltas, descent the magnitude of the negative ones (NOT the
+    net change). One source for both the whole-journey and the bike-only climb tallies.
+    """
+    ascent = sum(d for d in deltas if d > 0)
+    descent = sum(-d for d in deltas if d < 0)
+    return ascent, descent
+
+
 def iter_route_edges(graph: nx.MultiDiGraph, node_path: list[int]) -> Iterator[tuple[int, int, dict[str, Any]]]:
     """Yield ``(node_a, node_b, cheapest_edge_data)`` for each hop on the A* path."""
     for node_a, node_b in zip(node_path[:-1], node_path[1:], strict=True):
@@ -148,7 +159,9 @@ def build_track(graph: nx.MultiDiGraph, node_path: list[int]) -> Track:
             speed_kmh=first_speed,
         )
     ]
-    total_m = ascent = descent = elapsed_s = 0.0
+    total_m = total_s = 0.0
+    total_deltas: list[float] = []  # Δelevation of EVERY edge (whole-journey climb)
+    bike_deltas: list[float] = []  # Δelevation of pedalled edges only
     bike_m = bike_s = 0.0  # only bike legs feed the avg-speed assert (rail is far faster)
     rail_speed_ms = kmh_to_ms(kmh=RailConfig.RAIL_SPEED_KMH)
 
@@ -158,12 +171,10 @@ def build_track(graph: nx.MultiDiGraph, node_path: list[int]) -> Track:
         elev_b = float(graph.nodes[node_b]["elevation"])
         delta = elev_b - elev_a
         is_bad, speed_kmh = edge_condition_speed(data=data, elev_source=elev_a, elev_target=elev_b, length_m=length_m)
+        total_deltas.append(delta)  # every edge feeds the whole-journey climb (same scope as total_m)
 
         if data["mode"] == Mode.BIKE:
-            if delta > 0:
-                ascent += delta
-            else:
-                descent += -delta
+            bike_deltas.append(delta)
             speed_ms = kmh_to_ms(kmh=speed_kmh)
             leg_s = length_m / speed_ms
             bike_m += length_m
@@ -173,7 +184,7 @@ def build_track(graph: nx.MultiDiGraph, node_path: list[int]) -> Track:
         else:  # Mode.STATION — boarding (entering a rail node) waits; alighting is free
             boarding = graph.nodes[node_b]["node_type"] == NodeType.RAIL
             leg_s = RailConfig.BOARDING_WAIT_S if boarding else 0.0
-        elapsed_s += leg_s
+        total_s += leg_s
         total_m += length_m
 
         target = graph.nodes[node_b]
@@ -182,7 +193,7 @@ def build_track(graph: nx.MultiDiGraph, node_path: list[int]) -> Track:
                 lat=target["y"],
                 lon=target["x"],
                 elevation_m=elev_b,
-                elapsed_s=elapsed_s,
+                elapsed_s=total_s,
                 mode=str(data["mode"]),
                 is_bad=is_bad,
                 speed_kmh=speed_kmh,
@@ -190,7 +201,7 @@ def build_track(graph: nx.MultiDiGraph, node_path: list[int]) -> Track:
         )
 
     assert total_m > 0, "route distance must be positive"
-    assert elapsed_s > 0, "route duration must be positive"
+    assert total_s > 0, "route duration must be positive"
     # sanity: average BIKE speed must sit between the walking floor and the best base
     # speed (rail legs are excluded — 80 km/h would trip it).
     if bike_s > 0:
@@ -198,18 +209,20 @@ def build_track(graph: nx.MultiDiGraph, node_path: list[int]) -> Track:
         assert SpeedConfig.WALK_KMH - 1e-9 <= avg_kmh <= max(SpeedConfig.BASE_KMH_BY_TIER.values()) + 1e-9, (
             f"implausible average speed {avg_kmh:.1f} km/h"
         )
-    # bike stats = pedalled legs only (ascent/descent already exclude rail); total = whole trip.
+    # bike stats = pedalled legs only; total = whole journey (bike + rail climb), matching total_m.
+    bike_ascent, bike_descent = climb_totals(deltas=bike_deltas)
+    total_ascent, total_descent = climb_totals(deltas=total_deltas)
     bike_stats = RouteStats(
         distance_km=bike_m / GpxConfig.METERS_PER_KM,
         duration_min=bike_s / GpxConfig.SECONDS_PER_HOUR * GpxConfig.MINUTES_PER_HOUR,
-        ascent_m=ascent,
-        descent_m=descent,
+        ascent_m=bike_ascent,
+        descent_m=bike_descent,
     )
     total_stats = RouteStats(
         distance_km=total_m / GpxConfig.METERS_PER_KM,
-        duration_min=elapsed_s / GpxConfig.SECONDS_PER_HOUR * GpxConfig.MINUTES_PER_HOUR,
-        ascent_m=ascent,  # climb is pedalled-only; trains carry no rider ascent/descent
-        descent_m=descent,
+        duration_min=total_s / GpxConfig.SECONDS_PER_HOUR * GpxConfig.MINUTES_PER_HOUR,
+        ascent_m=total_ascent,  # whole journey, incl. the climb the train covers
+        descent_m=total_descent,
     )
     return Track(points=points, bike=bike_stats, total=total_stats)
 

@@ -1,8 +1,19 @@
 """Track-builder tests — geometry, elevation, adaptive timing, rolled-up totals."""
 
 from bike_router.constants import GpxConfig, SpeedConfig
-from bike_router.track import RouteStats, build_track
+from bike_router.track import RouteStats, build_track, climb_totals
 from tests.conftest import make_line_graph
+
+
+def test_climb_totals_reports_gross_not_net_over_a_hill():
+    # Start and end at the SAME elevation but go over a hill: net change is 0, yet the ride
+    # still climbs then descends, so ascent/descent must each report the GROSS hill height.
+    ascent, descent = climb_totals(deltas=[+30.0, -30.0])  # 100 → 130 → 100 m
+    assert ascent == 30.0 and descent == 30.0  # NOT 0 (a plain sum of deltas would give 0)
+    # rolling hills: +30 −10 +5 −25 → up-sum 35, down-sum 35 (net 0 again)
+    up, down = climb_totals(deltas=[+30.0, -10.0, +5.0, -25.0])
+    assert up == 35.0 and down == 35.0
+    assert climb_totals(deltas=[]) == (0.0, 0.0)  # empty path → no climb
 
 
 def test_route_stats_format_strings_are_single_source():

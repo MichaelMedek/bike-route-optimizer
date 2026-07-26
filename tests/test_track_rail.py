@@ -20,13 +20,26 @@ def test_build_track_rail_derives_ride_time_and_boarding_wait():
     rail_ride = 7000.0 / (RailConfig.RAIL_SPEED_KMH * GpxConfig.METERS_PER_KM / GpxConfig.SECONDS_PER_HOUR)
     expected_s = RailConfig.BOARDING_WAIT_S + rail_ride  # boarding at station 2 + ride 2→3
     assert track.points[-1].elapsed_s == expected_s
-    # rail climb is NOT counted as pedalled ascent (bike or total)
-    assert track.total.ascent_m == 0.0 and track.total.descent_m == 0.0
+    # The WHOLE-journey climb spans every edge (like total distance): station hop 200→205 m
+    # (+5) then the rail ride 205→600 m (+395) = +400 m total, all downhill-free here.
+    assert track.total.ascent_m == pytest.approx(400.0) and track.total.descent_m == 0.0
+    # The BIKE-only climb excludes rail/station: this route has NO pedalled edges → 0.
+    assert track.bike.ascent_m == 0.0 and track.bike.descent_m == 0.0
     # bike-only vs total split: this route has NO pedalled (Mode.BIKE) edges — just a
     # station-access hop + the train — so bike distance is 0 while total spans the 7 km ride.
     assert track.bike.distance_km == 0.0
     assert track.total.distance_km == pytest.approx(7.08)
     assert track.bike.duration_min < track.total.duration_min
+
+
+def test_build_track_total_climb_includes_train_bike_climb_excludes_it():
+    # Regression: the "bike + train" ascent must span the WHOLE journey (incl. the climb
+    # the train covers), while "bike only" counts just pedalled edges. make_rail_graph climbs
+    # 200→205 m on the station hop and 205→600 m on the rail ride: total +400 m, bike-only +0.
+    track = build_track(graph=make_rail_graph(), node_path=[1, 2, 3])
+    assert track.total.ascent_m == pytest.approx(400.0)  # whole journey, train climb included
+    assert track.bike.ascent_m == 0.0  # no pedalled edge → no bike climb
+    assert track.total.ascent_m != track.bike.ascent_m  # the two rows MUST differ on a train route
 
 
 def test_build_track_rail_does_not_trip_avg_speed_assert():
@@ -49,7 +62,7 @@ def test_build_track_exchange_trip_charges_boarding_exactly_once():
     assert track.points[-1].elapsed_s == pytest.approx(RailConfig.BOARDING_WAIT_S + ride_s)
     # the alight hop C→end (a station edge NOT entering a rail node) adds no wait
     assert graph.nodes[2]["node_type"] == NodeType.BIKE
-    assert track.total.ascent_m == 0.0 and track.total.descent_m == 0.0  # flat rail carries no bike climb
+    assert track.total.ascent_m == 0.0 and track.total.descent_m == 0.0  # this graph is flat (all 100 m)
 
 
 def test_build_track_sets_condition_and_speed_per_point():
