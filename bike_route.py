@@ -54,14 +54,14 @@ def main(argv: list[str] | None = None) -> int:
     print(format_composition(comp=result.composition))
     print(f"GPX: {result.gpx_path}")
     print(f"Heatmap: {result.png_path}")
-    # Train rides: boarding + alighting station per ride, to search in a railway app.
+    # Train rides: boarding + alighting station per ride, to look up in a railway app.
     if result.rail_legs:
         print("Trains to catch:")
         for line in format_rail_legs(rail_legs=result.rail_legs):
             print(f"  {line}")
-    # One bicycling link per pedalled leg, each labelled by its real endpoints (origin/
-    # destination at the ends, station names where a train ride abuts the leg).
-    print("Google Maps (one bike leg per train ride):")
+    # One Google Maps bicycling link per pedalled leg, each labelled by its real endpoints
+    # (origin/destination at the ends, station names where a train ride abuts the leg).
+    print("Bike legs in Google Maps (one link per leg):")
     for label, leg in zip(format_bike_legs(bike_legs=result.bike_legs), result.bike_legs, strict=True):
         print(f"  {label}: {leg.url}")
     return 0

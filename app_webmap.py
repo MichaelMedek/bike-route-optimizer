@@ -69,17 +69,17 @@ def _render_route_output(result: object) -> None:
     for col, (title, by_km, colors) in zip(st.columns(len(donuts)), donuts, strict=True):
         col.altair_chart(composition_donut(title=title, by_km=by_km, colors=colors), use_container_width=True)
 
-    # Train rides: boarding + alighting station per ride, so the rider can search the
-    # actual train in a railway app. Absent for a pure-bike route.
+    # Train rides: boarding + alighting station per ride, so the rider can look the train
+    # up in a railway app. Absent for a pure-bike route.
     if result.rail_legs:
-        st.caption("🚆 Trains to catch (search these in your railway app):")
+        st.caption("🚆 Trains to catch (look these up in your railway app):")
         for line in format_rail_legs(rail_legs=result.rail_legs):
             st.markdown(f"- {line}")
 
-    # One bicycling link per pedalled leg; a train ride splits the route into more. The
-    # label ("Bike Route N: from → to") is a caption; the code block holds ONLY the URL so
-    # its copy-to-clipboard icon copies just the link.
-    st.caption("🗺️ Open in Google Maps (one bike leg per train ride):")
+    # One Google Maps bicycling link per pedalled leg (a train ride splits the route into
+    # separate legs). The label ("Bike Route N: from → to") is a caption; the code block
+    # holds ONLY the URL so its copy-to-clipboard icon copies just the link.
+    st.caption("🗺️ Bike legs in Google Maps (one link per leg):")
     for label, leg in zip(format_bike_legs(bike_legs=result.bike_legs), result.bike_legs, strict=True):
         st.caption(f"**{label}**")
         st.code(leg.url, language=None)
