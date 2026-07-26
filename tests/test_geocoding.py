@@ -4,7 +4,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from bike_router.geocoding import GeocodeError, geocode
+from bike_router.geocoding import GeocodeError, geocode, geocode_endpoint
 
 
 def test_geocode_returns_latlon():
@@ -42,3 +42,23 @@ def test_make_geocode_fn_builds_rate_limited_callable():
 
     fn = make_geocode_fn()
     assert callable(fn)
+
+
+def test_geocode_endpoint_returns_latlon():
+    loc = MagicMock()
+    loc.latitude, loc.longitude = 48.46, 8.41
+    fake = MagicMock(return_value=loc)
+    assert geocode_endpoint(place="Freudenstadt", label="Start", geocode_fn=fake) == (48.46, 8.41)
+
+
+def test_geocode_endpoint_blank_raises_field_named():
+    fake = MagicMock()
+    with pytest.raises(GeocodeError, match="Start is empty"):
+        geocode_endpoint(place="   ", label="Start", geocode_fn=fake)
+    fake.assert_not_called()  # blank input must not trigger a lookup
+
+
+def test_geocode_endpoint_not_found_raises_field_named():
+    fake = MagicMock(return_value=None)
+    with pytest.raises(GeocodeError, match=r"Destination \('xyz'\)"):
+        geocode_endpoint(place="xyz", label="Destination", geocode_fn=fake)

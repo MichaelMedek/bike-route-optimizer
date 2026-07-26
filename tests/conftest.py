@@ -9,7 +9,7 @@ import networkx as nx
 import numpy as np
 import pytest
 
-from bike_router.constants import PARAM_SPECS, GeoConfig, RoutingParams
+from bike_router.constants import PARAM_SPECS, GeoConfig, Mode, RoutingParams
 from bike_router.elevation import DEMService
 
 METERS_PER_DEGREE = GeoConfig.METERS_PER_DEGREE_EQUATOR
@@ -64,9 +64,8 @@ DEFAULT_PARAMS = RoutingParams(**{spec.field: spec.default for spec in PARAM_SPE
 def make_line_graph(params: RoutingParams = DEFAULT_PARAMS) -> nx.MultiDiGraph:
     """A tiny bidirectional 3-node line graph with elevations + edge costs.
 
-    Nodes 1→2→3 along a west→east line, node 2 higher than its neighbours so an
-    uphill/downhill asymmetry exists. Costs are assigned via the real
-    assign_edge_costs so routing/track/sanity tests exercise production code.
+    Nodes 1→2→3 west→east, node 2 higher so an uphill/downhill asymmetry exists.
+    Costs use the real assign_edge_costs so tests exercise production code.
     """
     from bike_router.cost import assign_edge_costs
 
@@ -76,19 +75,16 @@ def make_line_graph(params: RoutingParams = DEFAULT_PARAMS) -> nx.MultiDiGraph:
     for node_id, (lon, lat, elevation) in coords.items():
         graph.add_node(node_id, x=lon, y=lat, elevation=elevation)
     for node_a, node_b in [(1, 2), (2, 1), (2, 3), (3, 2)]:
-        graph.add_edge(node_a, node_b, key=0, length=800.0, surface="asphalt", highway="residential")
+        graph.add_edge(node_a, node_b, key=0, length=800.0, surface="asphalt", highway="residential", mode=Mode.BIKE)
     assign_edge_costs(graph=graph, params=params)
     return graph
 
 
 def make_choice_graph(params: RoutingParams) -> nx.MultiDiGraph:
-    """S→T via TWO alternatives, so routing choice depends on ``params``:
+    """S→T via TWO alternatives, so routing choice depends on ``params``.
 
-      * via node 2 — SHORT & direct but climbs 30 m on a paved main road.
-      * via node 3 — LONGER northern detour, flat, on an unpaved residential path.
-    With hills/main-roads penalised the router prefers node 3; with those set to 0
-    (only distance matters) it prefers the short node-2 path. Edge lengths are the
-    true haversine distance (honours length >= straight-line for admissibility).
+    Node 2 is short/steep/paved; node 3 is a longer flat unpaved detour. Penalising
+    hills/main-roads picks node 3; zeroing them picks node 2. Lengths are haversine.
     """
     from bike_router.cost import assign_edge_costs
     from bike_router.geo import haversine_distance_m
@@ -109,6 +105,6 @@ def make_choice_graph(params: RoutingParams) -> nx.MultiDiGraph:
             length = haversine_distance_m(
                 lat_a=nodes[node_a][1], lon_a=nodes[node_a][0], lat_b=nodes[node_b][1], lon_b=nodes[node_b][0]
             )
-            graph.add_edge(node_a, node_b, key=0, length=length, highway=highway, surface=surface)
+            graph.add_edge(node_a, node_b, key=0, length=length, highway=highway, surface=surface, mode=Mode.BIKE)
     assign_edge_costs(graph=graph, params=params)
     return graph

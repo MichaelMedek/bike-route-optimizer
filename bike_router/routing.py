@@ -1,13 +1,8 @@
 """Routing: A* over the directed graph using the stored per-edge cost.
 
-Each edge's ``custom_cost`` (cost.assign_edge_costs) is length plus non-negative
-penalties, so the cheapest possible edge is its raw length. The A* heuristic is
-therefore the plain great-circle distance to the target — it never overestimates
-the true remaining cost, so it is admissible and A* returns the optimal path.
-
-We pass ``custom_cost`` as a STRING weight (not a Python callable): NetworkX then
-does a C-level attribute lookup per edge and auto-picks the cheapest parallel edge
-of a MultiDiGraph — faster than invoking a callable for every edge examined.
+The cheapest edge equals its raw length, so a great-circle heuristic never
+overestimates — admissible, giving optimal paths. ``custom_cost`` is passed as a
+STRING weight so NetworkX does a fast C-level lookup, auto-picking cheapest parallel edges.
 """
 
 from collections.abc import Callable

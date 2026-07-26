@@ -1,9 +1,8 @@
 """Route-planning pipeline orchestration.
 
-Builds (or loads the cached) bike graph and computes ONE route for the rider's
-RoutingParams (the three "extra km" preferences). A single Track (surface/
-grade-adaptive timing) is the source for the GPX, the printed stats, and the debug
-PNG — so every number agrees. The route is written to a place-stamped GPX + PNG.
+Loads the corridor subset of the prebuilt DACH bike+rail graph (elevations + baked 3D
+geometry already carry all terrain) and computes ONE route per RoutingParams. A single
+Track feeds the GPX, stats, and debug PNG so every number agrees; no DEM at inference.
 """
 
 import logging
@@ -12,29 +11,39 @@ from pathlib import Path
 
 import networkx as nx
 
+from bike_router.composition import RouteComposition, route_composition
 from bike_router.constants import CorridorConfig, GmapsConfig, GpxConfig, RoutingParams
-from bike_router.corridor import build_corridor, corridor_within_dem
+from bike_router.corridor import build_corridor, corridor_within_bbox
 from bike_router.cost import assign_edge_costs
-from bike_router.elevation import DEMService
 from bike_router.geo import haversine_distance_m
 from bike_router.geocoding import geocode_endpoint, make_geocode_fn
 from bike_router.gmaps import build_gmaps_url
 from bike_router.gpx_export import build_gpx
-from bike_router.graph import build_bike_graph, enrich_elevations, snap_endpoints
+from bike_router.graph_ops import snap_endpoints
+from bike_router.graph_store import load_corridor_graph, load_meta
 from bike_router.naming import route_output_paths
 from bike_router.plotting import plot_elevation_heatmap
-from bike_router.progress import ProgressFn, null_progress
 from bike_router.routing import shortest_route
 from bike_router.sanity import (
-    check_simplify_shrunk,
     check_strongly_connected,
     check_uphill_costlier,
     find_steepest_bidirectional_edge,
 )
 from bike_router.simplify import route_to_linestring, select_waypoints
-from bike_router.track import Track, build_track
+from bike_router.track import Track, build_track, densify_track
 
 logger = logging.getLogger(__name__)
+
+
+def _assert_within_coverage(corridor: object, graph_dir: Path | None) -> None:
+    """Raise ValueError if the corridor falls outside the prebuilt DACH bbox."""
+    meta = load_meta() if graph_dir is None else load_meta(graph_dir=graph_dir)
+    if not corridor_within_bbox(polygon=corridor, bbox=tuple(meta["bbox"])):
+        west, south, east, north = meta["bbox"]
+        raise ValueError(
+            "Route is outside the prebuilt graph coverage "
+            f"(covered bbox W,S,E,N = {west:.2f},{south:.2f},{east:.2f},{north:.2f})."
+        )
 
 
 @dataclass(frozen=True)
@@ -45,20 +54,26 @@ class RouteResult:
     gpx_path: Path
     png_path: Path
     gmaps_url: str
+    composition: RouteComposition
 
 
 def plan_route(
-    *, origin: str, destination: str, dem_path: Path, params: RoutingParams, progress: ProgressFn = null_progress
+    *,
+    origin: str,
+    destination: str,
+    params: RoutingParams,
+    graph_dir: Path | None = None,
 ) -> RouteResult:
     """Compute a single route between origin and destination for ``params``.
+
+    Reads ONLY the prebuilt graph artifact — node + baked 3D edge geometry already
+    carry elevation, so no DEM is loaded at inference (the DEM is a build-time input).
 
     Args:
         origin: Start place string (geocoded via Nominatim).
         destination: Destination place string.
-        dem_path: DEM GeoTIFF path (already ensured to exist).
-        params: The rider's three "extra km" routing preferences.
-        progress: Real per-item sink (nodes done, total) for the graph-build loop;
-            the CLI wires tqdm, Streamlit st.progress. Defaults to no-op.
+        params: The rider's five "extra km" routing preferences (incl. rail sliders).
+        graph_dir: Override for the prebuilt-graph cache dir (tests); None = default.
     """
     geocode_fn = make_geocode_fn()  # one rate-limited fn spans both calls (1 req/s)
     # Fail-fast: a bad Start raises before Destination is ever looked up.
@@ -71,29 +86,28 @@ def plan_route(
         / GpxConfig.METERS_PER_KM
     )
     if trip_km < CorridorConfig.MIN_TRIP_KM:
-        raise SystemExit(
+        raise ValueError(
             f"Start and destination are only {trip_km:.1f} km apart "
             f"(minimum {CorridorConfig.MIN_TRIP_KM:.0f} km) — too short to plan."
         )
     if trip_km > CorridorConfig.MAX_TRIP_KM:
-        raise SystemExit(
+        raise ValueError(
             f"Start and destination are {trip_km:.0f} km apart "
             f"(maximum {CorridorConfig.MAX_TRIP_KM:.0f} km) — too far to plan."
         )
 
-    terrain = DEMService(dem_path=dem_path)
     corridor = build_corridor(start_latlon=start_latlon, dest_latlon=dest_latlon)
-    if not corridor_within_dem(polygon=corridor, dem_bounds=terrain.bounds):
-        logger.warning("Corridor %s not fully within DEM %s — may hit nodata.", corridor.bounds, terrain.bounds)
+    _assert_within_coverage(corridor=corridor, graph_dir=graph_dir)
 
-    graph, raw_count = build_bike_graph(polygon=corridor, progress=progress)
+    graph = (
+        load_corridor_graph(corridor=corridor)
+        if graph_dir is None
+        else load_corridor_graph(corridor=corridor, graph_dir=graph_dir)
+    )
     check_strongly_connected(graph=graph)
 
     source, target = snap_endpoints(graph=graph, start_latlon=start_latlon, dest_latlon=dest_latlon)
-    enrich_elevations(graph=graph, dem=terrain)
-
     assign_edge_costs(graph=graph, params=params)
-    check_simplify_shrunk(nodes_before=raw_count, nodes_after=graph.number_of_nodes())
     steepest = find_steepest_bidirectional_edge(graph=graph)
     if steepest is not None:  # None = no bidirectional edge (legitimate, not a bug)
         check_uphill_costlier(graph=graph, node_lower=steepest[0], node_upper=steepest[1], params=params)
@@ -101,10 +115,13 @@ def plan_route(
     try:
         node_path = shortest_route(graph=graph, source=source, target=target)
     except nx.NetworkXNoPath as exc:
-        raise SystemExit("No bike route found between the two places within the corridor.") from exc
+        raise RuntimeError("No bike route found between the two places within the corridor.") from exc
     logger.info("Route: %d nodes", len(node_path))
 
     track = build_track(graph=graph, node_path=node_path)
+    # Expand to the full baked 3D road polyline (elevation already in the artifact).
+    track = densify_track(graph=graph, node_path=node_path, track=track)
+    composition = route_composition(graph=graph, node_path=node_path)
     logger.info(
         "%.1f km, %.0f min, +%.0f m / -%.0f m",
         track.distance_km,
@@ -119,7 +136,16 @@ def plan_route(
     logger.info("Wrote %s (%d trackpoints)", gpx_path, len(track.points))
 
     png_path.parent.mkdir(parents=True, exist_ok=True)
-    plot_elevation_heatmap(graph=graph, route_nodes=node_path, track=track, params=params, out_path=str(png_path))
+    plot_elevation_heatmap(
+        graph=graph,
+        route_nodes=node_path,
+        track=track,
+        params=params,
+        out_path=str(png_path),
+        origin=origin,
+        destination=destination,
+        composition=composition,
+    )
 
     # Google Maps waypoints: the N most significant points of the full geometry.
     geometry = route_to_linestring(graph=graph, node_path=node_path)
@@ -132,4 +158,5 @@ def plan_route(
         gpx_path=gpx_path,
         png_path=png_path,
         gmaps_url=build_gmaps_url(waypoints_latlon=waypoints),
+        composition=composition,
     )

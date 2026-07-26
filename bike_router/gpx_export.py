@@ -1,9 +1,8 @@
 """GPX track export via gpxpy.
 
-Builds a standard track (GPX → GPXTrack → GPXTrackSegment → GPXTrackPoint) straight
-from a Track (bike_router.track): every point carries its real DEM elevation and
-the cumulative ride time from the surface/grade-adaptive speed model, so the GPX
-end-timestamp equals the reported total duration by construction.
+Builds a standard track from a Track (bike_router.track): each point carries its
+DEM elevation and cumulative ride time from the speed model, so the GPX end
+timestamp equals the reported total duration by construction.
 """
 
 import datetime as _dt

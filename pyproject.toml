@@ -77,6 +77,9 @@ module = [
     "pydeck.*",
     "streamlit.*",
     "tqdm.*",
+    "pyrosm.*",
+    "pandas.*",
+    "geopandas.*",
 ]
 ignore_missing_imports = true
 

@@ -31,27 +31,72 @@ def create_terrain_layer(mesh_max_error: float = 1.0) -> pdk.Layer:
     )
 
 
-def create_route_ribbon_layer(points: list[list[float]]) -> pdk.Layer:
-    """PathLayer ribbon over `[[lon, lat, z], ...]` points (z already lifted)."""
+def create_route_ribbon_layers(segments: list[tuple[list[int], list[list[float]]]]) -> list[pdk.Layer]:
+    """One PathLayer per contiguous same-mode run, each in its mode's color.
+
+    Args:
+        segments: ``(color, points)`` runs from webmap.route_ribbon_segments; color
+            is RGB, points are ``[[lon, lat, z], ...]`` (z already lifted).
+    """
+    return [
+        pdk.Layer(
+            "PathLayer",
+            [{"path": points, "color": color}],
+            get_path="path",
+            get_color="color",
+            get_width=WebMapConfig.RIBBON_WIDTH_M,
+            width_min_pixels=WebMapConfig.RIBBON_MIN_PIXELS,
+            cap_rounded=True,
+            joint_rounded=True,
+            id=f"route_ribbon_{index}",
+            pickable=False,
+        )
+        for index, (color, points) in enumerate(segments)
+    ]
+
+
+def create_endpoint_layer(start_latlon: tuple[float, float], end_latlon: tuple[float, float]) -> pdk.Layer:
+    """ScatterplotLayer with the start (green) and end (red) endpoint markers.
+
+    Colors match the debug PNG (WebMapConfig.START_COLOR / END_COLOR) so the PNG
+    and the 3D map speak one visual language.
+
+    Args:
+        start_latlon: (lat, lon) of the start.
+        end_latlon: (lat, lon) of the destination.
+    """
+    start_lat, start_lon = start_latlon
+    end_lat, end_lon = end_latlon
+    data = [
+        {"position": [start_lon, start_lat], "color": list(WebMapConfig.START_COLOR)},
+        {"position": [end_lon, end_lat], "color": list(WebMapConfig.END_COLOR)},
+    ]
     return pdk.Layer(
-        "PathLayer",
-        [{"path": points}],
-        get_path="path",
-        get_color=list(WebMapConfig.RIBBON_COLOR),
-        get_width=WebMapConfig.RIBBON_WIDTH_M,
-        width_min_pixels=WebMapConfig.RIBBON_MIN_PIXELS,
-        cap_rounded=True,
-        joint_rounded=True,
-        id="route_ribbon",
+        "ScatterplotLayer",
+        data,
+        get_position="position",
+        get_fill_color="color",
+        get_radius=WebMapConfig.MARKER_RADIUS_M,
+        radius_min_pixels=WebMapConfig.MARKER_MIN_PIXELS,
+        stroked=True,
+        get_line_color=[0, 0, 0],
+        line_width_min_pixels=1,
+        id="route_endpoints",
         pickable=False,
     )
 
 
-def build_deck(view: ViewState, ribbon_points: list[list[float]] | None) -> pdk.Deck:
-    """Assemble the Deck: terrain always, ribbon on top when a route exists."""
+def build_deck(
+    view: ViewState,
+    ribbon_segments: list[tuple[list[int], list[list[float]]]] | None,
+    endpoints: tuple[tuple[float, float], tuple[float, float]] | None = None,
+) -> pdk.Deck:
+    """Assemble the Deck: terrain always, endpoint markers + per-mode ribbon when set."""
     layers = [create_terrain_layer()]
-    if ribbon_points is not None:
-        layers.append(create_route_ribbon_layer(points=ribbon_points))
+    if endpoints is not None:
+        layers.append(create_endpoint_layer(start_latlon=endpoints[0], end_latlon=endpoints[1]))
+    if ribbon_segments is not None:
+        layers.extend(create_route_ribbon_layers(segments=ribbon_segments))
     return pdk.Deck(
         layers=layers,
         initial_view_state=pdk.ViewState(**asdict(view)),

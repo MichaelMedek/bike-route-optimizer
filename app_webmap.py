@@ -1,49 +1,66 @@
 """Streamlit 3D bike-route viewer — a thin UI shell over bike_router.
 
-Single column, top → bottom: start/end boxes, Compute button, the 3D map, then
-route stats + export controls. ALL routing logic lives in bike_router.plan_route
-(exactly what the CLI calls); this file only wires widgets and renders the map.
+Single column, top → bottom: start/end boxes, routing sliders, "Compute route",
+the 3D map, then stats + export controls. ALL routing logic lives in
+bike_router.plan_route (what the CLI calls); this file only wires widgets.
 
 Run:  streamlit run app_webmap.py
 """
 
 import streamlit as st
 
-from bike_router.constants import PARAM_SPECS, DEMConfig, RoutingDefaults, RoutingParams, WebMapConfig
-from bike_router.elevation import ensure_dem
-from bike_router.geocoding import GeocodeError
+from bike_router.constants import PARAM_SPECS, RoutingDefaults, RoutingParams, WebMapConfig
+from bike_router.geocoding import GeocodeError, geocode_endpoint, make_geocode_fn
 from bike_router.pipeline import plan_route
-from bike_router.webmap import default_view_state, route_ribbon_points, route_view_state
+from bike_router.webmap import default_view_state, route_ribbon_segments, route_view_state
 from bike_router.webmap_layers import build_deck
-
-
-def _init_state() -> None:
-    """Seed session_state on first load (nothing computed yet)."""
-    defaults = {
-        "result": None,
-        "ribbon_points": None,
-        "view": default_view_state(),
-        "camera_epoch": 0,
-    }
-    for key, value in defaults.items():
-        if key not in st.session_state:
-            st.session_state[key] = value
-    assert st.session_state.camera_epoch >= 0, "camera_epoch must be a non-negative counter"
 
 
 def main() -> None:
     st.set_page_config(page_title="Bike Route Optimizer", layout="centered")
-    _init_state()
+    # Seed session_state once (nothing set/computed yet). start_latlon gates Compute.
+    for key, value in {
+        "start_latlon": None,
+        "end_latlon": None,
+        "result": None,
+        "ribbon_segments": None,
+        "view": default_view_state(),
+        "camera_epoch": 0,
+    }.items():
+        st.session_state.setdefault(key, value)
     st.title("🚲 Bike Route Optimizer")
 
     # 1. Start | End — the only side-by-side row.
     col_start, col_end = st.columns(2)
-    origin = col_start.text_input("Start", placeholder="e.g. Freudenstadt, Germany")
-    destination = col_end.text_input("End", placeholder="e.g. Pforzheim, Germany")
+    origin = col_start.text_input("Start", placeholder="Start location")
+    destination = col_end.text_input("End", placeholder="End location")
 
-    # 2–4. One slider per routing knob, straight from the shared PARAM_SPECS (the
-    # same source the CLI reads). Each answers: how many extra km would you ride to
-    # avoid one unit of the bad thing? Range 0 → MAX_EXTRA_KM, at the tuned default.
+    # 2. Set start & end: geocode both, mark on the map (green start / red end), and
+    # recenter. Recentering lives ONLY here (bumps camera_epoch), never on Compute.
+    # Start is geocoded first, so a bad Start raises before the End lookup.
+    if st.button("📍 Set start & end", use_container_width=True):
+        try:
+            with st.spinner("Looking up places…"):
+                geocode_fn = make_geocode_fn()
+                start_latlon = geocode_endpoint(place=origin, label="Start", geocode_fn=geocode_fn)
+                end_latlon = geocode_endpoint(place=destination, label="End", geocode_fn=geocode_fn)
+            st.session_state.update(
+                start_latlon=start_latlon,
+                end_latlon=end_latlon,
+                result=None,  # stale route from the previous endpoints
+                ribbon_segments=None,
+                view=route_view_state(start_latlon=start_latlon, end_latlon=end_latlon),
+                camera_epoch=st.session_state.camera_epoch + 1,
+            )
+        except GeocodeError as error:
+            st.toast(f"Could not find {error}. Check the spelling (e.g. add a country like 'Paris, France').", icon="⚠️")
+
+    # The currently-marked endpoints (colors match the map markers and the PNG).
+    if st.session_state.start_latlon is not None:
+        st.caption(f"🟢 Start: **{origin}**    🔴 End: **{destination}**")
+
+    # 3+. One slider per routing knob, straight from the shared PARAM_SPECS (the same
+    # source the CLI reads). Range 0 → MAX_EXTRA_KM, starting at each spec's default.
     slider_values = {
         spec.field: st.slider(
             spec.label, 0.0, RoutingDefaults.MAX_EXTRA_KM, value=spec.default, step=0.1, help=spec.help
@@ -51,74 +68,61 @@ def main() -> None:
         for spec in PARAM_SPECS
     }
 
-    # 5. Compute the route — the app's ONLY job is to call plan_route (like the CLI).
-    if st.button("Compute route", use_container_width=True):
+    # 4. Compute the route — draws the ribbon; does NOT recenter (step 2 owns the camera).
+    needs_endpoints = st.session_state.start_latlon is None
+    if st.button("Compute route", use_container_width=True, disabled=needs_endpoints):
         try:
             params = RoutingParams(**slider_values)
-            # Two ski-resort-style progress bars: DEM download (bytes) + graph build
-            # (nodes contracted). Each shows a real percentage, no fake spinner.
-            dem_bar = st.progress(0.0, text="Preparing terrain…")
-
-            def _dem_progress(fraction: float) -> None:
-                dem_bar.progress(fraction, text=f"Downloading terrain… {fraction * 100:.0f}%")
-
-            dem_path = ensure_dem(dem_path=DEMConfig.EURODEM_PATH, progress_callback=_dem_progress)
-            dem_bar.progress(1.0, text="Terrain ready")
-
-            build_bar = st.progress(0.0, text="Building bike network…")
-
-            def _build_progress(done: int, total: int) -> None:
-                frac = done / total if total else 0.0
-                build_bar.progress(frac, text=f"Building bike network… {frac * 100:.0f}% ({done}/{total} nodes)")
-
-            result = plan_route(
-                origin=origin, destination=destination, dem_path=dem_path, params=params, progress=_build_progress
-            )
-            dem_bar.empty()
-            build_bar.empty()
-            st.session_state.result = result
-            st.session_state.ribbon_points = route_ribbon_points(track=result.track)
-            first, last = result.track.points[0], result.track.points[-1]
-            st.session_state.view = route_view_state(
-                start_latlon=(first.lat, first.lon), end_latlon=(last.lat, last.lon)
-            )
-            st.session_state.camera_epoch += 1
-        except GeocodeError as error:
-            st.toast(f"Could not find {error}. Check the spelling (e.g. add a country like 'Paris, France').", icon="⚠️")
-        except SystemExit as error:  # trip too short/long, or no route in corridor
+            with st.spinner("Planning route…"):
+                result = plan_route(origin=origin, destination=destination, params=params)
+            # No camera_epoch bump → the map keeps the view set in step 2.
+            st.session_state.update(result=result, ribbon_segments=route_ribbon_segments(track=result.track))
+        except (ValueError, RuntimeError) as error:  # too short/long, out of coverage, or no route
             st.toast(str(error), icon="⚠️")
+    if needs_endpoints:
+        st.caption("⬆️ Set start & end first to enable **Compute route**.")
 
-    # 6. 3D map. camera_epoch in the key remounts deck.gl so the camera reframes.
-    deck = build_deck(view=st.session_state.view, ribbon_points=st.session_state.ribbon_points)
+    # 5. 3D map. camera_epoch (bumped only by Set start & end) keys the remount.
+    endpoints = (
+        (st.session_state.start_latlon, st.session_state.end_latlon)
+        if st.session_state.start_latlon is not None
+        else None
+    )
+    deck = build_deck(view=st.session_state.view, ribbon_segments=st.session_state.ribbon_segments, endpoints=endpoints)
     st.pydeck_chart(deck, height=WebMapConfig.MAP_HEIGHT_PX, key=f"bike_map_{st.session_state.camera_epoch}")
 
-    # 7. Stats + export controls BELOW the map (only once a route exists).
+    # 6. Stats + export controls BELOW the map, shown once a route exists.
     result = st.session_state.result
     if result is not None:
         track = result.track
-        col_dist, col_time, col_up, col_down = st.columns(4)
-        col_dist.metric("Distance", f"{track.distance_km:.1f} km")
-        col_time.metric("Ride time", f"{track.duration_min:.0f} min")
-        col_up.metric("Ascent", f"+{track.ascent_m:.0f} m")
-        col_down.metric("Descent", f"−{track.descent_m:.0f} m")
+        metrics = (
+            ("Distance", f"{track.distance_km:.1f} km"),
+            ("Ride time", f"{track.duration_min:.0f} min"),
+            ("Ascent", f"+{track.ascent_m:.0f} m"),
+            ("Descent", f"−{track.descent_m:.0f} m"),
+        )
+        for col, (label, value) in zip(st.columns(len(metrics)), metrics, strict=True):
+            col.metric(label, value)
 
-        st.caption("Open in Google Maps (copy the link):")
+        # Composition as PERCENT of route distance, by surface / road class / mode.
+        comp = result.composition
+        breakdowns = (("By surface", comp.by_surface_km), ("By road", comp.by_road_km), ("By mode", comp.by_mode_km))
+        for col, (label, by_km) in zip(st.columns(len(breakdowns)), breakdowns, strict=True):
+            col.caption(label)
+            total = sum(by_km.values())
+            col.write({k: f"{v / total * 100:.0f}%" for k, v in sorted(by_km.items(), key=lambda kv: -kv[1])})
+
+        st.caption("🗺️ Open in Google Maps (copy the link):")
         st.code(result.gmaps_url, language=None)
-        col_gpx, col_png = st.columns(2)
-        col_gpx.download_button(
-            "Download GPX",
-            data=result.gpx_path.read_bytes(),
-            file_name=result.gpx_path.name,
-            mime="application/gpx+xml",
-            use_container_width=True,
-        )
-        col_png.download_button(
-            "Download PNG",
-            data=result.png_path.read_bytes(),
-            file_name=result.png_path.name,
-            mime="image/png",
-            use_container_width=True,
-        )
+        downloads = ((result.gpx_path, "application/gpx+xml"), (result.png_path, "image/png"))
+        for col, (path, mime) in zip(st.columns(len(downloads)), downloads, strict=True):
+            col.download_button(
+                f"Download {path.suffix.lstrip('.').upper()}",
+                data=path.read_bytes(),
+                file_name=path.name,
+                mime=mime,
+                use_container_width=True,
+            )
 
 
 if __name__ == "__main__":

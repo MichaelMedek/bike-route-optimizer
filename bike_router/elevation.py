@@ -1,78 +1,25 @@
 """DEM elevation sampling — vectorized, CRS-aware, nodata-safe.
 
-Copied in refined form from ski-resort-designer's `core/dem_service.py`. The
-sibling implementation is production-grade and solves the load-bearing gotcha:
-the EuroDEM is **ETRS89 in ARCSECONDS**, not EPSG:4326 degrees. We therefore
-reproject WGS84 lon/lat → the DEM's native CRS with a cached pyproj transformer
-before the inverse-affine array gather. (This is why we do NOT use
-`osmnx.elevation.add_node_elevations_raster`, which assumes graph coords already
-match the raster grid and would silently mis-sample the arcsecond DEM.)
+EuroDEM is ETRS89 in ARCSECONDS, not EPSG:4326 degrees, so we reproject WGS84
+lon/lat → the DEM's native CRS (cached transformer) before the inverse-affine
+gather. Hence NOT osmnx's raster helper, which would mis-sample the arcsec grid.
 """
 
 import logging
 import threading
 import time
-from collections.abc import Callable
 from pathlib import Path
 from typing import Optional
 
 import numpy as np
 import numpy.typing as npt
 import rasterio
-import requests
 from pyproj import Transformer
 from rasterio.io import DatasetReader
 
 from bike_router.constants import DEMConfig
 
 logger = logging.getLogger(__name__)
-
-
-def download_dem_from_huggingface(
-    target_path: Path = DEMConfig.EURODEM_PATH,
-    progress_callback: Callable[[float], None] | None = None,
-) -> Path:
-    """Download the region DEM from Hugging Face if not already present."""
-    if target_path.exists():
-        logger.debug("DEM already exists at %s", target_path)
-        return target_path
-
-    target_path.parent.mkdir(parents=True, exist_ok=True)
-    url = DEMConfig.HF_DOWNLOAD_URL
-    logger.info("Downloading region DEM from %s ...", url)
-
-    response = requests.get(url, stream=True, timeout=300)
-    response.raise_for_status()
-    total_size = int(response.headers.get("content-length", 0))
-    downloaded = 0
-    with open(target_path, "wb") as f:
-        for chunk in response.iter_content(chunk_size=8192):
-            f.write(chunk)
-            downloaded += len(chunk)
-            if progress_callback and total_size > 0:
-                progress_callback(downloaded / total_size)
-
-    logger.info("DEM downloaded to %s", target_path)
-    return target_path
-
-
-def ensure_dem(dem_path: Path, progress_callback: Callable[[float], None] | None = None) -> Path:
-    """Return a ready-to-use DEM path, downloading the default from HF if missing.
-
-    Only the bundled default path (DEMConfig.EURODEM_PATH) is auto-fetched; a
-    missing explicit override is a hard error.
-
-    Args:
-        dem_path: Requested DEM file path.
-        progress_callback: Optional sink receiving download fraction 0.0–1.0 (the
-            CLI leaves it None; Streamlit wires an st.progress bar).
-    """
-    if dem_path.exists():
-        return dem_path
-    if dem_path != DEMConfig.EURODEM_PATH:
-        raise FileNotFoundError(f"DEM file not found: {dem_path}")
-    logger.info("DEM not found at %s — downloading from Hugging Face…", dem_path)
-    return download_dem_from_huggingface(target_path=dem_path, progress_callback=progress_callback)
 
 
 class DEMService:

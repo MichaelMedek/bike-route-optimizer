@@ -2,6 +2,7 @@
 
 import os
 from dataclasses import dataclass
+from enum import StrEnum
 from pathlib import Path
 
 import platformdirs
@@ -52,6 +53,55 @@ class DEMConfig:
     HF_DOWNLOAD_URL = f"https://huggingface.co/datasets/{HF_REPO_ID}/resolve/main/{HF_FILENAME}"
 
 
+# Edge travel modes. `transfer` = the bike↔station link (walk to/from the platform).
+class Mode(StrEnum):
+    """The three edge travel modes (StrEnum → members ARE strings on the graph/parquet)."""
+
+    BIKE = "bike"
+    RAIL = "rail"
+    TRANSFER = "transfer"
+
+
+class RailConfig:
+    """Railway integration: how a train leg is built and timed.
+
+    Rail edges are always present; sliders decide if A* uses them. Directed only
+    net-uphill so downhill stays on the bike. Boarding wait hits TIME only, not cost.
+    """
+
+    RAIL_SPEED_KMH = 80.0  # average train speed for the ride-time estimate
+    BOARDING_WAIT_S = 1800.0  # 30 min wait added once per boarding (time only)
+    STATION_TRANSFER_RADIUS_M = 500.0  # bike node ↔ station link distance
+    RAIL_TAGS = ("rail",)  # OSM railway= values kept as routable track
+    STATION_TAGS = ("station", "halt")  # OSM railway= values treated as boardable stops
+
+
+class GraphConfig:
+    """Prebuilt DACH bike+rail graph: on-disk layout and Hugging Face hosting.
+
+    Built offline from Geofabrik .osm.pbf, DEM elevations baked in, intersections
+    consolidated, stored as lat/lon-tiled GeoParquet read per corridor tile.
+    Mirrors the DEMConfig HF pattern.
+    """
+
+    # Pre-saved (bundled) in the repo — small enough to ship, so no HF download at
+    # inference. The offline builder writes here; the app reads it directly.
+    GRAPH_DIR = PROJECT_ROOT / "data" / "dach_graph"
+    NODES_SUBDIR = "nodes"
+    EDGES_SUBDIR = "edges"
+    META_FILENAME = "meta.json"
+
+    HF_REPO_ID = "MichaelMedek/dach_bike_graph"
+    HF_FILENAME = META_FILENAME  # the whole snapshot is pulled; meta anchors the download
+
+    # Merge nodes within this radius (metres, UTM-projected). Benchmarked on the
+    # Freudenstadt→Pforzheim corridor: 25 m is the largest tolerance keeping route
+    # distance under ~2% error (50 m → 2.6%, 100 m → 12%) while 3.2× faster A*.
+    CONSOLIDATION_TOLERANCE_M = 25.0
+    # Coarse grid for tiling the parquet so a corridor reads only a few tiles.
+    TILE_DEG = 0.5
+
+
 class GeoConfig:
     """Spherical-Earth constants for great-circle distance."""
 
@@ -63,10 +113,9 @@ class GeoConfig:
 class CorridorConfig:
     """The "Schlauch" search corridor around the straight start→dest line.
 
-    A tube of half-width HALF_WIDTH_KM each side of the direct line (isotropic in
-    real distance — N-S and E-W get the same km width; the km→degree conversion
-    corrects for longitude shrink at the route's latitude). Trips shorter than
-    MIN_TRIP_KM or longer than MAX_TRIP_KM are rejected up front.
+    A tube HALF_WIDTH_KM each side of the direct line (isotropic in real km; the
+    km→degree conversion corrects longitude shrink). Trips outside MIN/MAX_TRIP_KM
+    are rejected up front.
     """
 
     HALF_WIDTH_KM = 22.0  # search this far each side of the direct line
@@ -77,10 +126,8 @@ class CorridorConfig:
 class SurfaceConfig:
     """Surface → penalty TIER (0 = good/paved, 1 = moderate/gravel, 2 = heavy/soft).
 
-    Covers the surfaces actually seen on the Freudenstadt→Pforzheim corridor
-    (measured). Tier 0 rides free; tier 1 adds the user's --extra_km_per_unpaved_km
-    once. Tier 2 (soft natural ground) is EXCLUDED from the graph entirely — those
-    ways are dropped before routing so a route never runs over mud/sand/grass.
+    Tier 0 rides free; tier 1 adds --extra_km_per_unpaved_km once; tier 2 (soft
+    natural ground) is EXCLUDED from the graph so a route never runs over mud/sand.
     """
 
     SURFACE_TIER = {
@@ -163,6 +210,18 @@ PARAM_SPECS = (
         help="Extra km you'd ride to avoid 1 km on a busy main road (0 = don't mind them).",
         default=1.0,
     ),
+    RoutingParamSpec(
+        field="extra_km_per_rail_km",
+        label="Rail distance penalty",
+        help="Extra km you'd bike to avoid 1 km carried by train (≈ ticket cost per km; high = avoid trains).",
+        default=1.0,
+    ),
+    RoutingParamSpec(
+        field="extra_km_per_boarding",
+        label="Train Boarding penalty",
+        help="Extra km you'd bike rather than board a train once (the wait/hassle; high = avoid boarding).",
+        default=10.0,
+    ),
 )
 
 
@@ -178,6 +237,8 @@ class RoutingParams:
     extra_km_per_uphill_100m: float
     extra_km_per_unpaved_km: float
     extra_km_per_main_road_km: float
+    extra_km_per_rail_km: float
+    extra_km_per_boarding: float
 
     def __post_init__(self) -> None:
         for spec in PARAM_SPECS:
@@ -261,7 +322,17 @@ class WebMapConfig:
     RIBBON_FLOAT_ABOVE_M = 100.0
     RIBBON_WIDTH_M = 20.0
     RIBBON_MIN_PIXELS = 3
-    RIBBON_COLOR = (255, 90, 0)
+    # Per-mode ribbon/route colors — bike and rail MUST read as two distinct colors
+    # in both the 3D ribbon and the debug PNG (transfer hops ride with the bike color).
+    BIKE_COLOR = (255, 90, 0)  # orange
+    RAIL_COLOR = (0, 120, 255)  # blue
+    MODE_COLORS = {Mode.BIKE: BIKE_COLOR, Mode.RAIL: RAIL_COLOR, Mode.TRANSFER: BIKE_COLOR}
+    # Start/end endpoint markers — SAME colors the debug PNG uses (single visual
+    # language across the PNG and the 3D map): start green, end red.
+    START_COLOR = (0, 200, 83)  # #00c853
+    END_COLOR = (213, 0, 0)  # #d50000
+    MARKER_RADIUS_M = 60.0
+    MARKER_MIN_PIXELS = 8
     # Zoom, same log formula as ski-resort's MapConfig.zoom_for_span_m:
     VIEWING_ZOOM = 12.0
     ZOOM_SPAN_ANCHOR_M = 8000.0  # a route this long fits at VIEWING_ZOOM
@@ -288,3 +359,6 @@ assert all(speed > SpeedConfig.WALK_KMH for speed in SpeedConfig.BASE_KMH_BY_TIE
 assert SpeedConfig.WALK_GRADE > 0, "WALK_GRADE must be a positive uphill grade"
 assert 0 < CorridorConfig.MIN_TRIP_KM < CorridorConfig.MAX_TRIP_KM, "trip bounds must be 0 < min < max"
 assert CorridorConfig.HALF_WIDTH_KM > 0, "corridor half-width must be positive"
+assert max(SpeedConfig.BASE_KMH_BY_TIER.values()) < RailConfig.RAIL_SPEED_KMH, "rail must be faster than any bike leg"
+assert RailConfig.BOARDING_WAIT_S > 0 and RailConfig.STATION_TRANSFER_RADIUS_M > 0, "rail waits/radius must be positive"
+assert GraphConfig.CONSOLIDATION_TOLERANCE_M >= 0 and GraphConfig.TILE_DEG > 0, "graph tolerance/tile must be sane"

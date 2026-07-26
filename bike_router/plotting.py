@@ -17,8 +17,9 @@ import osmnx as ox  # noqa: E402
 from matplotlib import cm  # noqa: E402
 from matplotlib.colors import Normalize  # noqa: E402
 
-from bike_router.constants import RoutingParams  # noqa: E402
-from bike_router.track import Track  # noqa: E402
+from bike_router.composition import RouteComposition, format_composition  # noqa: E402
+from bike_router.constants import RoutingParams, WebMapConfig  # noqa: E402
+from bike_router.track import Track, cheapest_edge  # noqa: E402
 
 logger = logging.getLogger(__name__)
 
@@ -30,13 +31,17 @@ def plot_elevation_heatmap(
     track: Track,
     params: RoutingParams,
     out_path: str,
+    origin: str = "Start",
+    destination: str = "End",
+    composition: RouteComposition | None = None,
     cmap_name: str = "plasma",
     dpi: int = 200,
 ) -> None:
     """Save a PNG heatmap of the graph (nodes by elevation) with the route on top.
 
-    An overlay text box reports the rider's three preferences and the resulting
-    route stats (distance, ride time, total ascent/descent).
+    Start/end points are marked and named in the legend; a colorbar labels the
+    elevation scale; an overlay box reports the rider's preferences, the route
+    stats, and (when given) the surface/road/mode km breakdown.
     """
     nodes = list(graph.nodes)
     assert nodes, "graph must have nodes to plot"
@@ -64,26 +69,72 @@ def plot_elevation_heatmap(
         save=False,
     )
 
-    # Route overlay: thick high-contrast foreground line.
+    # Route overlay: color each edge by its travel mode (bike vs rail = two colors).
     route_lons = [graph.nodes[node]["x"] for node in route_nodes]
     route_lats = [graph.nodes[node]["y"] for node in route_nodes]
-    axes.plot(route_lons, route_lats, color="#00d0ff", linewidth=4.0, alpha=0.95, zorder=5, label="route")
+    seen_modes: set[str] = set()
+    for node_a, node_b in zip(route_nodes[:-1], route_nodes[1:], strict=True):
+        data = cheapest_edge(edges=graph.get_edge_data(node_a, node_b))
+        mode = str(data["mode"])
+        rgb = WebMapConfig.MODE_COLORS[mode]
+        color = (rgb[0] / 255, rgb[1] / 255, rgb[2] / 255)
+        # Label only the first segment of each mode so the legend lists each once.
+        label = mode if mode not in seen_modes else None
+        seen_modes.add(mode)
+        axes.plot(
+            [graph.nodes[node_a]["x"], graph.nodes[node_b]["x"]],
+            [graph.nodes[node_a]["y"], graph.nodes[node_b]["y"]],
+            color=color,
+            linewidth=4.0,
+            alpha=0.95,
+            zorder=5,
+            label=label,
+        )
+
+    # Start / end markers, named so the reader knows which end is which.
+    axes.scatter(
+        route_lons[0],
+        route_lats[0],
+        s=140,
+        c="#00c853",
+        edgecolors="black",
+        linewidths=1.2,
+        zorder=7,
+        marker="o",
+        label=f"start: {origin}",
+    )
+    axes.scatter(
+        route_lons[-1],
+        route_lats[-1],
+        s=180,
+        c="#d50000",
+        edgecolors="black",
+        linewidths=1.2,
+        zorder=7,
+        marker="*",
+        label=f"end: {destination}",
+    )
+    axes.legend(loc="upper right", fontsize=7, framealpha=0.85)
 
     mappable = cm.ScalarMappable(norm=norm, cmap=cmap)
     mappable.set_array([])
     colorbar = figure.colorbar(mappable, ax=axes, fraction=0.03, pad=0.02)
     colorbar.set_label("Elevation (m)")
-    axes.set_title("Bike route — nodes colored by elevation")
+    axes.set_title(f"Bike route {origin} → {destination} — nodes colored by elevation")
 
     overlay = (
         "Preferences (extra km):\n"
         f"  +{params.extra_km_per_uphill_100m:g} / 100 m uphill\n"
         f"  +{params.extra_km_per_unpaved_km:g} / km unpaved\n"
         f"  +{params.extra_km_per_main_road_km:g} / km main road\n"
+        f"  +{params.extra_km_per_rail_km:g} / km rail\n"
+        f"  +{params.extra_km_per_boarding:g} / boarding\n"
         "Route:\n"
         f"  {track.distance_km:.1f} km · {track.duration_min:.0f} min\n"
         f"  +{track.ascent_m:.0f} m / -{track.descent_m:.0f} m"
     )
+    if composition is not None:
+        overlay += "\n" + format_composition(comp=composition)
     axes.text(
         0.02,
         0.02,

@@ -1,9 +1,8 @@
 """Progress reporting — a real per-item counter, not fake stage fractions.
 
-The only honest place to show "so much of so much" is a loop that actually
-iterates a known number of items: the degree-2 node contraction. ``ProgressFn``
-receives (items_done, items_total); the CLI wires a tqdm bar, Streamlit can wire
-``st.progress``. Callers that don't care pass nothing (the default no-op).
+``ProgressFn`` receives (items_done, items_total) from the degree-2 node
+contraction loop. CLI wires a tqdm bar, Streamlit can wire ``st.progress``;
+callers that don't care pass nothing (the default no-op).
 """
 
 from collections.abc import Callable

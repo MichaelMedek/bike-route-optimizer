@@ -1,11 +1,8 @@
 """Spatial corridor ("Schlauch") generation.
 
-Instead of a bounding-box square (which invites Overpass 429 rate-limiting on long
-routes), we buffer the straight start→destination line into a tube of a fixed real
-half-width each side. The buffer is isotropic in kilometres: we scale longitude by
-cos(latitude) into a locally-metric frame, buffer with a km-derived radius, then
-scale back — so N-S and E-W get the same real width (a plain lon/lat buffer would
-be ~35% narrower E-W at 48°N). OSMnx extracts the bike graph from this polygon.
+Buffers the start→dest line into a tube (avoids bbox Overpass 429s). Isotropic in
+km: scale lon by cos(lat) into a metric frame, buffer, scale back — so N-S and E-W
+get equal real width. OSMnx extracts the bike graph from this polygon.
 """
 
 import math
@@ -49,15 +46,15 @@ def build_corridor(
     return corridor
 
 
-def corridor_within_dem(polygon: Polygon, dem_bounds: tuple[float, float, float, float]) -> bool:
-    """True if the corridor's bbox lies fully inside the DEM's WGS84 bounds.
+def corridor_within_bbox(polygon: Polygon, bbox: tuple[float, float, float, float]) -> bool:
+    """True if the corridor's bbox lies fully inside ``bbox`` (west, south, east, north).
 
     Args:
         polygon: The corridor polygon (lon/lat degrees).
-        dem_bounds: DEM (west, south, east, north) in WGS84.
+        bbox: Coverage (west, south, east, north) in WGS84.
     """
-    assert len(dem_bounds) == 4, "dem_bounds must be (west, south, east, north)"
-    west, south, east, north = dem_bounds
-    assert west < east and south < north, "dem_bounds must be well-ordered"
+    assert len(bbox) == 4, "bbox must be (west, south, east, north)"
+    west, south, east, north = bbox
+    assert west < east and south < north, "bbox must be well-ordered"
     min_lon, min_lat, max_lon, max_lat = polygon.bounds
     return bool(min_lon >= west and max_lon <= east and min_lat >= south and max_lat <= north)

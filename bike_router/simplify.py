@@ -1,11 +1,8 @@
 """Route geometry helpers.
 
-Two jobs:
-
-* ``route_to_linestring`` — stitch the node path into the FULL OSM geometry
-  (every real vertex), used to derive the Google Maps waypoints.
-* ``select_waypoints`` — reduce to exactly N perceptually-significant points for
-  the Google Maps URL, via Visvalingam-Whyatt effective-area ranking.
+``route_to_linestring`` stitches the node path into the full OSM geometry;
+``select_waypoints`` reduces it to N significant points (Visvalingam-Whyatt) for
+the Google Maps URL.
 """
 
 import logging
@@ -49,10 +46,9 @@ def route_to_linestring(graph: nx.MultiDiGraph, node_path: list[int]) -> LineStr
 def select_waypoints(line: LineString, count: int = 10) -> list[tuple[float, float]]:
     """Reduce ``line`` to exactly ``count`` significant points, returned (lat, lon).
 
-    Uses Visvalingam-Whyatt: repeatedly drop the interior point whose triangle
-    (with its two current neighbours) has the smallest area, until ``count`` remain.
-    Endpoints are always kept. If the line has <= count points it is padded by
-    interpolation so callers always receive exactly ``count``.
+    Visvalingam-Whyatt: repeatedly drop the interior point with the smallest
+    triangle area until ``count`` remain (endpoints kept). Lines with <= count
+    points are padded by interpolation.
     """
     coords: list[tuple[float, float]] = [(lon, lat) for lon, lat in line.coords]  # (lon, lat)
     assert count >= 2, "need at least origin + destination waypoints"

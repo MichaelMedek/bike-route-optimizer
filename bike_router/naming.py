@@ -1,5 +1,4 @@
-"""Output-path naming: filenames carry the start+end places so the route is
-clearly recognisable.
+"""Output-path naming: filenames carry start+end places for recognisability.
 
 e.g. origin "Freudenstadt, Germany" + dest "Pforzheim" →
 output/freudenstadt_germany__to__pforzheim.gpx

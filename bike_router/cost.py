@@ -1,12 +1,21 @@
 """Per-edge cost in intuitive "extra kilometres".
 
-The cost of a directed edge is its real length plus three user-controlled penalties,
-all measured in metres so they add cleanly:
+The cost of a directed BIKE edge is its real length plus three user-controlled
+penalties, all measured in metres so they add cleanly:
 
     cost = length
          + uphill_penalty     = (climb_m / 100) * extra_km_per_uphill_100m   * 1000
          + unpaved_penalty    = surface_tier * extra_km_per_unpaved_km       * length/1000 * 1000
          + main_road_penalty  = is_main_road * extra_km_per_main_road_km     * length/1000 * 1000
+
+A RAIL edge instead costs a one-time boarding charge plus a per-km rail charge
+(both slider-controlled, in the same "extra km" currency), with NO terrain
+penalties — a train doesn't care about hills/surface/traffic:
+
+    cost = extra_km_per_boarding * 1000 + extra_km_per_rail_km * length/1000 * 1000
+
+A TRANSFER edge (bike ↔ station) costs its plain length. The 30-min boarding WAIT
+is charged to time only (track.py), never here.
 
 Each `extra_km_*` is how many extra virtual kilometres the rider will accept to
 avoid one unit of the bad thing. All penalties are >= 0, so the cheapest possible
@@ -18,7 +27,15 @@ Because the graph is directed, only the uphill direction of a street is penalise
 
 import networkx as nx
 
-from bike_router.constants import CostConfig, GpxConfig, RoadConfig, RoutingParams, SurfaceConfig
+from bike_router.constants import (
+    CostConfig,
+    GpxConfig,
+    Mode,
+    RailConfig,
+    RoadConfig,
+    RoutingParams,
+    SurfaceConfig,
+)
 
 
 def _as_values(tag: object) -> list[str]:
@@ -55,28 +72,49 @@ def is_main_road(highway: object) -> bool:
 
 
 def edge_cost(
-    *, length: float, surface: object, highway: object, elev_source: float, elev_target: float, params: RoutingParams
+    *,
+    mode: str,
+    length: float,
+    surface: object,
+    highway: object,
+    elev_source: float,
+    elev_target: float,
+    params: RoutingParams,
 ) -> float:
-    """Total edge cost in metres = length + uphill + unpaved + main-road penalties."""
+    """Total edge cost in metres, branching on travel mode.
+
+    bike: length + uphill + unpaved + main-road penalties (terrain-aware).
+    rail: one-time boarding charge + per-km rail charge (no terrain penalties).
+    transfer: plain length (bike ↔ station link).
+    """
     assert length >= 0, "edge length must be non-negative"
-
-    climb_m = max(elev_target - elev_source, 0.0)  # uphill only; downhill = 0
-    uphill_penalty = (
-        (climb_m / CostConfig.UPHILL_REFERENCE_M) * params.extra_km_per_uphill_100m * GpxConfig.METERS_PER_KM
-    )
-
     length_km = length / GpxConfig.METERS_PER_KM
-    unpaved_penalty = (
-        surface_tier(surface=surface) * params.extra_km_per_unpaved_km * length_km * GpxConfig.METERS_PER_KM
-    )
-    main_road_penalty = (
-        (1 if is_main_road(highway=highway) else 0)
-        * params.extra_km_per_main_road_km
-        * length_km
-        * GpxConfig.METERS_PER_KM
-    )
 
-    total = length + uphill_penalty + unpaved_penalty + main_road_penalty
+    if mode == Mode.RAIL:
+        boarding = params.extra_km_per_boarding * GpxConfig.METERS_PER_KM
+        rail_dist = params.extra_km_per_rail_km * length_km * GpxConfig.METERS_PER_KM
+        total = length + boarding + rail_dist
+    elif mode == Mode.TRANSFER:
+        assert length <= RailConfig.STATION_TRANSFER_RADIUS_M, "transfer link exceeds station radius"
+        total = length
+    elif mode == Mode.BIKE:
+        climb_m = max(elev_target - elev_source, 0.0)  # uphill only; downhill = 0
+        uphill_penalty = (
+            (climb_m / CostConfig.UPHILL_REFERENCE_M) * params.extra_km_per_uphill_100m * GpxConfig.METERS_PER_KM
+        )
+        unpaved_penalty = (
+            surface_tier(surface=surface) * params.extra_km_per_unpaved_km * length_km * GpxConfig.METERS_PER_KM
+        )
+        main_road_penalty = (
+            (1 if is_main_road(highway=highway) else 0)
+            * params.extra_km_per_main_road_km
+            * length_km
+            * GpxConfig.METERS_PER_KM
+        )
+        total = length + uphill_penalty + unpaved_penalty + main_road_penalty
+    else:
+        raise ValueError(f"unknown edge mode: {mode!r}")
+
     assert total >= 0, "edge cost must be non-negative"
     return total
 
@@ -84,11 +122,13 @@ def edge_cost(
 def assign_edge_costs(graph: nx.MultiDiGraph, params: RoutingParams) -> None:
     """Store the total cost on every directed edge of the graph, in place.
 
-    Requires node ``elevation`` (enrich_elevations) and edge ``length`` (OSMnx, in
-    metres) — both internal invariants, accessed strictly so a gap fails loud.
+    Requires node ``elevation`` (enrich_elevations) and edge ``length``/``mode``
+    (baked at build time) — internal invariants, accessed strictly so a gap fails
+    loud. ``surface``/``highway`` stay optional (genuine external OSM data).
     """
     for node_a, node_b, _key, data in graph.edges(keys=True, data=True):
         data[CostConfig.EDGE_COST] = edge_cost(
+            mode=data["mode"],
             length=float(data["length"]),
             surface=data.get("surface"),  # OSM surface tag is genuinely optional
             highway=data.get("highway"),  # ditto highway (external OSM data)

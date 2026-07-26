@@ -3,7 +3,7 @@
 import networkx as nx
 import pytest
 
-from bike_router.constants import CostConfig, RoutingParams
+from bike_router.constants import CostConfig, Mode, RoutingParams
 from bike_router.cost import assign_edge_costs
 from bike_router.sanity import (
     check_simplify_shrunk,
@@ -49,7 +49,13 @@ def test_find_steepest_and_uphill_costlier():
 
 def test_uphill_check_skipped_when_penalty_disabled():
     # uphill penalty 0 → both directions cost the same → check must skip, not fail
-    params = RoutingParams(extra_km_per_uphill_100m=0.0, extra_km_per_unpaved_km=1.0, extra_km_per_main_road_km=1.0)
+    params = RoutingParams(
+        extra_km_per_uphill_100m=0.0,
+        extra_km_per_unpaved_km=1.0,
+        extra_km_per_main_road_km=1.0,
+        extra_km_per_rail_km=0.0,
+        extra_km_per_boarding=0.0,
+    )
     graph = make_line_graph(params=params)
     steepest = find_steepest_bidirectional_edge(graph=graph)
     assert steepest is not None
@@ -69,7 +75,7 @@ def test_check_uphill_costlier_rejects_flat_edge():
     graph.add_node(1, x=8.0, y=48.0, elevation=100.0)
     graph.add_node(2, x=8.1, y=48.0, elevation=100.0)  # flat
     for node_a, node_b in [(1, 2), (2, 1)]:
-        graph.add_edge(node_a, node_b, key=0, length=100.0, surface="asphalt", highway="residential")
+        graph.add_edge(node_a, node_b, key=0, length=100.0, surface="asphalt", highway="residential", mode=Mode.BIKE)
     assign_edge_costs(graph=graph, params=DEFAULT_PARAMS)
     with pytest.raises(AssertionError):
         check_uphill_costlier(graph=graph, node_lower=1, node_upper=2, params=DEFAULT_PARAMS)

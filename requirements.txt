@@ -13,6 +13,9 @@ pyproj>=3.6.0
 osmnx>=2.0.0
 networkx>=3.0
 scikit-learn>=1.3.0  # osmnx.distance.nearest_nodes needs it for unprojected graphs
+pyrosm>=0.6.0  # fast local .osm.pbf reader for the offline country-graph builder
+geopandas>=0.14.0  # GeoDataFrames from pyrosm; node/edge tables
+pyarrow>=14.0.0  # tiled GeoParquet artifact read/write
 
 # GPX + numerics + visualization
 gpxpy>=1.6.0

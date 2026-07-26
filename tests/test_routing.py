@@ -31,9 +31,19 @@ def test_params_change_the_chosen_path():
     """With penalties on, the router avoids the steep paved main road (node 2) and
     takes the flat detour (node 3); distance-only picks the short node-2 path.
     """
-    penalise = RoutingParams(extra_km_per_uphill_100m=5.0, extra_km_per_unpaved_km=0.0, extra_km_per_main_road_km=1.0)
+    penalise = RoutingParams(
+        extra_km_per_uphill_100m=5.0,
+        extra_km_per_unpaved_km=0.0,
+        extra_km_per_main_road_km=1.0,
+        extra_km_per_rail_km=0.0,
+        extra_km_per_boarding=0.0,
+    )
     distance_only = RoutingParams(
-        extra_km_per_uphill_100m=0.0, extra_km_per_unpaved_km=0.0, extra_km_per_main_road_km=0.0
+        extra_km_per_uphill_100m=0.0,
+        extra_km_per_unpaved_km=0.0,
+        extra_km_per_main_road_km=0.0,
+        extra_km_per_rail_km=0.0,
+        extra_km_per_boarding=0.0,
     )
 
     avoid = shortest_route(graph=make_choice_graph(params=penalise), source=1, target=5)

@@ -1,8 +1,7 @@
 """Geocoding via OpenStreetMap Nominatim (through geopy).
 
-Resolves a place string to (lat, lon). A single RateLimiter-wrapped callable is
-built once (make_geocode_fn) and reused for origin + destination so the 1 req/s
-Nominatim policy is honoured across both lookups.
+Resolves a place string to (lat, lon). One RateLimiter-wrapped callable
+(make_geocode_fn) is reused for origin + destination so the 1 req/s policy holds.
 """
 
 import logging

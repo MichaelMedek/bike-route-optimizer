@@ -1,9 +1,7 @@
 """DEMService tests against a SYNTHETIC arcsecond-CRS GeoTIFF.
 
-Proves the load-bearing behavior: the DEM's native CRS is ETRS89 in arcseconds,
-so a WGS84 lon/lat query must be reprojected (×3600) before the array gather.
-We build a tiny in-CRS raster with a known elevation ramp and assert both the
-scalar and vectorized paths, plus the spec-signature wrapper and nodata → NaN.
+The DEM's native CRS is ETRS89 in arcseconds, so a WGS84 lon/lat query must be
+reprojected (×3600) first. Asserts scalar/vectorized paths, the wrapper, nodata→NaN.
 """
 
 from pathlib import Path
@@ -16,8 +14,6 @@ from rasterio.crs import CRS
 
 from bike_router.elevation import (
     DEMService,
-    download_dem_from_huggingface,
-    ensure_dem,
     get_elevations_from_raster,
 )
 
@@ -101,44 +97,6 @@ def test_spec_vectorized_wrapper(arcsecond_dem: Path):
     arr = get_elevations_from_raster(lats=[48.2, 48.8], lngs=[8.2, 8.8], raster_path=str(arcsecond_dem))
     assert arr.shape == (2,)
     assert np.all(np.isfinite(arr))
-
-
-def test_ensure_dem_returns_existing(arcsecond_dem: Path):
-    # an existing path is returned unchanged, no download
-    assert ensure_dem(dem_path=arcsecond_dem) == arcsecond_dem
-
-
-def test_ensure_dem_missing_override_raises(tmp_path: Path):
-    with pytest.raises(FileNotFoundError):
-        ensure_dem(dem_path=tmp_path / "nope.tif")
-
-
-def test_download_dem_skips_when_present(arcsecond_dem: Path):
-    # already-present target short-circuits (no network call)
-    assert download_dem_from_huggingface(target_path=arcsecond_dem) == arcsecond_dem
-
-
-def test_download_dem_streams_to_disk(tmp_path: Path, monkeypatch):
-    """Missing target → streamed download written chunk-by-chunk; progress fires."""
-    from bike_router import elevation
-
-    class _FakeResponse:
-        headers = {"content-length": "6"}
-
-        def raise_for_status(self):
-            pass
-
-        def iter_content(self, chunk_size):
-            yield b"abc"
-            yield b"def"
-
-    monkeypatch.setattr(elevation.requests, "get", lambda url, stream, timeout: _FakeResponse())
-    seen: list[float] = []
-    target = tmp_path / "dl.tif"
-    out = download_dem_from_huggingface(target_path=target, progress_callback=seen.append)
-    assert out == target
-    assert target.read_bytes() == b"abcdef"
-    assert seen[-1] == 1.0  # reached 100%
 
 
 def test_missing_dem_raises_filenotfound(tmp_path: Path):
