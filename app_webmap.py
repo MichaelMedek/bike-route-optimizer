@@ -10,7 +10,8 @@ Run:  streamlit run app_webmap.py
 import streamlit as st
 
 from bike_router.constants import PARAM_SPECS, RoutingDefaults, RoutingParams, WebMapConfig
-from bike_router.geocoding import GeocodeError, geocode_endpoint, make_geocode_fn
+from bike_router.errors import BikeRouterError
+from bike_router.geocoding import geocode_endpoint, make_geocode_fn
 from bike_router.graph_store import download_graph_from_hf, snap_to_node
 from bike_router.pipeline import plan_route
 from bike_router.webmap import (
@@ -77,8 +78,8 @@ def main() -> None:
                 view=route_view_state(start_latlon=start[:2], end_latlon=end[:2]),
                 camera_epoch=st.session_state.camera_epoch + 1,
             )
-        except GeocodeError as error:
-            st.toast(f"Could not find {error}. Check the spelling.", icon="⚠️")
+        except BikeRouterError as error:
+            st.toast(str(error), icon="⚠️")
 
     # The currently-marked endpoints (colors match the map markers and the PNG).
     if st.session_state.start_latlon is not None:
@@ -103,7 +104,7 @@ def main() -> None:
                 result = plan_route(origin=origin, destination=destination, params=params)
             # No camera_epoch bump → the map keeps the view set in step 2.
             st.session_state.update(result=result, ribbon_segments=route_ribbon_segments(track=result.track))
-        except (ValueError, RuntimeError) as error:  # too short/long, out of coverage, or no route
+        except BikeRouterError as error:  # too short/long, out of coverage, or no route
             st.toast(str(error), icon="⚠️")
     if needs_endpoints:
         st.caption("⬆️ Set start & end first to enable **Compute route**.")

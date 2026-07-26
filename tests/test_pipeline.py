@@ -11,7 +11,13 @@ import pytest
 from shapely.geometry import box
 
 from bike_router import pipeline
-from bike_router.geocoding import GeocodeError
+from bike_router.errors import (
+    GeocodeConnectionError,
+    NoRouteError,
+    OutOfCoverageError,
+    TripTooLongError,
+    TripTooShortError,
+)
 from tests.conftest import DEFAULT_PARAMS, make_line_graph
 
 
@@ -33,7 +39,8 @@ def test_plan_route_end_to_end_offline(tmp_path: Path, monkeypatch):
     _wire_offline(monkeypatch, tmp_path, make_line_graph())
     result = pipeline.plan_route(origin="Start", destination="End", params=DEFAULT_PARAMS)
 
-    assert result.gmaps_url.startswith("https://www.google.com/maps/dir/?api=1")
+    assert result.gmaps_urls == [result.gmaps_urls[0]]  # pure-bike line graph → exactly one leg
+    assert result.gmaps_urls[0].startswith("https://www.google.com/maps/dir/?api=1")
     assert result.gpx_path.exists() and result.gpx_path.stat().st_size > 0
     assert result.png_path.exists() and result.png_path.stat().st_size > 0
     assert result.track.distance_km > 0
@@ -51,7 +58,7 @@ def test_plan_route_rejects_too_short_trip(monkeypatch):
         "geocode_endpoint",
         lambda place, label, geocode_fn: (48.0, 8.0) if label == "Start" else (48.001, 8.0),
     )
-    with pytest.raises(ValueError):
+    with pytest.raises(TripTooShortError):
         pipeline.plan_route(origin="A", destination="B", params=DEFAULT_PARAMS)
 
 
@@ -61,17 +68,17 @@ def test_plan_route_rejects_too_far_trip(monkeypatch):
     monkeypatch.setattr(
         pipeline, "geocode_endpoint", lambda place, label, geocode_fn: (48.0, 8.0) if label == "Start" else (51.0, 8.0)
     )
-    with pytest.raises(ValueError):
+    with pytest.raises(TripTooLongError):
         pipeline.plan_route(origin="A", destination="B", params=DEFAULT_PARAMS)
 
 
 def test_plan_route_propagates_geocode_error(monkeypatch):
     def _boom(place, label, geocode_fn):
-        raise GeocodeError("no such place")
+        raise GeocodeConnectionError("no connection")
 
     monkeypatch.setattr(pipeline, "make_geocode_fn", lambda: lambda place: None)
     monkeypatch.setattr(pipeline, "geocode_endpoint", _boom)
-    with pytest.raises(GeocodeError):
+    with pytest.raises(GeocodeConnectionError):
         pipeline.plan_route(origin="Nowhere", destination="Elsewhere", params=DEFAULT_PARAMS)
 
 
@@ -83,18 +90,18 @@ def test_plan_route_rejects_outside_coverage(monkeypatch):
     monkeypatch.setattr(pipeline, "build_corridor", lambda start_latlon, dest_latlon: box(7.9, 47.9, 8.1, 48.1))
 
     def _outside(start_latlon, dest_latlon, graph_dir):
-        raise ValueError("Route is outside the prebuilt graph coverage")
+        raise OutOfCoverageError("Route is outside the prebuilt graph coverage")
 
     monkeypatch.setattr(pipeline, "_assert_within_coverage", _outside)
-    with pytest.raises(ValueError, match="coverage"):
+    with pytest.raises(OutOfCoverageError, match="coverage"):
         pipeline.plan_route(origin="Start", destination="End", params=DEFAULT_PARAMS)
 
 
-def test_plan_route_no_route_raises_runtimeerror(tmp_path: Path, monkeypatch):
+def test_plan_route_no_route_raises_no_route_error(tmp_path: Path, monkeypatch):
     graph = make_line_graph()
     graph.add_node(99, x=20.0, y=60.0, elevation=100.0)  # isolated target
     _wire_offline(monkeypatch, tmp_path, graph)
     monkeypatch.setattr(pipeline, "check_strongly_connected", lambda graph: None)  # bypass (disconnected)
     monkeypatch.setattr(pipeline, "snap_endpoints", lambda graph, start_latlon, dest_latlon: (1, 99))
-    with pytest.raises(RuntimeError):
+    with pytest.raises(NoRouteError):
         pipeline.plan_route(origin="Start", destination="End", params=DEFAULT_PARAMS)

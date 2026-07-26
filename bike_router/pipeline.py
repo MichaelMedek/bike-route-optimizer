@@ -15,6 +15,7 @@ from bike_router.composition import RouteComposition, route_composition
 from bike_router.constants import CorridorConfig, GmapsConfig, GpxConfig, RoutingParams
 from bike_router.corridor import build_corridor
 from bike_router.cost import assign_edge_costs
+from bike_router.errors import NoRouteError, OutOfCoverageError, TripTooLongError, TripTooShortError
 from bike_router.geo import haversine_distance_m
 from bike_router.geocoding import geocode_endpoint, make_geocode_fn
 from bike_router.gmaps import build_gmaps_url
@@ -38,12 +39,12 @@ logger = logging.getLogger(__name__)
 def _assert_within_coverage(
     start_latlon: tuple[float, float], dest_latlon: tuple[float, float], graph_dir: Path | None
 ) -> None:
-    """Raise ValueError if either endpoint falls outside the prebuilt graph's bbox."""
+    """Raise OutOfCoverageError if either endpoint falls outside the prebuilt graph's bbox."""
     meta = load_meta() if graph_dir is None else load_meta(graph_dir=graph_dir)
     west, south, east, north = meta["bbox"]
     for lat, lon in (start_latlon, dest_latlon):
         if not (west <= lon <= east and south <= lat <= north):
-            raise ValueError(
+            raise OutOfCoverageError(
                 "Route is outside the prebuilt graph coverage "
                 f"(covered bbox W,S,E,N = {west:.2f},{south:.2f},{east:.2f},{north:.2f})."
             )
@@ -89,12 +90,12 @@ def plan_route(
         / GpxConfig.METERS_PER_KM
     )
     if trip_km < CorridorConfig.MIN_TRIP_KM:
-        raise ValueError(
+        raise TripTooShortError(
             f"Start and destination are only {trip_km:.1f} km apart "
             f"(minimum {CorridorConfig.MIN_TRIP_KM:.0f} km) — too short to plan."
         )
     if trip_km > CorridorConfig.MAX_TRIP_KM:
-        raise ValueError(
+        raise TripTooLongError(
             f"Start and destination are {trip_km:.0f} km apart "
             f"(maximum {CorridorConfig.MAX_TRIP_KM:.0f} km) — too far to plan."
         )
@@ -118,7 +119,7 @@ def plan_route(
     try:
         node_path = shortest_route(graph=graph, source=source, target=target)
     except nx.NetworkXNoPath as exc:
-        raise RuntimeError("No bike route found between the two places within the corridor.") from exc
+        raise NoRouteError("No bike route found between the two places within the corridor.") from exc
     logger.info("Route: %d nodes", len(node_path))
 
     track = build_track(graph=graph, node_path=node_path)

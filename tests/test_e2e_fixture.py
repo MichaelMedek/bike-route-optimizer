@@ -12,6 +12,7 @@ import pytest
 
 from bike_router import pipeline
 from bike_router.constants import PARAM_SPECS, RoutingParams
+from bike_router.errors import OutOfCoverageError
 from tests.conftest import FIXTURE_GRAPH_DIR
 
 # Two real points inside the fixture coverage (Schwarzwald, ~18 km apart, net downhill).
@@ -51,7 +52,8 @@ def test_e2e_real_route_produced_from_fixture(tmp_path: Path, monkeypatch):
     # Real GPX + PNG written to the temp folder.
     assert result.gpx_path.exists() and result.gpx_path.stat().st_size > 0
     assert result.png_path.exists() and result.png_path.stat().st_size > 0
-    assert result.gmaps_url.startswith("https://www.google.com/maps/dir/?api=1")
+    assert len(result.gmaps_urls) >= 1  # at least one pedalled leg
+    assert all(u.startswith("https://www.google.com/maps/dir/?api=1") for u in result.gmaps_urls)
 
     # Plausible Schwarzwald route: sane distance, positive time, real elevation change.
     assert 8.0 < track.distance_km < 60.0
@@ -73,7 +75,7 @@ def test_e2e_flat_hater_still_routes(tmp_path: Path, monkeypatch):
 
 
 def test_e2e_out_of_coverage_raises(tmp_path: Path, monkeypatch):
-    """Endpoints outside the fixture bbox fail loud (ValueError), not silently."""
+    """Endpoints outside the fixture bbox fail loud (OutOfCoverageError), not silently."""
     _stub_geocode(monkeypatch, (52.5, 13.4), (52.6, 13.5))  # Berlin — outside Schwarzwald fixture
-    with pytest.raises(ValueError, match="coverage"):
+    with pytest.raises(OutOfCoverageError, match="coverage"):
         pipeline.plan_route(origin="Start", destination="End", params=_params(), graph_dir=FIXTURE_GRAPH_DIR)

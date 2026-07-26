@@ -5,6 +5,7 @@ import pytest
 
 from bike_router import graph_store, pipeline
 from bike_router.builder import _open_osm, _shift_station_ids
+from bike_router.errors import OutOfCoverageError
 
 
 def test_download_graph_skips_when_present(tmp_path):
@@ -57,5 +58,5 @@ def test_assert_within_coverage_passes_and_fails(tmp_path):
     (tmp_path / "meta.json").write_text('{"bbox": [7.9, 47.9, 8.2, 48.2], "tile_deg": 0.5}')
     # (lat, lon) endpoints inside the bbox → no raise
     pipeline._assert_within_coverage(start_latlon=(48.0, 8.0), dest_latlon=(48.1, 8.1), graph_dir=tmp_path)
-    with pytest.raises(ValueError, match="coverage"):
+    with pytest.raises(OutOfCoverageError, match="coverage"):
         pipeline._assert_within_coverage(start_latlon=(48.0, 8.0), dest_latlon=(60.0, 20.0), graph_dir=tmp_path)

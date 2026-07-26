@@ -37,9 +37,10 @@ def main(argv: list[str] | None = None) -> int:
         format="%(levelname)s %(name)s: %(message)s",
     )
 
-    params = RoutingParams(**{spec.field: getattr(arguments, spec.field) for spec in PARAM_SPECS})
     # Progress belongs ONLY to the one-time graph download (tqdm here, st.progress in the app).
     download_graph_from_hf(progress=tqdm_progress(desc="Downloading graph"))
+    # Expected failures raise a BikeRouterError — its class name + message already explain.
+    params = RoutingParams(**{spec.field: getattr(arguments, spec.field) for spec in PARAM_SPECS})
     result = plan_route(
         origin=arguments.origin,
         destination=arguments.destination,
