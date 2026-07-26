@@ -124,6 +124,11 @@ class CorridorConfig:
     MAX_TRIP_KM = 100.0  # beyond this the corridor graph is too big / out of scope
 
 
+# Quality colours — green good, red bad.
+GOOD_COLOR = "#2e7d32"  # green
+BAD_COLOR = "#c62828"  # red
+
+
 class SurfaceConfig:
     """Surface → penalty TIER (0 = good/paved, 1 = moderate/gravel, 2 = heavy/soft).
 
@@ -157,6 +162,8 @@ class SurfaceConfig:
     DEFAULT_TIER = 1
     # Edges whose surface tier is this high are removed from the routable graph.
     EXCLUDED_TIER = 2
+    # Per-tier human label + swatch: only tier 0 (paved) is good/green, the rest bad/red.
+    TIER_LABEL_COLORS = {0: ("paved", GOOD_COLOR), 1: ("gravel/unpaved", BAD_COLOR), 2: ("rough", BAD_COLOR)}
 
 
 class RoadConfig:
@@ -168,6 +175,8 @@ class RoadConfig:
     """
 
     MAIN_ROADS = frozenset({"secondary", "primary", "unclassified"})
+    # is-main-road bool → human label + swatch (quiet good/green, main bad/red).
+    LABEL_COLORS = {False: ("quiet way", GOOD_COLOR), True: ("main road", BAD_COLOR)}
 
 
 class RoutingDefaults:

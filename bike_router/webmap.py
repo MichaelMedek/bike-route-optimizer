@@ -1,16 +1,60 @@
 """Pure helpers for the Streamlit 3D map viewer (app_webmap.py).
 
-Kept out of the UI shell so the map wiring is unit-testable: turning a computed
-Track into ribbon points, and computing the deck.gl camera for the default and
-post-route views. No streamlit/pydeck imports here.
+Kept out of the UI shell so the map wiring is unit-testable: ribbon points, the
+deck.gl camera for the default/post-route views, and the composition donut chart.
+No streamlit imports here — these are pure builders the app shell merely calls.
 """
 
 import math
 from dataclasses import dataclass
 
-from bike_router.constants import WebMapConfig
+import altair as alt
+import pandas as pd
+
+from bike_router.constants import RoadConfig, SurfaceConfig, WebMapConfig
 from bike_router.geo import haversine_distance_m
 from bike_router.track import Track
+
+
+def _hex(rgb: tuple[int, int, int]) -> str:
+    """RGB tuple → ``#rrggbb`` hex (Altair wants hex/CSS colours)."""
+    return "#{:02x}{:02x}{:02x}".format(*rgb)
+
+
+# Donut label→colour maps, all derived from single sources (no re-typed labels):
+# surface/road labels+colours live in SurfaceConfig/RoadConfig; mode in WebMapConfig.
+SURFACE_DONUT_COLORS = dict(SurfaceConfig.TIER_LABEL_COLORS.values())
+ROAD_DONUT_COLORS = dict(RoadConfig.LABEL_COLORS.values())
+MODE_DONUT_COLORS = {str(mode): _hex(rgb=rgb) for mode, rgb in WebMapConfig.MODE_COLORS.items()}
+
+
+def composition_donut(title: str, by_km: dict[str, float], colors: dict[str, str]) -> alt.Chart:
+    """Small interactive Altair donut of a km breakdown (hover → label / km / %).
+
+    ``colors`` maps each category label to a hex colour so wedges are meaningful
+    (green good / red bad; blue bike / purple train) rather than Altair defaults.
+    """
+    total = sum(by_km.values()) or 1.0
+    frame = pd.DataFrame([{"category": label, "km": km, "pct": km / total * 100} for label, km in by_km.items()])
+    domain = list(colors)
+    return (
+        alt.Chart(frame, title=title)
+        .mark_arc(innerRadius=30)
+        .encode(
+            theta=alt.Theta("km:Q", stack=True),
+            color=alt.Color(
+                "category:N",
+                scale=alt.Scale(domain=domain, range=[colors[label] for label in domain]),
+                legend=alt.Legend(orient="bottom", title=None),
+            ),
+            tooltip=[
+                alt.Tooltip("category:N", title="type"),
+                alt.Tooltip("km:Q", format=".1f", title="km"),
+                alt.Tooltip("pct:Q", format=".0f", title="%"),
+            ],
+        )
+        .properties(height=180)
+    )
 
 
 def route_ribbon_segments(

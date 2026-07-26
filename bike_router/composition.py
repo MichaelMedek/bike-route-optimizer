@@ -8,12 +8,9 @@ from dataclasses import dataclass
 
 import networkx as nx
 
-from bike_router.constants import GpxConfig, Mode
+from bike_router.constants import GpxConfig, Mode, RoadConfig, SurfaceConfig
 from bike_router.cost import is_main_road, surface_tier
 from bike_router.track import iter_route_edges
-
-# Human labels for the three surface tiers (SurfaceConfig tier ints → text).
-_SURFACE_LABELS = {0: "paved", 1: "gravel/unpaved", 2: "rough"}
 
 
 @dataclass(frozen=True)
@@ -42,9 +39,9 @@ def route_composition(graph: nx.MultiDiGraph, node_path: list[int]) -> RouteComp
         by_mode[mode] = by_mode.get(mode, 0.0) + km
         if mode != Mode.BIKE:  # surface/road only meaningful for pedalled legs
             continue
-        label = _SURFACE_LABELS[surface_tier(surface=data.get("surface"))]
+        label, _color = SurfaceConfig.TIER_LABEL_COLORS[surface_tier(surface=data.get("surface"))]
         by_surface[label] = by_surface.get(label, 0.0) + km
-        road = "main road" if is_main_road(highway=data.get("highway")) else "quiet way"
+        road, _road_color = RoadConfig.LABEL_COLORS[is_main_road(highway=data.get("highway"))]
         by_road[road] = by_road.get(road, 0.0) + km
 
     return RouteComposition(by_surface_km=by_surface, by_road_km=by_road, by_mode_km=by_mode)
