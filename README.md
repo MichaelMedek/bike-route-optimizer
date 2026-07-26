@@ -78,16 +78,16 @@ Every node is **exactly one** kind — a cycling node or a rail-station node, ne
 
 ## Preprocessing, publishing, and auto-download
 
-The routing graph is built once offline, not per request. Building it reads raw OpenStreetMap extracts (one downloadable `.osm.pbf` file per region), drops unrideable surfaces, merges near-identical junctions within about 25 m, bakes in elevation sampled from a terrain model so no elevation data is ever needed at query time, adds the train links, and writes the result as compact map-data files split into small geographic tiles.
+The routing graph is built once offline, not per request. **One** script builds it end-to-end from zero data: it downloads the raw OpenStreetMap extracts (`.osm.pbf`, one per region, on demand), then builds each — dropping unrideable surfaces, merging near-identical junctions within about 25 m, baking in elevation sampled from a terrain model so no elevation data is ever needed at query time, adding the train links — and finally merges and writes the result as compact map-data files split into small geographic tiles.
 
 ```bash
-# quick check on a small area (Schwarzwald, covering Freudenstadt → Pforzheim)
-python scripts/build_country_graph.py data/pbf/karlsruhe-regbez.osm.pbf --out data/dach_graph --bbox 8.30 48.40 8.80 48.95
+# quick check on one small region, clipped to a test bbox (Schwarzwald, ~5 min)
+python scripts/build_dach_graph.py --only karlsruhe-regbez --bbox 8.30 48.40 8.80 48.95 -v
 
-# full DACH, overnight and resumable (downloads the region extracts on demand, checkpoints after each)
+# full DACH, overnight and resumable (downloads ~5 GB of extracts, checkpoints each region)
 python scripts/build_dach_graph.py -v
 
-# publish the finished graph to Hugging Face (log in once when prompted)
+# publish the finished graph to Hugging Face (separate step; log in once when prompted)
 python scripts/upload_graph_to_huggingface.py
 ```
 

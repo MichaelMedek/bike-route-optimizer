@@ -1,16 +1,18 @@
-"""Robust, resumable full-DACH bike+rail graph build (designed to run overnight).
+"""The single preprocessing script: from zero data to the finished tiled graph fixture.
 
-Downloads each Geofabrik sub-region .osm.pbf on demand, builds and CHECKPOINTS each
-region in isolation (bounded memory), then merges/tiles to the final GeoParquet.
-Rerunning skips checkpointed regions, so a crash loses only region N's partial work.
+Two phases with their own progress bars — first DOWNLOAD every outstanding region's
+Geofabrik .osm.pbf, then BUILD + CHECKPOINT each in isolation (bounded memory) — before
+merging/tiling to the final GeoParquet. Rerunning skips checkpointed regions, so a crash
+loses only the region it died on. (Publishing to Hugging Face is the separate
+upload_graph_to_huggingface.py.)
 
 Why sub-regions (Regierungsbezirke etc.) not whole countries: consolidation memory
 scales with a region's node count; a regbez peaks ~20 GB, whole-Germany would OOM.
 Per-region isolation keeps peak RAM bounded.
 
 Usage:
-    # Confirm on a small test region first (one sub-region, ~5 min):
-    python scripts/build_dach_graph.py --only karlsruhe-regbez
+    # Confirm on a small clipped region first (~5 min):
+    python scripts/build_dach_graph.py --only karlsruhe-regbez --bbox 8.30 48.40 8.80 48.95
 
     # Full DACH overnight (downloads ~5 GB of pbf, runs for hours):
     python scripts/build_dach_graph.py
@@ -29,6 +31,8 @@ import logging
 import time
 import urllib.request
 from pathlib import Path
+
+from tqdm import tqdm
 
 from bike_router.builder import build_region_graph, merge_region_tables
 from bike_router.constants import DEMConfig, GraphConfig
@@ -103,28 +107,45 @@ def _download_pbf(region_key: str, geofabrik_path: str, pbf_dir: Path) -> Path:
     return dest
 
 
-def _build_one_region(
-    *, region_key: str, geofabrik_path: str, pbf_dir: Path, dem: DEMService, tolerance_m: float, retries: int
-) -> bool:
-    """Download + build + checkpoint one region. Returns True on success.
+def _download_region(*, region_key: str, geofabrik_path: str, pbf_dir: Path, retries: int) -> Path | None:
+    """Download one region's pbf with retries. Returns its path, or None if it never succeeds."""
+    for attempt in range(1, retries + 1):
+        try:
+            return _download_pbf(region_key=region_key, geofabrik_path=geofabrik_path, pbf_dir=pbf_dir)
+        except Exception as error:  # noqa: BLE001 — overnight run must survive any single region
+            logger.warning("download %s attempt %d/%d failed: %s", region_key, attempt, retries, error)
+            time.sleep(5 * attempt)
+    logger.error("✗ %s: download gave up after %d attempts — SKIPPED", region_key, retries)
+    return None
 
-    Network/parse failures are retried; a region that still fails is reported and
+
+def _build_one_region(
+    *,
+    region_key: str,
+    pbf: Path,
+    ckpt_dir: Path,
+    dem: DEMService,
+    tolerance_m: float,
+    retries: int,
+    bbox: tuple[float, float, float, float] | None,
+) -> bool:
+    """Build + checkpoint one already-downloaded region. Returns True on success.
+
+    Parse/build failures are retried; a region that still fails is reported and
     skipped (returns False) so a single bad extract never aborts the overnight run.
+    ``bbox`` clips the region (fast test builds); None builds its full extent.
     """
     for attempt in range(1, retries + 1):
         try:
-            pbf = _download_pbf(region_key=region_key, geofabrik_path=geofabrik_path, pbf_dir=pbf_dir)
-            graph = build_region_graph(pbf_path=pbf, dem=dem, tolerance_m=tolerance_m)
+            graph = build_region_graph(pbf_path=pbf, dem=dem, tolerance_m=tolerance_m, bbox=bbox)
             nodes_df, edges_df = graph_to_tables(graph=graph)
-            write_region_checkpoint(
-                nodes_df=nodes_df, edges_df=edges_df, ckpt_dir=pbf_dir.parent / "checkpoints", region_key=region_key
-            )
+            write_region_checkpoint(nodes_df=nodes_df, edges_df=edges_df, ckpt_dir=ckpt_dir, region_key=region_key)
             logger.info("✓ %s: %d nodes / %d edges", region_key, len(nodes_df), len(edges_df))
             return True
         except Exception as error:  # noqa: BLE001 — overnight run must survive any single region
-            logger.warning("region %s attempt %d/%d failed: %s", region_key, attempt, retries, error)
+            logger.warning("build %s attempt %d/%d failed: %s", region_key, attempt, retries, error)
             time.sleep(5 * attempt)
-    logger.error("✗ %s: giving up after %d attempts — SKIPPED", region_key, retries)
+    logger.error("✗ %s: build gave up after %d attempts — SKIPPED", region_key, retries)
     return False
 
 
@@ -137,6 +158,14 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--only", nargs="+", help="Build only these region keys (test a subset).")
     parser.add_argument("--retries", type=int, default=3)
     parser.add_argument("--fresh", action="store_true", help="Ignore existing checkpoints (clean rebuild).")
+    parser.add_argument(
+        "--bbox",
+        nargs=4,
+        type=float,
+        metavar=("W", "S", "E", "N"),
+        default=None,
+        help="Optional lon/lat clip (west south east north) to build a small test region fast.",
+    )
     parser.add_argument("-v", "--verbose", action="store_true")
     args = parser.parse_args(argv)
 
@@ -148,25 +177,39 @@ def main(argv: list[str] | None = None) -> int:
     regions = {k: DACH_REGIONS[k] for k in args.only} if args.only else dict(DACH_REGIONS)
     pbf_dir = args.work / "pbf"
     ckpt_dir = args.work / "checkpoints"
+    bbox = tuple(args.bbox) if args.bbox else None
     dem = DEMService(dem_path=args.dem)
 
     started = time.time()
-    built: list[str] = []
+    # Regions already checkpointed need neither download nor build; keep them for the merge.
+    done = {
+        k for k in regions if not args.fresh and read_region_checkpoint(ckpt_dir=ckpt_dir, region_key=k) is not None
+    }
+    todo = {k: regions[k] for k in regions if k not in done}
+    built: list[str] = sorted(done)
     skipped: list[str] = []
-    for index, (region_key, geofabrik_path) in enumerate(regions.items(), start=1):
-        already = None if args.fresh else read_region_checkpoint(ckpt_dir=ckpt_dir, region_key=region_key)
-        if already is not None:
-            logger.info("• %s already checkpointed (%d/%d) — skipping build", region_key, index, len(regions))
-            built.append(region_key)
-            continue
-        logger.info("→ %s (%d/%d)", region_key, index, len(regions))
+
+    # Phase 1 — download every outstanding region's raw pbf up front (one bar).
+    pbfs: dict[str, Path] = {}
+    for region_key, geofabrik_path in tqdm(todo.items(), desc="Downloading pbfs", unit="region"):
+        pbf = _download_region(
+            region_key=region_key, geofabrik_path=geofabrik_path, pbf_dir=pbf_dir, retries=args.retries
+        )
+        if pbf is None:
+            skipped.append(region_key)
+        else:
+            pbfs[region_key] = pbf
+
+    # Phase 2 — build + checkpoint each downloaded region to a graph (second bar).
+    for region_key, pbf in tqdm(pbfs.items(), desc="Building regions", unit="region"):
         ok = _build_one_region(
             region_key=region_key,
-            geofabrik_path=geofabrik_path,
-            pbf_dir=pbf_dir,
+            pbf=pbf,
+            ckpt_dir=ckpt_dir,
             dem=dem,
             tolerance_m=args.tolerance,
             retries=args.retries,
+            bbox=bbox,
         )
         (built if ok else skipped).append(region_key)
 

@@ -1,7 +1,7 @@
 """Upload the prebuilt DACH bike+rail graph artifact to Hugging Face Hub.
 
 Uploads the whole tiled artifact dir (nodes/, edges/, meta.json) built by
-scripts/build_country_graph.py. Mirrors upload_dem_to_huggingface.py.
+scripts/build_dach_graph.py. Mirrors upload_dem_to_huggingface.py.
 
 Usage:
     1. pip install huggingface_hub
@@ -22,7 +22,7 @@ def upload_graph_to_hf() -> None:
     artifact_dir = GraphConfig.GRAPH_DIR
     meta = artifact_dir / GraphConfig.META_FILENAME
     if not meta.exists():
-        raise FileNotFoundError(f"No artifact at {artifact_dir} (run scripts/build_country_graph.py first)")
+        raise FileNotFoundError(f"No artifact at {artifact_dir} (run scripts/build_dach_graph.py first)")
 
     total_mb = sum(f.stat().st_size for f in artifact_dir.rglob("*") if f.is_file()) / 1024 / 1024
     print(f"Artifact dir: {artifact_dir}")
