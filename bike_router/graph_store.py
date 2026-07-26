@@ -57,8 +57,8 @@ def _covering_tiles(bounds: tuple[float, float, float, float], tile_deg: float, 
     The margin catches edges that cross a tile boundary into a neighbour tile.
     """
     min_lon, min_lat, max_lon, max_lat = bounds
-    row_lo, col_lo = _tile_index(min_lat, min_lon, tile_deg)
-    row_hi, col_hi = _tile_index(max_lat, max_lon, tile_deg)
+    row_lo, col_lo = _tile_index(lat=min_lat, lon=min_lon, tile_deg=tile_deg)
+    row_hi, col_hi = _tile_index(lat=max_lat, lon=max_lon, tile_deg=tile_deg)
     return [
         (row, col)
         for row in range(row_lo - margin, row_hi + margin + 1)
@@ -81,18 +81,23 @@ def write_graph_parquet(nodes_df: pd.DataFrame, edges_df: pd.DataFrame, meta: di
     nodes_dir.mkdir(parents=True, exist_ok=True)
     edges_dir.mkdir(parents=True, exist_ok=True)
 
-    node_tiles = [_tile_index(lat, lon, tile_deg) for lat, lon in zip(nodes_df["lat"], nodes_df["lon"], strict=True)]
+    node_tiles = [
+        _tile_index(lat=lat, lon=lon, tile_deg=tile_deg)
+        for lat, lon in zip(nodes_df["lat"], nodes_df["lon"], strict=True)
+    ]
     nodes_df = nodes_df.assign(_tile=node_tiles)
     coord = {
         osmid: (lat, lon) for osmid, lat, lon in zip(nodes_df["osmid"], nodes_df["lat"], nodes_df["lon"], strict=True)
     }
-    edge_tiles = [_tile_index(*coord[node], tile_deg) for node in edges_df["from_node"]]
+    edge_tiles = [
+        _tile_index(lat=coord[node][0], lon=coord[node][1], tile_deg=tile_deg) for node in edges_df["from_node"]
+    ]
     edges_df = edges_df.assign(_tile=edge_tiles)
 
     for (row, col), group in nodes_df.groupby("_tile"):
-        group[_NODE_COLS].to_parquet(nodes_dir / f"{_tile_name(row, col)}.parquet", index=False)
+        group[_NODE_COLS].to_parquet(nodes_dir / f"{_tile_name(row=row, col=col)}.parquet", index=False)
     for (row, col), group in edges_df.groupby("_tile"):
-        group[_EDGE_COLS].to_parquet(edges_dir / f"{_tile_name(row, col)}.parquet", index=False)
+        group[_EDGE_COLS].to_parquet(edges_dir / f"{_tile_name(row=row, col=col)}.parquet", index=False)
 
     (out_dir / GraphConfig.META_FILENAME).write_text(json.dumps(meta, indent=2))
     logger.info("Wrote %d nodes / %d edges across tiles to %s", len(nodes_df), len(edges_df), out_dir)
@@ -156,9 +161,9 @@ def load_meta(graph_dir: Path = GraphConfig.GRAPH_DIR) -> dict[str, Any]:
 def _read_tiles(directory: Path, tiles: list[tuple[int, int]], columns: list[str]) -> pd.DataFrame:
     """Concatenate the existing per-tile Parquet files among ``tiles`` (missing = skip)."""
     frames = [
-        pd.read_parquet(directory / f"{_tile_name(row, col)}.parquet")
+        pd.read_parquet(directory / f"{_tile_name(row=row, col=col)}.parquet")
         for row, col in tiles
-        if (directory / f"{_tile_name(row, col)}.parquet").exists()
+        if (directory / f"{_tile_name(row=row, col=col)}.parquet").exists()
     ]
     if not frames:
         return pd.DataFrame(columns=columns)
@@ -238,6 +243,24 @@ def load_corridor_graph(corridor: Polygon, graph_dir: Path = GraphConfig.GRAPH_D
     graph = ox.truncate.largest_component(graph, strongly=True)
     assert graph.number_of_nodes() > 0, "corridor graph empty after taking largest component"
     return graph
+
+
+def snap_to_node(lat: float, lon: float, graph_dir: Path = GraphConfig.GRAPH_DIR) -> tuple[float, float, float]:
+    """Nearest graph node to (lat, lon) as ``(lat, lon, elevation_m)``.
+
+    Routing is node-to-node, so this resolves a raw geocoded point to the node it
+    will actually start/end at — and returns its baked elevation (no DEM needed), so
+    the map marker can hover at the true terrain height.
+    """
+    tile_deg = load_meta(graph_dir=graph_dir)["tile_deg"]
+    tiles = _covering_tiles(bounds=(lon, lat, lon, lat), tile_deg=tile_deg, margin=1)
+    nodes_df = _read_tiles(graph_dir / GraphConfig.NODES_SUBDIR, tiles, _NODE_COLS)
+    assert not nodes_df.empty, "no graph nodes near this point (outside coverage)"
+    lats = nodes_df["lat"].to_numpy()
+    lons = nodes_df["lon"].to_numpy()
+    d2 = (lats - lat) ** 2 + ((lons - lon) * math.cos(math.radians(lat))) ** 2  # planar; fine for nearest
+    row = nodes_df.iloc[int(d2.argmin())]
+    return float(row["lat"]), float(row["lon"]), float(row["elevation_m"])
 
 
 def graph_to_tables(graph: nx.MultiDiGraph) -> tuple[pd.DataFrame, pd.DataFrame]:

@@ -39,7 +39,7 @@ def _cycling_graph(osm: OSM) -> nx.MultiDiGraph:
     nodes, edges = osm.get_network(network_type="cycling", nodes=True)
     assert nodes is not None and edges is not None, "pbf has no cycling network"
     graph: nx.MultiDiGraph = osm.to_graph(nodes, edges, graph_type="networkx", osmnx_compatible=True, retain_all=True)
-    normalize_pyrosm_graph(graph)
+    normalize_pyrosm_graph(graph=graph)
     return graph
 
 
@@ -134,11 +134,11 @@ def _add_railway(graph: nx.MultiDiGraph, osm: OSM, dem: DEMService) -> int:
     bidirectional transfers; consecutive stations on a line get a rail edge uphill
     only, so the rider never boards to go downhill.
     """
-    stations = _station_points(osm)
+    stations = _station_points(osm=osm)
     if not stations:
         logger.warning("No railway stations in extract — rail edges skipped")
         return 0
-    lines = _rail_lines(osm)
+    lines = _rail_lines(osm=osm)
 
     # Snap stations to the BIKE network only — a view frozen before any station node
     # is added, so stations never snap to each other (which would island them off the
@@ -177,9 +177,9 @@ def _connect_stations_along_lines(
     for line in lines:
         # Stations sitting within the transfer radius of any line vertex belong to it.
         on_line = [
-            (_project_fraction(line, lat, lon), node_id, lat, lon)
+            (_project_fraction(coords=line, lat=lat, lon=lon), node_id, lat, lon)
             for node_id, _name, lat, lon in station_nodes
-            if _min_vertex_dist(line, lat, lon) <= RailConfig.STATION_TRANSFER_RADIUS_M
+            if _min_vertex_dist(coords=line, lat=lat, lon=lon) <= RailConfig.STATION_TRANSFER_RADIUS_M
         ]
         on_line.sort(key=lambda item: item[0])
         for (_f_a, a_id, a_lat, a_lon), (_f_b, b_id, b_lat, b_lon) in zip(on_line[:-1], on_line[1:], strict=True):
@@ -223,15 +223,15 @@ def build_region_graph(
         bbox: Optional (west, south, east, north) clip to speed up region tests.
     """
     osm = _open_osm(pbf_path=pbf_path, bbox=bbox)
-    graph = _cycling_graph(osm)
+    graph = _cycling_graph(osm=osm)
     raw_count = graph.number_of_nodes()
     logger.info("%s: %d raw cycling nodes", pbf_path.name, raw_count)
-    drop_excluded_surface_edges(graph)
-    graph = contract_interstitial_nodes(graph)
+    drop_excluded_surface_edges(graph=graph)
+    graph = contract_interstitial_nodes(graph=graph)
     graph = consolidate_graph(graph=graph, tolerance_m=tolerance_m)
     graph = ox.truncate.largest_component(graph, strongly=True)
     check_simplify_shrunk(nodes_before=raw_count, nodes_after=graph.number_of_nodes())
-    _tag_bike_edges(graph)
+    _tag_bike_edges(graph=graph)
     enrich_elevations(graph=graph, dem=dem)
     n_stations = _add_railway(graph=graph, osm=osm, dem=dem)
     bake_edge_geometry_elevations(graph=graph, dem=dem)  # 3D vertices → inference needs no DEM

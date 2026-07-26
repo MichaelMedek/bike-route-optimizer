@@ -59,8 +59,7 @@ def format_composition(comp: RouteComposition) -> str:
     # Only show the mode split when rail/transfer is actually used (else it's all bike).
     if set(comp.by_mode_km) - {Mode.BIKE}:
         lines.append("Mode:")
-        order: dict[str, int] = {Mode.BIKE: 0, Mode.RAIL: 1, Mode.TRANSFER: 2}
-        lines += [
-            f"  {m}: {km:.1f} km" for m, km in sorted(comp.by_mode_km.items(), key=lambda kv: order.get(kv[0], 9))
-        ]
+        # Display order derived from the Mode enum (single source; StrEnum keys are str).
+        order: dict[str, int] = {str(mode): index for index, mode in enumerate(Mode)}
+        lines += [f"  {m}: {km:.1f} km" for m, km in sorted(comp.by_mode_km.items(), key=lambda kv: order[kv[0]])]
     return "\n".join(lines)

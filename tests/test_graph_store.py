@@ -14,8 +14,10 @@ from bike_router.graph_store import (
     graph_to_tables,
     load_corridor_graph,
     load_meta,
+    snap_to_node,
     write_graph_parquet,
 )
+from tests.conftest import FIXTURE_GRAPH_DIR
 
 
 def _toy_graph() -> nx.MultiDiGraph:
@@ -108,3 +110,10 @@ def test_load_corridor_outside_coverage_raises(tmp_path):
     far = box(20.0, 60.0, 20.1, 60.1)  # no tiles there
     with pytest.raises(AssertionError):
         load_corridor_graph(corridor=far, graph_dir=tmp_path)
+
+
+def test_snap_to_node_returns_nearest_node_with_elevation():
+    # A point inside the fixture snaps to a real node: lat/lon close by, elevation baked.
+    lat, lon, elev = snap_to_node(lat=48.50, lon=8.43, graph_dir=FIXTURE_GRAPH_DIR)
+    assert abs(lat - 48.50) < 0.05 and abs(lon - 8.43) < 0.05  # nearest node is close
+    assert elev > 0  # baked elevation, no DEM involved

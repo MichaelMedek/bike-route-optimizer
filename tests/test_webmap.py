@@ -102,12 +102,15 @@ def test_layer_builders_return_expected_pydeck_layers():
 
 
 def test_endpoint_layer_marks_start_and_end():
-    layer = create_endpoint_layer(start_latlon=(48.0, 8.0), end_latlon=(48.4, 8.6))
+    # endpoints are (lat, lon, elevation_m); markers hover RIBBON_FLOAT_ABOVE_M above.
+    layer = create_endpoint_layer(start=(48.0, 8.0, 300.0), end=(48.4, 8.6, 500.0))
     assert layer.type == "ScatterplotLayer" and layer.id == "route_endpoints"
+    lift = WebMapConfig.RIBBON_FLOAT_ABOVE_M
     positions = [row["position"] for row in layer.data]
-    assert positions == [[8.0, 48.0], [8.6, 48.4]]  # [lon, lat] start then end
+    assert positions == [[8.0, 48.0, 300.0 + lift], [8.6, 48.4, 500.0 + lift]]  # [lon, lat, elev+lift]
     colors = [row["color"] for row in layer.data]
     assert colors == [list(WebMapConfig.START_COLOR), list(WebMapConfig.END_COLOR)]
+    assert layer.parameters == {"depthTest": False}  # drawn on top of terrain, never buried
 
 
 def test_build_deck_layer_count_and_camera():
@@ -117,7 +120,7 @@ def test_build_deck_layer_count_and_camera():
     assert deck_terrain_only.initial_view_state.latitude == pytest.approx(WebMapConfig.DEFAULT_LAT)
 
     # Endpoints set but no route yet → terrain + endpoint markers.
-    deck_endpoints = build_deck(view=view, ribbon_segments=None, endpoints=((48.0, 8.0), (48.4, 8.6)))
+    deck_endpoints = build_deck(view=view, ribbon_segments=None, endpoints=((48.0, 8.0, 300.0), (48.4, 8.6, 500.0)))
     assert len(deck_endpoints.layers) == 2
 
     # Endpoints + a two-mode route → terrain + markers + one ribbon layer per mode run.
@@ -125,5 +128,5 @@ def test_build_deck_layer_count_and_camera():
         (list(WebMapConfig.BIKE_COLOR), [[8.0, 48.0, 1100.0], [8.01, 48.0, 1100.0]]),
         (list(WebMapConfig.RAIL_COLOR), [[8.01, 48.0, 1100.0], [8.02, 48.0, 1100.0]]),
     ]
-    deck_full = build_deck(view=view, ribbon_segments=two_mode, endpoints=((48.0, 8.0), (48.4, 8.6)))
+    deck_full = build_deck(view=view, ribbon_segments=two_mode, endpoints=((48.0, 8.0, 300.0), (48.4, 8.6, 500.0)))
     assert len(deck_full.layers) == 4  # terrain + markers + 2 ribbon runs

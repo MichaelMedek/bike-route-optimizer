@@ -91,12 +91,15 @@ def plot_elevation_heatmap(
             label=label,
         )
 
-    # Start / end markers, named so the reader knows which end is which.
+    # Start / end markers, named so the reader knows which end is which. Colors
+    # read from WebMapConfig so the PNG and 3D map share one source of truth.
+    start_rgb = tuple(c / 255 for c in WebMapConfig.START_COLOR)
+    end_rgb = tuple(c / 255 for c in WebMapConfig.END_COLOR)
     axes.scatter(
         route_lons[0],
         route_lats[0],
         s=140,
-        c="#00c853",
+        c=[start_rgb],
         edgecolors="black",
         linewidths=1.2,
         zorder=7,
@@ -107,7 +110,7 @@ def plot_elevation_heatmap(
         route_lons[-1],
         route_lats[-1],
         s=180,
-        c="#d50000",
+        c=[end_rgb],
         edgecolors="black",
         linewidths=1.2,
         zorder=7,

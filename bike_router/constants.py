@@ -328,9 +328,9 @@ class WebMapConfig:
         Mode.TRANSFER: BIKE_COLOR,
     }
     # Start/end endpoint markers — SAME colors the debug PNG uses (single visual
-    # language across the PNG and the 3D map): start green, end red.
-    START_COLOR = (0, 200, 83)  # #00c853
-    END_COLOR = (213, 0, 0)  # #d50000
+    # language across the PNG and the 3D map): start light blue, end cyan.
+    START_COLOR = (64, 196, 255)  # #40c4ff
+    END_COLOR = (0, 229, 255)  # #00e5ff
     MARKER_RADIUS_M = 60.0
     MARKER_MIN_PIXELS = 8
     # Zoom, same log formula as ski-resort's MapConfig.zoom_for_span_m:
@@ -362,3 +362,4 @@ assert CorridorConfig.HALF_WIDTH_KM > 0, "corridor half-width must be positive"
 assert max(SpeedConfig.BASE_KMH_BY_TIER.values()) < RailConfig.RAIL_SPEED_KMH, "rail must be faster than any bike leg"
 assert RailConfig.BOARDING_WAIT_S > 0 and RailConfig.STATION_TRANSFER_RADIUS_M > 0, "rail waits/radius must be positive"
 assert GraphConfig.CONSOLIDATION_TOLERANCE_M >= 0 and GraphConfig.TILE_DEG > 0, "graph tolerance/tile must be sane"
+assert set(WebMapConfig.MODE_COLORS) == set(Mode), "MODE_COLORS must have a color for every Mode"

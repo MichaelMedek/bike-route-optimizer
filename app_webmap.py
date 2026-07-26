@@ -11,7 +11,7 @@ import streamlit as st
 
 from bike_router.constants import PARAM_SPECS, RoutingDefaults, RoutingParams, WebMapConfig
 from bike_router.geocoding import GeocodeError, geocode_endpoint, make_geocode_fn
-from bike_router.graph_store import download_graph_from_hf
+from bike_router.graph_store import download_graph_from_hf, snap_to_node
 from bike_router.pipeline import plan_route
 from bike_router.webmap import default_view_state, route_ribbon_segments, route_view_state
 from bike_router.webmap_layers import build_deck
@@ -55,14 +55,18 @@ def main() -> None:
         try:
             with st.spinner("Looking up places…"):
                 geocode_fn = make_geocode_fn()
-                start_latlon = geocode_endpoint(place=origin, label="Start", geocode_fn=geocode_fn)
-                end_latlon = geocode_endpoint(place=destination, label="End", geocode_fn=geocode_fn)
+                start_ll = geocode_endpoint(place=origin, label="Start", geocode_fn=geocode_fn)
+                end_ll = geocode_endpoint(place=destination, label="End", geocode_fn=geocode_fn)
+                # Snap to the nearest graph node (routing is node-to-node); this also
+                # gives each marker its baked terrain elevation, so it hovers correctly.
+                start = snap_to_node(lat=start_ll[0], lon=start_ll[1])
+                end = snap_to_node(lat=end_ll[0], lon=end_ll[1])
             st.session_state.update(
-                start_latlon=start_latlon,
-                end_latlon=end_latlon,
+                start_latlon=start,  # (lat, lon, elevation_m)
+                end_latlon=end,
                 result=None,  # stale route from the previous endpoints
                 ribbon_segments=None,
-                view=route_view_state(start_latlon=start_latlon, end_latlon=end_latlon),
+                view=route_view_state(start_latlon=start[:2], end_latlon=end[:2]),
                 camera_epoch=st.session_state.camera_epoch + 1,
             )
         except GeocodeError as error:
@@ -70,7 +74,7 @@ def main() -> None:
 
     # The currently-marked endpoints (colors match the map markers and the PNG).
     if st.session_state.start_latlon is not None:
-        st.caption(f"🟢 Start: **{origin}**    🔴 End: **{destination}**")
+        st.caption(f"🔵 Start: **{origin}**    🔷 End: **{destination}**")
 
     # 3+. One slider per routing knob, straight from the shared PARAM_SPECS (the same
     # source the CLI reads). Range 0 → MAX_EXTRA_KM, starting at each spec's default.

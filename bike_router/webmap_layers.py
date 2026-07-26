@@ -55,21 +55,17 @@ def create_route_ribbon_layers(segments: list[tuple[list[int], list[list[float]]
     ]
 
 
-def create_endpoint_layer(start_latlon: tuple[float, float], end_latlon: tuple[float, float]) -> pdk.Layer:
+def create_endpoint_layer(start: tuple[float, float, float], end: tuple[float, float, float]) -> pdk.Layer:
     """ScatterplotLayer with the start (green) and end (red) endpoint markers.
 
-    Colors match the debug PNG (WebMapConfig.START_COLOR / END_COLOR) so the PNG
-    and the 3D map speak one visual language.
-
-    Args:
-        start_latlon: (lat, lon) of the start.
-        end_latlon: (lat, lon) of the destination.
+    Each endpoint is ``(lat, lon, elevation_m)`` (snapped to its graph node); the
+    marker hovers RIBBON_FLOAT_ABOVE_M above that elevation, matching the ribbon.
+    Colors match the debug PNG so the PNG and 3D map speak one visual language.
     """
-    start_lat, start_lon = start_latlon
-    end_lat, end_lon = end_latlon
+    lift = WebMapConfig.RIBBON_FLOAT_ABOVE_M
     data = [
-        {"position": [start_lon, start_lat], "color": list(WebMapConfig.START_COLOR)},
-        {"position": [end_lon, end_lat], "color": list(WebMapConfig.END_COLOR)},
+        {"position": [start[1], start[0], start[2] + lift], "color": list(WebMapConfig.START_COLOR)},
+        {"position": [end[1], end[0], end[2] + lift], "color": list(WebMapConfig.END_COLOR)},
     ]
     return pdk.Layer(
         "ScatterplotLayer",
@@ -81,6 +77,8 @@ def create_endpoint_layer(start_latlon: tuple[float, float], end_latlon: tuple[f
         stroked=True,
         get_line_color=[0, 0, 0],
         line_width_min_pixels=1,
+        billboard=True,  # face the camera in the 3D tilted view
+        parameters={"depthTest": False},  # draw ON TOP of the terrain mesh, never buried
         id="route_endpoints",
         pickable=False,
     )
@@ -89,12 +87,12 @@ def create_endpoint_layer(start_latlon: tuple[float, float], end_latlon: tuple[f
 def build_deck(
     view: ViewState,
     ribbon_segments: list[tuple[list[int], list[list[float]]]] | None,
-    endpoints: tuple[tuple[float, float], tuple[float, float]] | None = None,
+    endpoints: tuple[tuple[float, float, float], tuple[float, float, float]] | None = None,
 ) -> pdk.Deck:
     """Assemble the Deck: terrain always, endpoint markers + per-mode ribbon when set."""
     layers = [create_terrain_layer()]
     if endpoints is not None:
-        layers.append(create_endpoint_layer(start_latlon=endpoints[0], end_latlon=endpoints[1]))
+        layers.append(create_endpoint_layer(start=endpoints[0], end=endpoints[1]))
     if ribbon_segments is not None:
         layers.extend(create_route_ribbon_layers(segments=ribbon_segments))
     return pdk.Deck(
