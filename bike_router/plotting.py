@@ -18,8 +18,10 @@ from matplotlib import cm  # noqa: E402
 from matplotlib.colors import Normalize  # noqa: E402
 
 from bike_router.composition import RouteComposition, format_composition  # noqa: E402
-from bike_router.constants import PlotConfig, RoutingParams, WebMapConfig  # noqa: E402
+from bike_router.constants import Mode, PlotConfig, RoutingParams, WebMapConfig  # noqa: E402
+from bike_router.cost import road_tier, surface_tier  # noqa: E402
 from bike_router.track import Track, cheapest_edge  # noqa: E402
+from bike_router.webmap import segment_color  # noqa: E402
 
 logger = logging.getLogger(__name__)
 
@@ -69,18 +71,21 @@ def plot_elevation_heatmap(
         save=False,
     )
 
-    # Route overlay: color each edge by its travel mode (bike vs rail = two colors).
+    # Route overlay: colour each edge by CONDITION (green good / red bad) or purple
+    # for trains — the same segment_color the 3D map uses (one source of truth).
     route_lons = [graph.nodes[node]["x"] for node in route_nodes]
     route_lats = [graph.nodes[node]["y"] for node in route_nodes]
-    seen_modes: set[str] = set()
+    seen_labels: set[str] = set()
     for node_a, node_b in zip(route_nodes[:-1], route_nodes[1:], strict=True):
         data = cheapest_edge(edges=graph.get_edge_data(node_a, node_b))
         mode = str(data["mode"])
-        rgb = WebMapConfig.MODE_COLORS[mode]
+        is_bad = surface_tier(surface=data.get("surface")) != 0 or road_tier(highway=data.get("highway")) != 0
+        rgb = segment_color(mode=mode, is_bad=is_bad)
         color = (rgb[0] / 255, rgb[1] / 255, rgb[2] / 255)
-        # Label only the first segment of each mode so the legend lists each once.
-        label = mode if mode not in seen_modes else None
-        seen_modes.add(mode)
+        # Legend lists each condition once: "train", or "bad"/"good" for pedalled legs.
+        edge_label = "train" if mode == str(Mode.RAIL) else ("bad" if is_bad else "good")
+        label = edge_label if edge_label not in seen_labels else None
+        seen_labels.add(edge_label)
         axes.plot(
             [graph.nodes[node_a]["x"], graph.nodes[node_b]["x"]],
             [graph.nodes[node_a]["y"], graph.nodes[node_b]["y"]],
@@ -90,6 +95,13 @@ def plot_elevation_heatmap(
             zorder=5,
             label=label,
         )
+
+    # Zoom to the route bounds. Pad BOTH axes by a fraction of the route's larger
+    # extent — always positive for a valid route (>= 2 distinct nodes, asserted above),
+    # so an axis-aligned route (span 0 on one axis) still gets a real margin.
+    pad = max(max(route_lons) - min(route_lons), max(route_lats) - min(route_lats)) * PlotConfig.ROUTE_ZOOM_MARGIN
+    axes.set_xlim(min(route_lons) - pad, max(route_lons) + pad)
+    axes.set_ylim(min(route_lats) - pad, max(route_lats) + pad)
 
     # Start / end markers, named so the reader knows which end is which. Colors
     # read from WebMapConfig so the PNG and 3D map share one source of truth.

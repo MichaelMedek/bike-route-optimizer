@@ -12,31 +12,27 @@ import pydeck as pdk
 from bike_router.constants import WebMapConfig
 from bike_router.webmap import ViewState
 
-# Free, no-API-key tiles — identical to the ski-resort 3D map.
-AWS_TERRAIN_TILES = "https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png"
-AWS_ELEVATION_DECODER = {"rScaler": 256, "gScaler": 1, "bScaler": 1 / 256, "offset": -32768}
-OPENTOPOMAP_TILES = "https://a.tile.opentopomap.org/{z}/{x}/{y}.png"
-
 
 def create_terrain_layer(mesh_max_error: float = 1.0) -> pdk.Layer:
     """3D TerrainLayer: AWS Terrarium elevation meshed, OpenTopoMap texture draped."""
     return pdk.Layer(
         "TerrainLayer",
-        elevation_data=AWS_TERRAIN_TILES,
-        elevation_decoder=AWS_ELEVATION_DECODER,
-        texture=OPENTOPOMAP_TILES,
+        elevation_data=WebMapConfig.TERRAIN_TILES_URL,
+        elevation_decoder=WebMapConfig.TERRAIN_ELEVATION_DECODER,
+        texture=WebMapConfig.TEXTURE_TILES_URL,
         mesh_max_error=mesh_max_error,
         id="terrain_3d",
         pickable=False,
     )
 
 
-def create_route_ribbon_layers(segments: list[tuple[list[int], list[list[float]]]]) -> list[pdk.Layer]:
-    """One PathLayer per contiguous same-mode run, each in its mode's color.
+def create_route_ribbon_layers(segments: list[tuple[list[int], float, list[list[float]]]]) -> list[pdk.Layer]:
+    """One PathLayer per contiguous run, in its condition colour and speed-scaled width.
 
     Args:
-        segments: ``(color, points)`` runs from webmap.route_ribbon_segments; color
-            is RGB, points are ``[[lon, lat, z], ...]`` (z already lifted).
+        segments: ``(color, width_m, points)`` runs from webmap.route_ribbon_segments;
+            color is RGB, width_m scales with segment speed, points are
+            ``[[lon, lat, z], ...]`` (z already lifted).
     """
     return [
         pdk.Layer(
@@ -44,14 +40,14 @@ def create_route_ribbon_layers(segments: list[tuple[list[int], list[list[float]]
             [{"path": points, "color": color}],
             get_path="path",
             get_color="color",
-            get_width=WebMapConfig.RIBBON_WIDTH_M,
+            get_width=width,
             width_min_pixels=WebMapConfig.RIBBON_MIN_PIXELS,
             cap_rounded=True,
             joint_rounded=True,
             id=f"route_ribbon_{index}",
             pickable=False,
         )
-        for index, (color, points) in enumerate(segments)
+        for index, (color, width, points) in enumerate(segments)
     ]
 
 
@@ -86,7 +82,7 @@ def create_endpoint_layer(start: tuple[float, float, float], end: tuple[float, f
 
 def build_deck(
     view: ViewState,
-    ribbon_segments: list[tuple[list[int], list[list[float]]]] | None,
+    ribbon_segments: list[tuple[list[int], float, list[list[float]]]] | None,
     endpoints: tuple[tuple[float, float, float], tuple[float, float, float]] | None = None,
 ) -> pdk.Deck:
     """Assemble the Deck: terrain always, endpoint markers + per-mode ribbon when set."""

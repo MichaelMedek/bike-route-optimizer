@@ -15,8 +15,7 @@ import numpy as np
 import osmnx as ox
 from shapely.geometry import LineString
 
-from bike_router.constants import SurfaceConfig
-from bike_router.cost import surface_tier
+from bike_router.cost import road_included, surface_included
 from bike_router.elevation import DEMService
 
 logger = logging.getLogger(__name__)
@@ -69,17 +68,18 @@ def normalize_pyrosm_graph(graph: nx.MultiDiGraph) -> None:
             data.pop(junk, None)
 
 
-def drop_excluded_surface_edges(graph: nx.MultiDiGraph) -> None:
-    """Remove edges whose surface tier is EXCLUDED_TIER (soft natural ground).
+def drop_disallowed_edges(graph: nx.MultiDiGraph) -> None:
+    """Remove edges whose surface OR highway tag names a category outside its allowlist.
 
-    Bike-legal but genuinely bad to ride (mud/sand/grass/…); dropping them up front
-    guarantees no route uses them. Orphaned nodes are removed; a later
-    largest_component call restores strong connectivity.
+    ALLOWLIST (symmetric): only SurfaceConfig.SURFACE_TIER surfaces and RoadConfig.ROAD_TIER
+    highway classes (+ untagged) enter the graph; any other named surface (sand/dirt/…) or
+    highway (motorway/raceway/…) is dropped up front so no route uses it. Orphaned nodes are
+    removed; a later largest_component call restores connectivity.
     """
     doomed = [
         (node_a, node_b, key)
         for node_a, node_b, key, data in graph.edges(keys=True, data=True)
-        if surface_tier(surface=data.get("surface")) >= SurfaceConfig.EXCLUDED_TIER
+        if not (surface_included(surface=data.get("surface")) and road_included(highway=data.get("highway")))
     ]
     graph.remove_edges_from(doomed)
     graph.remove_nodes_from([node for node in list(graph.nodes) if graph.degree(node) == 0])
@@ -227,8 +227,9 @@ def bake_edge_geometry_elevations(graph: nx.MultiDiGraph, dem: DEMService) -> No
 
     Samples the DEM at EVERY geometry vertex so the baked artifact fully describes the
     route's terrain — inference then reads these elevations directly and never touches
-    the DEM. Edges without geometry (rail/transfer straight hops) are left untouched.
-    Runs at BUILD time only. All vertices across the graph are sampled in one bulk call.
+    the DEM. Bike and rail edges both carry a real polyline; only the short station
+    access-links (no geometry) are left as straight hops. Runs at BUILD time only.
+    All vertices across the graph are sampled in one bulk call.
     """
     edges = [(u, v, k, d) for u, v, k, d in graph.edges(keys=True, data=True) if d.get("geometry") is not None]
     if not edges:

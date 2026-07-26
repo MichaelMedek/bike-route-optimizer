@@ -1,8 +1,8 @@
 """Offline builder: a whole-region bike+rail graph from Geofabrik .osm.pbf extracts.
 
 Reads the cycling network + railway with pyrosm, normalizes to an OSMnx-shaped
-graph, simplifies/consolidates, bakes DEM elevation, then adds transfer + rail
-hops. Returns node/edge tables; the routing sliders decide if A* uses rail.
+graph, simplifies/consolidates, bakes DEM elevation, then adds station-access +
+rail hops. Returns node/edge tables; the routing sliders decide if A* uses rail.
 """
 
 import logging
@@ -13,18 +13,21 @@ import numpy as np
 import osmnx as ox
 import pandas as pd
 from pyrosm import OSM
+from shapely.geometry import LineString
 
 from bike_router.constants import (
+    GraphConfig,
     Mode,
+    NodeType,
     RailConfig,
 )
 from bike_router.elevation import DEMService
-from bike_router.geo import haversine_distance_m
+from bike_router.geo import haversine_distance_m, haversine_vec
 from bike_router.graph_ops import (
     bake_edge_geometry_elevations,
     consolidate_graph,
     contract_interstitial_nodes,
-    drop_excluded_surface_edges,
+    drop_disallowed_edges,
     enrich_elevations,
     normalize_pyrosm_graph,
 )
@@ -100,19 +103,27 @@ def _rail_lines(osm: OSM) -> list[list[tuple[float, float]]]:
     return lines
 
 
-def _nearest_bike_node(graph: nx.MultiDiGraph, lat: float, lon: float) -> tuple[int, float]:
-    """Nearest bike node id + its distance (m) to (lat, lon)."""
-    node = int(ox.distance.nearest_nodes(graph, X=lon, Y=lat))
-    d = haversine_distance_m(lat_a=lat, lon_a=lon, lat_b=graph.nodes[node]["y"], lon_b=graph.nodes[node]["x"])
-    return node, d
+def _station_entrances(
+    node_ids: "np.ndarray", node_lats: "np.ndarray", node_lons: "np.ndarray", lat: float, lon: float
+) -> list[tuple[int, float]]:
+    """Up to MAX_ENTRANCES bike nodes inside the station radius, as (node id, distance m).
+
+    These nearest N bike nodes within STATION_RADIUS_M (fewer if fewer exist) are declared
+    the station's ENTRANCES: reaching one and crossing its station edge puts the rider at
+    the station. Empty if the station has no bike node in range.
+    """
+    dists = haversine_vec(lat_a=lat, lon_a=lon, lat_b=node_lats, lon_b=node_lons)
+    within = np.flatnonzero(dists <= RailConfig.STATION_RADIUS_M)
+    nearest = within[np.argsort(dists[within])[: RailConfig.STATION_MAX_ENTRANCES]]
+    return [(int(node_ids[i]), float(dists[i])) for i in nearest]
 
 
 def _add_railway(graph: nx.MultiDiGraph, osm: OSM, dem: DEMService) -> int:
-    """Add station nodes, transfer edges, and rail edges. Returns #stations.
+    """Add rail-station nodes, station-access edges, and rail edges. Returns #stations.
 
-    Stations become DEM-elevated nodes linked to their nearest bike node by
-    bidirectional transfers; consecutive stations on a line get a bidirectional
-    rail edge.
+    Each station is a SEPARATE rail node (never a bike node), DEM-elevated and linked to
+    its nearest bike-node ENTRANCES by bidirectional station edges; consecutive stations
+    on a line get a bidirectional rail edge.
     """
     stations = _station_points(osm=osm)
     if not stations:
@@ -120,10 +131,12 @@ def _add_railway(graph: nx.MultiDiGraph, osm: OSM, dem: DEMService) -> int:
         return 0
     lines = _rail_lines(osm=osm)
 
-    # Snap stations to the BIKE network only — a view frozen before any station node
-    # is added, so stations never snap to each other (which would island them off the
-    # routable core and get them dropped by the strongly-connected filter).
-    bike_graph = graph.copy()
+    # Snapshot the BIKE node coordinates BEFORE adding any station node, so a station's
+    # entrances are only cycling nodes — never another station (which would island them off
+    # the routable core and get them dropped by the strongly-connected filter).
+    bike_ids = np.fromiter(graph.nodes, dtype=np.int64)
+    bike_lats = np.array([graph.nodes[int(n)]["y"] for n in bike_ids])
+    bike_lons = np.array([graph.nodes[int(n)]["x"] for n in bike_ids])
 
     # Assign each station a synthetic node id below the OSM id range so it can't clash.
     base_id = -1
@@ -135,14 +148,16 @@ def _add_railway(graph: nx.MultiDiGraph, osm: OSM, dem: DEMService) -> int:
         node_id = base_id
         base_id -= 1
         elevation = float(elev) if not np.isnan(elev) else 0.0
-        graph.add_node(node_id, x=lon, y=lat, elevation=elevation, is_station=True, station_name=name)
+        graph.add_node(node_id, x=lon, y=lat, elevation=elevation, node_type=NodeType.RAIL, station_name=name)
         station_nodes.append((node_id, name, lat, lon))
-        bike_node, dist = _nearest_bike_node(graph=bike_graph, lat=lat, lon=lon)
-        if dist <= RailConfig.STATION_TRANSFER_RADIUS_M:
-            # Bidirectional bike↔station link. The boarding wait is applied at ride
-            # time when a leg ENTERS a station (build_track), so no time is stored here.
-            graph.add_edge(bike_node, node_id, length=dist, mode=Mode.TRANSFER)
-            graph.add_edge(node_id, bike_node, length=dist, mode=Mode.TRANSFER)
+        # Declare the nearest N bike nodes as entrances and link each both ways with a station
+        # edge. Its cost = straight-line length + half the boarding charge (cost.py), so board
+        # + alight sum to a full boarding; nothing time-related is stored on the edge.
+        for bike_node, dist in _station_entrances(
+            node_ids=bike_ids, node_lats=bike_lats, node_lons=bike_lons, lat=lat, lon=lon
+        ):
+            graph.add_edge(bike_node, node_id, length=dist, mode=Mode.STATION)
+            graph.add_edge(node_id, bike_node, length=dist, mode=Mode.STATION)
 
     _connect_stations_along_lines(graph=graph, station_nodes=station_nodes, lines=lines)
     return len(station_nodes)
@@ -192,12 +207,13 @@ def _connect_stations_along_lines(
         d2 = (net_lats - lat) ** 2 + ((net_lons - lon) * np.cos(np.radians(lat))) ** 2
         vertex = net_vertices[int(d2.argmin())]
         dist = haversine_distance_m(lat_a=lat, lon_a=lon, lat_b=vertex[0], lon_b=vertex[1])
-        if dist <= RailConfig.STATION_TRANSFER_RADIUS_M:
+        if dist <= RailConfig.STATION_RADIUS_M:
             vertex_to_station[vertex] = node_id
             snapped.append((node_id, vertex))
 
     # Two stations are adjacent iff the shortest rail path between them has no OTHER
     # station vertex in its interior. Connect ALL such neighbours (deduped by node pair).
+    station_coord = {node_id: (lat, lon) for node_id, _name, lat, lon in station_nodes}
     added: set[tuple[int, int]] = set()
     for node_id, vertex in snapped:
         if vertex not in net:
@@ -212,14 +228,27 @@ def _connect_stations_along_lines(
             if any(interior in vertex_to_station for interior in paths[other_vertex][1:-1]):
                 continue  # a closer station sits between them → not consecutive
             added.add(pair)
-            graph.add_edge(node_id, other, length=dists[other_vertex], mode=Mode.RAIL)
-            graph.add_edge(other, node_id, length=dists[other_vertex], mode=Mode.RAIL)
+            # Keep the REAL along-track polyline (not just its length): rail vertices are
+            # (lat, lon); anchor both ends at the station nodes so the drawn line runs
+            # station→track→station. Both directed edges share it (densify orients per node).
+            here_lat, here_lon = station_coord[node_id]
+            there_lat, there_lon = station_coord[other]
+            track_coords = [(lon, lat) for lat, lon in paths[other_vertex]]
+            geometry = LineString([(here_lon, here_lat), *track_coords, (there_lon, there_lat)])
+            graph.add_edge(node_id, other, length=dists[other_vertex], mode=Mode.RAIL, geometry=geometry)
+            graph.add_edge(other, node_id, length=dists[other_vertex], mode=Mode.RAIL, geometry=geometry)
 
 
-def _tag_bike_edges(graph: nx.MultiDiGraph) -> None:
-    """Mark every not-yet-tagged edge as a bike edge (single source of the mode attr)."""
+def _tag_bike_defaults(graph: nx.MultiDiGraph) -> None:
+    """Mark every current edge bike and every current node a bike node (single source).
+
+    Called before _add_railway, when the graph holds ONLY the cycling network — so every
+    node is a bike node and every edge a bike edge. _add_railway then adds rail nodes/edges.
+    """
     for _u, _v, _k, data in graph.edges(keys=True, data=True):
-        data.setdefault("mode", Mode.BIKE)
+        data["mode"] = Mode.BIKE
+    for _node, data in graph.nodes(data=True):
+        data["node_type"] = NodeType.BIKE
 
 
 def build_region_graph(
@@ -241,12 +270,12 @@ def build_region_graph(
     graph = _cycling_graph(osm=osm)
     raw_count = graph.number_of_nodes()
     logger.info("%s: %d raw cycling nodes", pbf_path.name, raw_count)
-    drop_excluded_surface_edges(graph=graph)
+    drop_disallowed_edges(graph=graph)
     graph = contract_interstitial_nodes(graph=graph)
     graph = consolidate_graph(graph=graph, tolerance_m=tolerance_m)
     graph = ox.truncate.largest_component(graph, strongly=True)
     check_simplify_shrunk(nodes_before=raw_count, nodes_after=graph.number_of_nodes())
-    _tag_bike_edges(graph=graph)
+    _tag_bike_defaults(graph=graph)
     enrich_elevations(graph=graph, dem=dem)
     n_stations = _add_railway(graph=graph, osm=osm, dem=dem)
     bake_edge_geometry_elevations(graph=graph, dem=dem)  # 3D vertices → inference needs no DEM
@@ -274,20 +303,16 @@ def build_country_graph(
     use scripts/build_dach_graph.py, which shares merge_region_tables.
     """
     regions = [
-        graph_to_tables(build_region_graph(pbf_path=p, dem=dem, tolerance_m=tolerance_m, bbox=bbox)) for p in pbf_paths
+        graph_to_tables(graph=build_region_graph(pbf_path=p, dem=dem, tolerance_m=tolerance_m, bbox=bbox))
+        for p in pbf_paths
     ]
     return merge_region_tables(regions=regions)
-
-
-# Each region's synthetic station ids (-1, -2, …) are shifted into a private block
-# so regions never collide, regardless of build order — deterministic + resume-safe.
-STATION_ID_BLOCK = 100_000_000
 
 
 def merge_region_tables(regions: list[tuple[pd.DataFrame, pd.DataFrame]]) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Union per-region (nodes, edges) tables into one deduplicated pair.
 
-    Region ``i`` has its negative (station) ids shifted by ``(i+1)*STATION_ID_BLOCK``
+    Region ``i`` has its negative (station) ids shifted by ``i * STATION_ID_BLOCK``
     so stations from different regions never clash; positive OSM ids are globally
     unique already and dedup keeps the first copy of shared boundary nodes/edges.
     """
@@ -295,7 +320,9 @@ def merge_region_tables(regions: list[tuple[pd.DataFrame, pd.DataFrame]]) -> tup
     shifted_nodes: list[pd.DataFrame] = []
     shifted_edges: list[pd.DataFrame] = []
     for index, (nodes_df, edges_df) in enumerate(regions):
-        nodes_df, edges_df = _shift_station_ids(nodes_df=nodes_df, edges_df=edges_df, offset=index * STATION_ID_BLOCK)
+        nodes_df, edges_df = _shift_station_ids(
+            nodes_df=nodes_df, edges_df=edges_df, offset=index * GraphConfig.STATION_ID_BLOCK
+        )
         shifted_nodes.append(nodes_df)
         shifted_edges.append(edges_df)
     nodes = pd.concat(shifted_nodes, ignore_index=True).drop_duplicates(subset="osmid", keep="first")

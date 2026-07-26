@@ -6,14 +6,94 @@ the Google Maps URL.
 """
 
 import logging
+from dataclasses import dataclass
 
 import networkx as nx
 import numpy as np
 from shapely.geometry import LineString
 
-from bike_router.track import cheapest_edge
+from bike_router.constants import Mode
+from bike_router.track import cheapest_edge, iter_route_edges
 
 logger = logging.getLogger(__name__)
+
+
+def split_bike_legs(graph: nx.MultiDiGraph, node_path: list[int]) -> list[list[int]]:
+    """Split a route into maximal runs of consecutive BIKE edges (rail/station cut).
+
+    Each returned sub-path is one pedalled leg the rider actually cycles; train rides
+    and station-access hops break the route so a pure-bike trip yields one leg and a trip
+    with one train ride yields two. Sub-paths have >= 2 nodes (one usable linestring).
+    """
+    legs: list[list[int]] = []
+    current: list[int] = []
+    for node_a, node_b, data in iter_route_edges(graph=graph, node_path=node_path):
+        if data["mode"] == Mode.BIKE:
+            if not current:
+                current = [node_a]
+            current.append(node_b)
+        elif current:
+            legs.append(current)
+            current = []
+    if current:
+        legs.append(current)
+    return legs
+
+
+@dataclass(frozen=True)
+class RailLeg:
+    """One train ride the rider takes: the station boarded at and the one alighted at.
+
+    Names come from the rail nodes' ``station_name`` (OSM data — may be None for an
+    unnamed halt), so the rider can look the actual train up in a railway app.
+    """
+
+    board: str | None
+    alight: str | None
+
+
+def split_rail_legs(graph: nx.MultiDiGraph, node_path: list[int]) -> list[RailLeg]:
+    """Boarding + alighting station names for each train ride on the route.
+
+    A train ride is a maximal run of consecutive RAIL edges (an on-train change at a
+    junction stays one ride); the first rail node is boarded, the last alighted. Two
+    separate rides (a pedalled leg between them) yield two RailLegs — this is why a
+    route with two trains shows three pedalled Google Maps legs.
+    """
+    legs: list[RailLeg] = []
+    rail_nodes: list[int] = []  # rail nodes of the current train ride, in order
+    for node_a, node_b, data in iter_route_edges(graph=graph, node_path=node_path):
+        if data["mode"] == Mode.RAIL:
+            if not rail_nodes:
+                rail_nodes = [node_a]
+            rail_nodes.append(node_b)
+        elif rail_nodes:
+            legs.append(_rail_leg(graph=graph, rail_nodes=rail_nodes))
+            rail_nodes = []
+    if rail_nodes:
+        legs.append(_rail_leg(graph=graph, rail_nodes=rail_nodes))
+    return legs
+
+
+def _rail_leg(graph: nx.MultiDiGraph, rail_nodes: list[int]) -> RailLeg:
+    """RailLeg from a run of rail nodes: board at the first, alight at the last."""
+    assert len(rail_nodes) >= 2, "a train ride spans >= 2 rail nodes"
+    return RailLeg(
+        board=graph.nodes[rail_nodes[0]]["station_name"],
+        alight=graph.nodes[rail_nodes[-1]]["station_name"],
+    )
+
+
+def format_rail_legs(rail_legs: list[RailLeg]) -> list[str]:
+    """One "Train N: board → alight" line per ride (shared by CLI + web output).
+
+    An unnamed stop (no OSM station name) renders as "(unnamed stop)" so the line is
+    still readable rather than crashing on a None the external data legitimately holds.
+    """
+    return [
+        f"Train {index}: {leg.board or '(unnamed stop)'} → {leg.alight or '(unnamed stop)'}"
+        for index, leg in enumerate(rail_legs, start=1)
+    ]
 
 
 def route_to_linestring(graph: nx.MultiDiGraph, node_path: list[int]) -> LineString:

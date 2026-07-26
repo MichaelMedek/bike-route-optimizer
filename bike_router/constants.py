@@ -7,6 +7,8 @@ from pathlib import Path
 
 import platformdirs
 
+from bike_router.errors import ParamOutOfRangeError
+
 # Package + project roots
 PACKAGE_DIR = Path(__file__).parent
 PROJECT_ROOT = PACKAGE_DIR.parent
@@ -49,13 +51,23 @@ class DEMConfig:
     EURODEM_PATH = DATA_DIR / "region_dem.tif"
 
 
-# Edge travel modes. `transfer` = the bike↔station link (walk to/from the platform).
+# Edge travel modes. `station` = the bike↔station-node access link (board/alight).
 class Mode(StrEnum):
     """The three edge travel modes (StrEnum → members ARE strings on the graph/parquet)."""
 
     BIKE = "bike"
     RAIL = "rail"
-    TRANSFER = "transfer"
+    STATION = "station"
+
+
+# Node kinds. Every node is EXACTLY one: a cycling node or a rail-station node. A
+# station is a SEPARATE node from any bike node so a bike route can never pass through
+# it — reaching it always crosses a station edge (which carries the boarding hassle).
+class NodeType(StrEnum):
+    """The two node kinds (StrEnum → members ARE strings on the graph/parquet)."""
+
+    BIKE = "bike"
+    RAIL = "rail"
 
 
 class RailConfig:
@@ -67,7 +79,8 @@ class RailConfig:
 
     RAIL_SPEED_KMH = 80.0  # average train speed for the ride-time estimate
     BOARDING_WAIT_S = 1800.0  # 30 min wait added once per boarding (time only)
-    STATION_TRANSFER_RADIUS_M = 500.0  # bike node ↔ station link distance
+    STATION_RADIUS_M = 200.0  # bike node ↔ station-node access-link distance
+    STATION_MAX_ENTRANCES = 5  # declare up to this many nearest bike nodes as entrances
     RAIL_TAGS = ("rail",)  # OSM railway= values kept as routable track
     STATION_TAGS = ("station", "halt")  # OSM railway= values treated as boardable stops
 
@@ -101,6 +114,9 @@ class GraphConfig:
     # Reader tolerance: stored height_diff_m must match to_elev − from_elev within this
     # (metres), else the artifact is corrupt/stale and the load hard-fails.
     HEIGHT_DIFF_TOLERANCE_M = 0.5
+    # Each region's synthetic station ids (-1, -2, …) are shifted into a private block by
+    # (region_index * this) so regions never collide, regardless of build order.
+    STATION_ID_BLOCK = 100_000_000
 
 
 class GeoConfig:
@@ -130,53 +146,84 @@ BAD_COLOR = "#c62828"  # red
 
 
 class SurfaceConfig:
-    """Surface → penalty TIER (0 = good/paved, 1 = moderate/gravel, 2 = heavy/soft).
+    """Surface → penalty TIER (0 = good/paved, 1 = moderate/kept-but-penalised).
 
-    Tier 0 rides free; tier 1 adds --extra_km_per_unpaved_km once; tier 2 (soft
-    natural ground) is EXCLUDED from the graph so a route never runs over mud/sand.
+    ALLOWLIST: only the categories listed here enter the graph. Any OTHER named
+    surface (sand/dirt/grass/…) is dropped at build time; a missing/untagged surface
+    is assumed DEFAULT_TIER (moderate) and kept. Tier 0 rides free; tier 1 adds
+    --extra_km_per_unpaved_km once.
     """
 
     SURFACE_TIER = {
-        # good / paved → no unpaved penalty
+        # tier 0 — paved / good (no unpaved penalty, colored green)
         "asphalt": 0,
         "concrete": 0,
+        "concrete:plates": 0,
+        "concrete:lanes": 0,
+        "asphalt:lanes": 0,
         "paved": 0,
         "paving_stones": 0,
         "sett": 0,
         "cobblestone": 0,
-        # moderate / compacted-loose → penalty ×1
+        "unhewn_cobblestone": 0,
+        "chipseal": 0,
+        "bricks": 0,
+        "wood": 0,
+        "metal": 0,
+        # tier 1 — moderate / compacted-loose (penalty ×1, kept, colored red)
         "compacted": 1,
         "fine_gravel": 1,
         "gravel": 1,
         "pebblestone": 1,
         "unpaved": 1,
-        # heavy / soft-natural → EXCLUDED from the graph (see EXCLUDED_TIER)
-        "ground": 2,
-        "grass": 2,
-        "dirt": 2,
-        "earth": 2,
-        "sand": 2,
-        "mud": 2,
+        "grass_paver": 1,
+        "stone": 1,
+        "metal_grid": 1,
+        "shells": 1,
     }
     # Untagged surface (~37% of ways) → assume moderate (kept, penalised).
     DEFAULT_TIER = 1
-    # Edges whose surface tier is this high are removed from the routable graph.
-    EXCLUDED_TIER = 2
-    # Per-tier human label + swatch: only tier 0 (paved) is good/green, the rest bad/red.
-    TIER_LABEL_COLORS = {0: ("paved", GOOD_COLOR), 1: ("gravel/unpaved", BAD_COLOR), 2: ("rough", BAD_COLOR)}
+    # Per-tier human label + swatch: only tier 0 (paved) is good/green, tier 1 bad/red.
+    TIER_LABEL_COLORS = {0: ("paved", GOOD_COLOR), 1: ("gravel/unpaved", BAD_COLOR)}
 
 
 class RoadConfig:
-    """Which highway classes count as a "main road" (attract the main-road penalty).
+    """Highway class → penalty TIER (0 = quiet/bike-friendly, 1 = main road).
 
-    Everything not listed here (cycleway, living_street, residential, tertiary,
-    service, track, path, …) is a standard bike-friendly way with no penalty.
-    Unknown/untagged highway (~0% in practice) is treated as a main road.
+    Symmetric with SurfaceConfig: an ALLOWLIST where only listed highway classes enter
+    the graph. Any OTHER named highway (motorway/raceway/…) is dropped at build time; a
+    missing/untagged highway is assumed DEFAULT_TIER (main, pessimistic) and kept. Tier 0
+    rides free; tier 1 adds --extra_km_per_main_road_km once.
     """
 
-    MAIN_ROADS = frozenset({"secondary", "primary", "unclassified"})
-    # is-main-road bool → human label + swatch (quiet good/green, main bad/red).
-    LABEL_COLORS = {False: ("quiet way", GOOD_COLOR), True: ("main road", BAD_COLOR)}
+    ROAD_TIER = {
+        # tier 0 — quiet / bike-friendly (no main-road penalty, colored green)
+        "cycleway": 0,
+        "path": 0,
+        "footway": 0,
+        "bridleway": 0,
+        "steps": 0,
+        "pedestrian": 0,
+        "living_street": 0,
+        "residential": 0,
+        "service": 0,
+        "track": 0,
+        "tertiary": 0,
+        "tertiary_link": 0,
+        "road": 0,
+        # tier 1 — main road (penalty ×1, kept, colored red)
+        "trunk": 1,
+        "primary": 1,
+        "secondary": 1,
+        "unclassified": 1,
+        "trunk_link": 1,
+        "primary_link": 1,
+        "secondary_link": 1,
+    }
+    # Untagged highway (~0% in practice) → assume main road (kept, penalised).
+    DEFAULT_TIER = 1
+    # Per-tier human label + swatch: tier 0 (quiet) good/green, tier 1 (main) bad/red.
+    TIER_LABEL_COLORS = {0: ("quiet way", GOOD_COLOR), 1: ("main road", BAD_COLOR)}
 
 
 class RoutingDefaults:
@@ -254,7 +301,7 @@ class RoutingParams:
         for spec in PARAM_SPECS:
             value = getattr(self, spec.field)
             if not 0.0 <= value <= RoutingDefaults.MAX_EXTRA_KM:
-                raise ValueError(f"{spec.field}={value} out of range [0, {RoutingDefaults.MAX_EXTRA_KM}]")
+                raise ParamOutOfRangeError(f"{spec.field}={value} out of range [0, {RoutingDefaults.MAX_EXTRA_KM}]")
 
 
 class CostConfig:
@@ -277,7 +324,7 @@ class SpeedConfig:
     per edge, treating each edge as a single linear grade.
     """
 
-    BASE_KMH_BY_TIER = {0: 25.0, 1: 20.0, 2: 15.0}  # good / moderate / heavy surface
+    BASE_KMH_BY_TIER = {0: 25.0, 1: 20.0}  # good / moderate surface
     WALK_KMH = 5.0  # speed at WALK_GRADE and steeper (pushing the bike)
     WALK_GRADE = 0.12  # rise/run at which the rider drops to walking pace
 
@@ -297,6 +344,7 @@ class PlotConfig:
 
     CMAP = "plasma"
     DPI = 200
+    ROUTE_ZOOM_MARGIN = 0.08  # pad the debug plot's route bounds by this fraction of the span
 
 
 class NominatimConfig:
@@ -304,6 +352,23 @@ class NominatimConfig:
 
     USER_AGENT = "bike-route-optimizer/0.1 (https://github.com/MichaelMedek/bike-route-optimizer)"
     RATE_LIMIT_S = 1.0  # Nominatim usage policy: max 1 request / second
+
+
+class PhotonConfig:
+    """Search-as-you-type geocoding via Photon (photon.komoot.io).
+
+    Photon is the OSM project built for autocomplete — Nominatim's policy forbids
+    client-side typeahead, so it powers only the one-shot "Set start & end" geocode.
+    Suggestions are biased/limited to the prebuilt graph's coverage bbox (from
+    load_meta), so this holds no bbox of its own.
+    """
+
+    BASE_URL = "https://photon.komoot.io/api"
+    LANG = "de"
+    LIMIT = 5
+    DEBOUNCE_MS = 250  # st_searchbox debounce; eases Photon load while typing
+    PLACE_OSM_TAG = "place"  # settlements, not POIs
+    TIMEOUT_S = 3.0
 
 
 class GpxConfig:
@@ -335,19 +400,24 @@ class WebMapConfig:
     DEFAULT_BEARING = 0.0
     # Rendered map height in the browser, pixels.
     MAP_HEIGHT_PX = 600
-    # Route ribbon rendered as a PathLayer floating above the terrain mesh.
+    # Route ribbon rendered as a PathLayer floating above the terrain mesh; its WIDTH
+    # scales with segment speed (RIBBON_WIDTH_PER_KMH_M metres per km/h — fast = wide).
     RIBBON_FLOAT_ABOVE_M = 100.0
-    RIBBON_WIDTH_M = 20.0
+    RIBBON_WIDTH_PER_KMH_M = 1.0
     RIBBON_MIN_PIXELS = 3
-    # ONE blue is the whole route's colour — start marker, bike + transfer ribbon,
-    # and the debug-PNG route all use START_COLOR (single source). Only trains differ.
-    START_COLOR = (0, 150, 255)  # blue
+    # Endpoint markers keep their own blue/cyan; the ribbon itself is coloured by
+    # CONDITION (green good / red bad for pedalled legs) and purple for trains.
+    START_COLOR = (0, 150, 255)  # blue (start marker)
     END_COLOR = (0, 229, 255)  # cyan (destination marker)
     RAIL_COLOR = (150, 0, 200)  # purple — trains only
+    GOOD_RGB = (46, 125, 50)  # green — good surface AND quiet road (= GOOD_COLOR)
+    BAD_RGB = (198, 40, 40)  # red — bad surface OR main road (= BAD_COLOR)
+    # Mode→colour only for the composition donut (bike blue vs train purple); the
+    # ribbon/PNG use segment_color (condition-based), NOT this map.
     MODE_COLORS: dict[str, tuple[int, int, int]] = {
         Mode.BIKE: START_COLOR,
         Mode.RAIL: RAIL_COLOR,
-        Mode.TRANSFER: START_COLOR,
+        Mode.STATION: START_COLOR,
     }
     MARKER_RADIUS_M = 60.0
     MARKER_MIN_PIXELS = 8
@@ -356,13 +426,22 @@ class WebMapConfig:
     ZOOM_SPAN_ANCHOR_M = 8000.0  # a route this long fits at VIEWING_ZOOM
     ZOOM_STEPS_OUT = 4.0
     ZOOM_STEPS_IN = 3.0
+    # Free, no-API-key basemap tiles (identical to the ski-resort 3D map): AWS Terrarium
+    # elevation meshed by the decoder, OpenTopoMap draped as texture.
+    TERRAIN_TILES_URL = "https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png"
+    TERRAIN_ELEVATION_DECODER = {"rScaler": 256, "gScaler": 1, "bScaler": 1 / 256, "offset": -32768}
+    TEXTURE_TILES_URL = "https://a.tile.opentopomap.org/{z}/{x}/{y}.png"
 
 
 # --- Load-time invariants: fail loud on a bad edit ---------------------------
 assert SurfaceConfig.SURFACE_TIER, "SURFACE_TIER must not be empty"
-assert set(SurfaceConfig.SURFACE_TIER.values()) <= {0, 1, 2}, "surface tiers must be 0, 1, or 2"
-assert SurfaceConfig.DEFAULT_TIER in {0, 1, 2}, "DEFAULT_TIER must be 0, 1, or 2"
-assert RoadConfig.MAIN_ROADS, "MAIN_ROADS must not be empty"
+assert set(SurfaceConfig.SURFACE_TIER.values()) <= {0, 1}, "surface tiers must be 0 or 1"
+assert SurfaceConfig.DEFAULT_TIER in {0, 1}, "surface DEFAULT_TIER must be 0 or 1"
+assert RoadConfig.ROAD_TIER, "ROAD_TIER must not be empty"
+assert set(RoadConfig.ROAD_TIER.values()) <= {0, 1}, "road tiers must be 0 or 1"
+assert RoadConfig.DEFAULT_TIER in {0, 1}, "road DEFAULT_TIER must be 0 or 1"
+assert set(SurfaceConfig.TIER_LABEL_COLORS) == {0, 1}, "surface labels must cover tiers 0 and 1"
+assert set(RoadConfig.TIER_LABEL_COLORS) == {0, 1}, "road labels must cover tiers 0 and 1"
 assert GmapsConfig.N_WAYPOINTS >= 2, "need at least origin + destination"
 assert RoutingDefaults.MAX_EXTRA_KM > 0, "MAX_EXTRA_KM must be positive"
 assert PARAM_SPECS, "PARAM_SPECS must not be empty"
@@ -372,12 +451,14 @@ assert all(0 <= spec.default <= RoutingDefaults.MAX_EXTRA_KM for spec in PARAM_S
 assert {spec.field for spec in PARAM_SPECS} == set(RoutingParams.__dataclass_fields__), (
     "PARAM_SPECS fields must match RoutingParams attributes exactly"
 )
-assert set(SpeedConfig.BASE_KMH_BY_TIER) == {0, 1, 2}, "need a base speed for every surface tier"
+assert set(SpeedConfig.BASE_KMH_BY_TIER) == {0, 1}, "need a base speed for every surface tier"
 assert all(speed > SpeedConfig.WALK_KMH for speed in SpeedConfig.BASE_KMH_BY_TIER.values()), "base speeds > walk"
 assert SpeedConfig.WALK_GRADE > 0, "WALK_GRADE must be a positive uphill grade"
 assert 0 < CorridorConfig.MIN_TRIP_KM < CorridorConfig.MAX_TRIP_KM, "trip bounds must be 0 < min < max"
 assert CorridorConfig.HALF_WIDTH_KM > 0, "corridor half-width must be positive"
 assert max(SpeedConfig.BASE_KMH_BY_TIER.values()) < RailConfig.RAIL_SPEED_KMH, "rail must be faster than any bike leg"
-assert RailConfig.BOARDING_WAIT_S > 0 and RailConfig.STATION_TRANSFER_RADIUS_M > 0, "rail waits/radius must be positive"
+assert RailConfig.BOARDING_WAIT_S > 0 and RailConfig.STATION_RADIUS_M > 0, "rail waits/radius must be positive"
+assert RailConfig.STATION_MAX_ENTRANCES >= 1, "must declare at least one entrance per station"
 assert GraphConfig.CONSOLIDATION_TOLERANCE_M >= 0 and GraphConfig.TILE_DEG > 0, "graph tolerance/tile must be sane"
 assert set(WebMapConfig.MODE_COLORS) == set(Mode), "MODE_COLORS must have a color for every Mode"
+assert PhotonConfig.LIMIT > 0 and PhotonConfig.TIMEOUT_S > 0, "Photon limit/timeout must be positive"

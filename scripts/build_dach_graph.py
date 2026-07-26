@@ -34,6 +34,7 @@ from bike_router.builder import build_region_graph, merge_region_tables
 from bike_router.constants import DEMConfig, GraphConfig
 from bike_router.elevation import DEMService
 from bike_router.graph_store import (
+    compute_bbox,
     graph_to_tables,
     read_region_checkpoint,
     write_graph_parquet,
@@ -177,12 +178,7 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     nodes_df, edges_df = merge_region_tables(regions=region_tables)
-    bbox = (
-        float(nodes_df["lon"].min()),
-        float(nodes_df["lat"].min()),
-        float(nodes_df["lon"].max()),
-        float(nodes_df["lat"].max()),
-    )
+    bbox = compute_bbox(nodes_df=nodes_df)
     meta = {
         "bbox": list(bbox),
         "tile_deg": GraphConfig.TILE_DEG,

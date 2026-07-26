@@ -4,10 +4,10 @@ The builder tiles the whole DACH bike+rail graph on a coarse lat/lon grid;
 inference downloads it once from HF then reads only the corridor's tiles. On-disk
 schema uses self-documenting names (nodes/edges below); in-memory keeps OSMnx x/y.
 
-Schema — nodes: osmid, lat, lon, elevation_m, station_name (null = plain bike node).
-edges: from_node, to_node, key, length_m, height_diff_m, surface, highway, mode,
-geometry_wkt (WKT LINESTRING; null for straight rail/transfer hops). Travel time is
-NOT stored — derived from length_m + rail constants at route time.
+Schema — nodes: osmid, lat, lon, elevation_m, node_type (bike|rail), station_name
+(null for bike nodes). edges: from_node, to_node, key, length_m, height_diff_m, surface,
+highway, mode, geometry_wkt (WKT LINESTRING; null for straight rail/station hops). Travel
+time is NOT stored — derived from length_m + rail constants at route time.
 """
 
 import json
@@ -22,12 +22,12 @@ from huggingface_hub import hf_hub_download, list_repo_files
 from shapely import from_wkt, to_wkt
 from shapely.geometry import LineString, Polygon
 
-from bike_router.constants import GraphConfig
+from bike_router.constants import GraphConfig, Mode, NodeType
 from bike_router.progress import ProgressFn, null_progress
 
 logger = logging.getLogger(__name__)
 
-_NODE_COLS = ["osmid", "lat", "lon", "elevation_m", "station_name"]
+_NODE_COLS = ["osmid", "lat", "lon", "elevation_m", "node_type", "station_name"]
 _EDGE_COLS = [
     "from_node",
     "to_node",
@@ -64,6 +64,16 @@ def _covering_tiles(bounds: tuple[float, float, float, float], tile_deg: float, 
         for row in range(row_lo - margin, row_hi + margin + 1)
         for col in range(col_lo - margin, col_hi + margin + 1)
     ]
+
+
+def compute_bbox(nodes_df: pd.DataFrame) -> tuple[float, float, float, float]:
+    """The (west, south, east, north) bounds of a node table — one source for both build scripts."""
+    return (
+        float(nodes_df["lon"].min()),
+        float(nodes_df["lat"].min()),
+        float(nodes_df["lon"].max()),
+        float(nodes_df["lat"].max()),
+    )
 
 
 def write_graph_parquet(nodes_df: pd.DataFrame, edges_df: pd.DataFrame, meta: dict[str, Any], out_dir: Path) -> None:
@@ -185,15 +195,16 @@ def graph_from_tables(nodes_df: pd.DataFrame, edges_df: pd.DataFrame) -> nx.Mult
                 "x": float(lon),
                 "y": float(lat),
                 "elevation": float(elev),
-                "is_station": isinstance(name, str),
+                "node_type": NodeType(ntype),
                 "station_name": name if isinstance(name, str) else None,
             },
         )
-        for osmid, lat, lon, elev, name in zip(
+        for osmid, lat, lon, elev, ntype, name in zip(
             nodes_df["osmid"],
             nodes_df["lat"],
             nodes_df["lon"],
             nodes_df["elevation_m"],
+            nodes_df["node_type"],
             nodes_df["station_name"],
             strict=True,
         )
@@ -224,7 +235,30 @@ def graph_from_tables(nodes_df: pd.DataFrame, edges_df: pd.DataFrame) -> nx.Mult
         if int(u) in present and int(v) in present
     )
     _assert_height_diffs_consistent(graph)
+    _assert_node_edge_types_consistent(graph)
     return graph
+
+
+def _assert_node_edge_types_consistent(graph: nx.MultiDiGraph) -> None:
+    """Hard-fail if any edge's endpoints don't match its mode's required node types.
+
+    The core structural guarantee: a BIKE edge joins two bike nodes, a RAIL edge two rail
+    nodes, and a STATION edge exactly one of each. So a bike route can NEVER pass through a
+    station node — reaching a station always crosses a station edge (which carries boarding).
+    Only rules edges the corridor window fully contains; dangling edges were already dropped.
+    """
+    for u, v, data in graph.edges(data=True):
+        tu, tv = graph.nodes[u]["node_type"], graph.nodes[v]["node_type"]
+        mode = data["mode"]
+        if mode == Mode.BIKE:
+            ok = tu == NodeType.BIKE and tv == NodeType.BIKE
+        elif mode == Mode.RAIL:
+            ok = tu == NodeType.RAIL and tv == NodeType.RAIL
+        elif mode == Mode.STATION:
+            ok = {tu, tv} == {NodeType.BIKE, NodeType.RAIL}
+        else:
+            raise AssertionError(f"unknown edge mode {mode!r} on {u}->{v}")
+        assert ok, f"{mode} edge {u}->{v} has inconsistent node types {tu}/{tv} — artifact corrupt"
 
 
 def _assert_height_diffs_consistent(graph: nx.MultiDiGraph) -> None:
@@ -252,8 +286,8 @@ def load_corridor_graph(corridor: Polygon, graph_dir: Path = GraphConfig.GRAPH_D
     meta = load_meta(graph_dir=graph_dir)
     tile_deg = meta["tile_deg"]
     tiles = _covering_tiles(bounds=corridor.bounds, tile_deg=tile_deg, margin=1)
-    nodes_df = _read_tiles(graph_dir / GraphConfig.NODES_SUBDIR, tiles, _NODE_COLS)
-    edges_df = _read_tiles(graph_dir / GraphConfig.EDGES_SUBDIR, tiles, _EDGE_COLS)
+    nodes_df = _read_tiles(directory=graph_dir / GraphConfig.NODES_SUBDIR, tiles=tiles, columns=_NODE_COLS)
+    edges_df = _read_tiles(directory=graph_dir / GraphConfig.EDGES_SUBDIR, tiles=tiles, columns=_EDGE_COLS)
     assert not nodes_df.empty, "corridor is outside the prebuilt graph coverage (no node tiles)"
 
     graph = graph_from_tables(nodes_df=nodes_df, edges_df=edges_df)
@@ -274,7 +308,7 @@ def snap_to_node(lat: float, lon: float, graph_dir: Path = GraphConfig.GRAPH_DIR
     """
     tile_deg = load_meta(graph_dir=graph_dir)["tile_deg"]
     tiles = _covering_tiles(bounds=(lon, lat, lon, lat), tile_deg=tile_deg, margin=1)
-    nodes_df = _read_tiles(graph_dir / GraphConfig.NODES_SUBDIR, tiles, _NODE_COLS)
+    nodes_df = _read_tiles(directory=graph_dir / GraphConfig.NODES_SUBDIR, tiles=tiles, columns=_NODE_COLS)
     assert not nodes_df.empty, "no graph nodes near this point (outside coverage)"
     lats = nodes_df["lat"].to_numpy()
     lons = nodes_df["lon"].to_numpy()
@@ -286,8 +320,9 @@ def snap_to_node(lat: float, lon: float, graph_dir: Path = GraphConfig.GRAPH_DIR
 def graph_to_tables(graph: nx.MultiDiGraph) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Flatten a built MultiDiGraph into node/edge tables matching the on-disk schema.
 
-    ``mode`` defaults to bike for any edge the builder didn't explicitly tag. Bike
-    edges keep their real polyline; rail/transfer hops have no geometry (straight).
+    ``node_type`` and ``mode`` are internal invariants the builder sets on every node/edge
+    (fail loud if not). Bike and rail edges both keep their real polyline; only the short
+    station access-links have no geometry (straight).
     """
     nodes = [
         {
@@ -295,6 +330,7 @@ def graph_to_tables(graph: nx.MultiDiGraph) -> tuple[pd.DataFrame, pd.DataFrame]
             "lat": float(d["y"]),  # OSMnx stores y = latitude
             "lon": float(d["x"]),  # x = longitude
             "elevation_m": float(d["elevation"]),
+            "node_type": str(d["node_type"]),  # internal invariant: builder types every node
             "station_name": d.get("station_name") if isinstance(d.get("station_name"), str) else None,
         }
         for n, d in graph.nodes(data=True)
@@ -317,7 +353,7 @@ def graph_to_tables(graph: nx.MultiDiGraph) -> tuple[pd.DataFrame, pd.DataFrame]
 
 
 def _geometry_wkt(geom: object) -> str | None:
-    """Real edge polyline as WKT, or None for straight (rail/transfer) hops."""
+    """Real edge polyline as WKT, or None for straight (rail/station) hops."""
     if isinstance(geom, LineString) and len(geom.coords) >= 2:
         return str(to_wkt(geom, rounding_precision=GraphConfig.COORD_PRECISION))
     return None
@@ -327,7 +363,7 @@ def _scalar(value: object) -> object:
     """Collapse a list-valued OSM tag to its first element; unknown/empty → None.
 
     Consolidation merges parallel ways into list-valued surface/highway; routing
-    only needs one representative (surface_tier/is_main_road handle scalars). An
+    only needs one representative (surface_tier/road_tier handle scalars). An
     absent or empty tag is stored as an explicit None, never a blank string.
     """
     if isinstance(value, list | tuple):

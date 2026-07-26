@@ -20,6 +20,7 @@ from bike_router.constants import PARAM_SPECS, RoutingParams
 from bike_router.graph_store import download_graph_from_hf
 from bike_router.pipeline import plan_route
 from bike_router.progress import tqdm_progress
+from bike_router.simplify import format_rail_legs
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -55,7 +56,18 @@ def main(argv: list[str] | None = None) -> int:
     print(format_composition(comp=result.composition))
     print(f"GPX: {result.gpx_path}")
     print(f"Heatmap: {result.png_path}")
-    print(f"Google Maps: {result.gmaps_url}")
+    # Train rides: boarding + alighting station per ride, to search in a railway app.
+    if result.rail_legs:
+        print("Trains to catch:")
+        for line in format_rail_legs(rail_legs=result.rail_legs):
+            print(f"  {line}")
+    # One bicycling link per pedalled leg; >1 means a train ride splits the route.
+    if len(result.gmaps_urls) == 1:
+        print(f"Google Maps: {result.gmaps_urls[0]}")
+    else:
+        print("Google Maps (one bike leg per train ride):")
+        for index, url in enumerate(result.gmaps_urls, start=1):
+            print(f"  leg {index}: {url}")
     return 0
 
 

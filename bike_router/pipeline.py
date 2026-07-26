@@ -21,7 +21,7 @@ from bike_router.geocoding import geocode_endpoint, make_geocode_fn
 from bike_router.gmaps import build_gmaps_url
 from bike_router.gpx_export import build_gpx
 from bike_router.graph_ops import snap_endpoints
-from bike_router.graph_store import load_corridor_graph, load_meta
+from bike_router.graph_store import load_corridor_graph, load_meta, snap_to_node
 from bike_router.naming import route_output_paths
 from bike_router.plotting import plot_elevation_heatmap
 from bike_router.routing import shortest_route
@@ -30,7 +30,7 @@ from bike_router.sanity import (
     check_uphill_costlier,
     find_steepest_bidirectional_edge,
 )
-from bike_router.simplify import route_to_linestring, select_waypoints
+from bike_router.simplify import RailLeg, route_to_linestring, select_waypoints, split_bike_legs, split_rail_legs
 from bike_router.track import Track, build_track, densify_track
 
 logger = logging.getLogger(__name__)
@@ -57,8 +57,34 @@ class RouteResult:
     track: Track
     gpx_path: Path
     png_path: Path
-    gmaps_url: str
+    gmaps_urls: list[str]  # one bicycling URL per pedalled leg (train rides split the route)
+    rail_legs: list[RailLeg]  # boarding + alighting station per train ride (empty = no train)
     composition: RouteComposition
+
+
+def resolve_endpoints(
+    *, origin: str, destination: str, graph_dir: Path | None = None
+) -> tuple[tuple[float, float, float], tuple[float, float, float]]:
+    """Geocode two place strings and snap each to the nearest graph node.
+
+    Whatever text is passed is what's geocoded — the web app hands the box text here,
+    so a picked suggestion (its label fills the box) and free-typed text share ONE path.
+    Returns two (lat, lon, elevation_m) tuples; a bad place raises GeocodeError.
+
+    Args:
+        origin: Start place string.
+        destination: Destination place string.
+        graph_dir: Override for the prebuilt-graph cache dir (tests); None = default.
+    """
+    geocode_fn = make_geocode_fn()  # one rate-limited fn spans both calls (1 req/s)
+    start_ll = geocode_endpoint(place=origin, label="Start", geocode_fn=geocode_fn)
+    end_ll = geocode_endpoint(place=destination, label="End", geocode_fn=geocode_fn)
+    if graph_dir is None:
+        return snap_to_node(lat=start_ll[0], lon=start_ll[1]), snap_to_node(lat=end_ll[0], lon=end_ll[1])
+    return (
+        snap_to_node(lat=start_ll[0], lon=start_ll[1], graph_dir=graph_dir),
+        snap_to_node(lat=end_ll[0], lon=end_ll[1], graph_dir=graph_dir),
+    )
 
 
 def plan_route(
@@ -151,16 +177,27 @@ def plan_route(
         composition=composition,
     )
 
-    # Google Maps waypoints: the N most significant points of the full geometry.
-    geometry = route_to_linestring(graph=graph, node_path=node_path)
-    waypoints = select_waypoints(line=geometry, count=GmapsConfig.N_WAYPOINTS)
-    assert len(waypoints) == GmapsConfig.N_WAYPOINTS, "must produce exactly N waypoints"
+    # One Google Maps bicycling URL per pedalled leg: a train ride splits the route, so a
+    # pure-bike trip yields one link and a one-train trip yields two.
+    bike_legs = split_bike_legs(graph=graph, node_path=node_path)
+    gmaps_urls = [
+        build_gmaps_url(
+            waypoints_latlon=select_waypoints(
+                line=route_to_linestring(graph=graph, node_path=leg), count=GmapsConfig.N_WAYPOINTS
+            )
+        )
+        for leg in bike_legs
+    ]
+    # Boarding + alighting station names per train ride (empty when no train is used),
+    # so the rider can look the actual train up in a railway app.
+    rail_legs = split_rail_legs(graph=graph, node_path=node_path)
     assert gpx_path.exists() and png_path.exists(), "GPX and PNG must be written"
 
     return RouteResult(
         track=track,
         gpx_path=gpx_path,
         png_path=png_path,
-        gmaps_url=build_gmaps_url(waypoints_latlon=waypoints),
+        gmaps_urls=gmaps_urls,
+        rail_legs=rail_legs,
         composition=composition,
     )

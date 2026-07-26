@@ -1,34 +1,34 @@
-"""Geocoding via OpenStreetMap Nominatim (through geopy).
+"""Geocoding: Nominatim (one-shot resolve) + Photon (search-as-you-type).
 
-Resolves a place string to (lat, lon). One RateLimiter-wrapped callable
-(make_geocode_fn) is reused for origin + destination so the 1 req/s policy holds.
+``geocode``/``geocode_endpoint`` resolve a place string to (lat, lon) via Nominatim
+(one deliberate lookup — policy-fine). ``photon_autocomplete`` powers the web
+typeahead via Photon, which OSM built for that (Nominatim forbids client autocomplete).
 """
 
 import logging
 from collections.abc import Callable
+from typing import Protocol
 
+import requests
 from geopy.exc import GeocoderServiceError
 from geopy.extra.rate_limiter import RateLimiter
 from geopy.geocoders import Nominatim
 from geopy.location import Location
 
-from bike_router.constants import NominatimConfig
+from bike_router.constants import NominatimConfig, PhotonConfig
+from bike_router.errors import GeocodeConnectionError, GeocodeNotFoundError
 
 logger = logging.getLogger(__name__)
 
 GeocodeFn = Callable[[str], Location | None]
+# Injectable HTTP seam (url, params, timeout) → parsed JSON — lets tests run offline.
+HttpParams = dict[str, str | float]
 
 
-class GeocodeError(RuntimeError):
-    """Base for any failure to resolve a place string to coordinates."""
+class HttpGetter(Protocol):
+    """Callable seam for an HTTP GET returning parsed JSON (keyword-callable)."""
 
-
-class GeocodeConnectionError(GeocodeError):
-    """The geocoding service was unreachable (no internet / DNS / service down)."""
-
-
-class GeocodeNotFoundError(GeocodeError):
-    """The service answered but no location matched the place string."""
+    def __call__(self, *, url: str, params: HttpParams, timeout: float) -> object: ...
 
 
 def make_geocode_fn() -> GeocodeFn:
@@ -91,3 +91,71 @@ def geocode_endpoint(place: str, label: str, geocode_fn: GeocodeFn) -> tuple[flo
         raise GeocodeConnectionError(f"{label} ({place!r}): {exc}") from exc
     except GeocodeNotFoundError as exc:
         raise GeocodeNotFoundError(f"{label} ({place!r}): could not find this place.") from exc
+
+
+def _default_http_get(*, url: str, params: HttpParams, timeout: float) -> object:
+    """Real HTTP GET returning parsed JSON (the production HttpGetter).
+
+    Sends the project User-Agent — Photon 403s the default ``python-requests`` UA.
+    """
+    response = requests.get(url, params=params, timeout=timeout, headers={"User-Agent": NominatimConfig.USER_AGENT})
+    response.raise_for_status()
+    return response.json()
+
+
+def photon_label(properties: dict[str, object]) -> str:
+    """Human label "Name, City, State" from a Photon feature's properties.
+
+    Blank parts are skipped and a part equal to the name is not repeated, so a city
+    whose name IS the settlement doesn't render "Freudenstadt, Freudenstadt".
+    """
+    name = str(properties.get("name") or "").strip()
+    parts = [name]
+    for key in ("city", "state"):
+        value = str(properties.get(key) or "").strip()
+        if value and value not in parts:
+            parts.append(value)
+    return ", ".join(part for part in parts if part)
+
+
+def photon_autocomplete(
+    *,
+    term: str,
+    bbox: tuple[float, float, float, float],
+    limit: int = PhotonConfig.LIMIT,
+    http_get: HttpGetter = _default_http_get,
+) -> list[str]:
+    """Search-as-you-type place labels biased to ``bbox`` (for the searchbox dropdown).
+
+    Returns display labels only ("Name, City, State"); selecting one fills the text
+    box with that label, and the box text is what gets geocoded on submit — so the
+    corrected name is always what the route uses.
+
+    A blank term returns [] without a request. ANY network/timeout/parse error also
+    returns [] — a per-keystroke typeahead must never crash on a weak connection.
+
+    Args:
+        term: The partial text the user has typed.
+        bbox: Coverage box (west, south, east, north) to bias + limit suggestions.
+        limit: Max suggestions to request.
+        http_get: Injectable HTTP getter (url, params, timeout) → parsed JSON.
+    """
+    if not term.strip():
+        return []
+    west, south, east, north = bbox
+    params: HttpParams = {
+        "q": term,
+        "limit": limit,
+        "lang": PhotonConfig.LANG,
+        "osm_tag": PhotonConfig.PLACE_OSM_TAG,
+        "bbox": f"{west},{south},{east},{north}",
+        "lon": (west + east) / 2.0,  # centre bias so nearer places rank first
+        "lat": (south + north) / 2.0,
+    }
+    try:
+        payload = http_get(url=PhotonConfig.BASE_URL, params=params, timeout=PhotonConfig.TIMEOUT_S)
+    except requests.RequestException as exc:  # ONLY the genuine network/HTTP failure
+        logger.info("Photon autocomplete failed for %r — offering no suggestions (%s)", term, exc)
+        return []
+    features = payload["features"]  # type: ignore[index]  # a well-formed Photon reply always has it
+    return [photon_label(properties=feature["properties"]) for feature in features]

@@ -6,16 +6,22 @@ penalties, all measured in metres so they add cleanly:
     cost = length
          + uphill_penalty     = (climb_m / 100) * extra_km_per_uphill_100m   * 1000
          + unpaved_penalty    = surface_tier * extra_km_per_unpaved_km       * length/1000 * 1000
-         + main_road_penalty  = is_main_road * extra_km_per_main_road_km     * length/1000 * 1000
+         + main_road_penalty  = road_tier * extra_km_per_main_road_km        * length/1000 * 1000
 
-A RAIL edge instead costs a one-time boarding charge plus a per-km rail charge
-(both slider-controlled, in the same "extra km" currency), with NO terrain
-penalties — a train doesn't care about hills/surface/traffic:
+A RAIL edge instead costs only a per-km rail charge (slider-controlled, in the same
+"extra km" currency), with NO terrain penalties — a train doesn't care about
+hills/surface/traffic. The boarding charge is NOT here; it lives on the two station
+edges (see below), so a board→ride→alight pays it exactly once each way:
 
-    cost = extra_km_per_boarding * 1000 + extra_km_per_rail_km * length/1000 * 1000
+    cost = extra_km_per_rail_km * length/1000 * 1000
 
-A TRANSFER edge (bike ↔ station) costs its plain length. The 30-min boarding WAIT
-is charged to time only (track.py), never here.
+A STATION edge (bike node ↔ station node) costs its straight-line length PLUS HALF the
+boarding charge. Entry (board) + exit (alight) each carry half, so any use of a station
+sums to the full boarding hassle — which also makes cycling THROUGH a station (in one
+entrance, out another) cost a full boarding, naturally deterring cut-through. With the
+boarding slider at 0 a cut-through is free; we accept that (the felt cost is honest):
+
+    cost = length + 0.5 * extra_km_per_boarding * 1000
 
 Each `extra_km_*` is how many extra virtual kilometres the rider will accept to
 avoid one unit of the bad thing. All penalties are >= 0, so the cheapest possible
@@ -47,28 +53,48 @@ def _as_values(tag: object) -> list[str]:
     return [str(tag).lower()]
 
 
-def surface_tier(surface: object) -> int:
-    """Penalty tier for a surface tag: 0 good, 1 moderate, 2 heavy.
+def tag_tier(tag: object, tier_map: dict[str, int], default_tier: int) -> int:
+    """Penalty tier for an OSM tag against its tier map: worst (highest) wins.
 
-    Worst (highest) tier wins for list-valued tags. Unknown/untagged → DEFAULT_TIER.
+    Shared by surface_tier and road_tier. Unknown values in the tag are ignored;
+    an all-unknown / missing tag falls back to ``default_tier``.
     """
-    tiers = [
-        SurfaceConfig.SURFACE_TIER[value] for value in _as_values(tag=surface) if value in SurfaceConfig.SURFACE_TIER
-    ]
-    tier = max(tiers) if tiers else SurfaceConfig.DEFAULT_TIER
-    assert tier in {0, 1, 2}, "surface tier must be 0, 1, or 2"
+    tiers = [tier_map[value] for value in _as_values(tag=tag) if value in tier_map]
+    tier = max(tiers) if tiers else default_tier
+    assert tier in {0, 1}, "tier must be 0 or 1"
     return tier
 
 
-def is_main_road(highway: object) -> bool:
-    """True if any of the highway values is a penalised main road.
+def tag_included(tag: object, tier_map: dict[str, int]) -> bool:
+    """False iff the tag names a category outside the allowlist (→ excluded).
 
-    Unknown/untagged highway (≈0% in practice) is treated as a main road.
+    Shared by surface_included and road_included. Missing/untagged (no values) → True
+    (kept as DEFAULT_TIER). A tag naming ONLY categories in ``tier_map`` → True.
     """
-    values = _as_values(tag=highway)
+    values = _as_values(tag=tag)
     if not values:
         return True
-    return any(value in RoadConfig.MAIN_ROADS for value in values)
+    return all(value in tier_map for value in values)
+
+
+def surface_tier(surface: object) -> int:
+    """Penalty tier for a surface tag: 0 good, 1 moderate (worst wins; untagged → default)."""
+    return tag_tier(tag=surface, tier_map=SurfaceConfig.SURFACE_TIER, default_tier=SurfaceConfig.DEFAULT_TIER)
+
+
+def surface_included(surface: object) -> bool:
+    """False iff the surface names a category outside the allowlist (missing → kept)."""
+    return tag_included(tag=surface, tier_map=SurfaceConfig.SURFACE_TIER)
+
+
+def road_tier(highway: object) -> int:
+    """Penalty tier for a highway tag: 0 quiet, 1 main road (worst wins; untagged → default)."""
+    return tag_tier(tag=highway, tier_map=RoadConfig.ROAD_TIER, default_tier=RoadConfig.DEFAULT_TIER)
+
+
+def road_included(highway: object) -> bool:
+    """False iff the highway names a class outside the allowlist (missing → kept)."""
+    return tag_included(tag=highway, tier_map=RoadConfig.ROAD_TIER)
 
 
 def edge_cost(
@@ -84,19 +110,18 @@ def edge_cost(
     """Total edge cost in metres, branching on travel mode.
 
     bike: length + uphill + unpaved + main-road penalties (terrain-aware).
-    rail: one-time boarding charge + per-km rail charge (no terrain penalties).
-    transfer: plain length (bike ↔ station link).
+    rail: per-km rail charge only (no terrain penalties; boarding lives on station edges).
+    station: straight-line length + half the boarding charge (board + alight = full).
     """
     assert length >= 0, "edge length must be non-negative"
     length_km = length / GpxConfig.METERS_PER_KM
 
     if mode == Mode.RAIL:
-        boarding = params.extra_km_per_boarding * GpxConfig.METERS_PER_KM
-        rail_dist = params.extra_km_per_rail_km * length_km * GpxConfig.METERS_PER_KM
-        total = length + boarding + rail_dist
-    elif mode == Mode.TRANSFER:
-        assert length <= RailConfig.STATION_TRANSFER_RADIUS_M, "transfer link exceeds station radius"
-        total = length
+        total = length + params.extra_km_per_rail_km * length_km * GpxConfig.METERS_PER_KM
+    elif mode == Mode.STATION:
+        # Half the boarding charge per station edge: entry + exit sum to one full boarding.
+        assert length <= RailConfig.STATION_RADIUS_M, "station link exceeds station radius"
+        total = length + 0.5 * params.extra_km_per_boarding * GpxConfig.METERS_PER_KM
     elif mode == Mode.BIKE:
         climb_m = max(elev_target - elev_source, 0.0)  # uphill only; downhill = 0
         uphill_penalty = (
@@ -106,10 +131,7 @@ def edge_cost(
             surface_tier(surface=surface) * params.extra_km_per_unpaved_km * length_km * GpxConfig.METERS_PER_KM
         )
         main_road_penalty = (
-            (1 if is_main_road(highway=highway) else 0)
-            * params.extra_km_per_main_road_km
-            * length_km
-            * GpxConfig.METERS_PER_KM
+            road_tier(highway=highway) * params.extra_km_per_main_road_km * length_km * GpxConfig.METERS_PER_KM
         )
         total = length + uphill_penalty + unpaved_penalty + main_road_penalty
     else:

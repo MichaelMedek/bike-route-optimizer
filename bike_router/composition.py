@@ -9,7 +9,7 @@ from dataclasses import dataclass
 import networkx as nx
 
 from bike_router.constants import GpxConfig, Mode, RoadConfig, SurfaceConfig
-from bike_router.cost import is_main_road, surface_tier
+from bike_router.cost import road_tier, surface_tier
 from bike_router.track import iter_route_edges
 
 
@@ -17,7 +17,7 @@ from bike_router.track import iter_route_edges
 class RouteComposition:
     """Kilometre breakdown of a route, three independent ways to slice the bike legs.
 
-    ``by_mode`` covers the WHOLE route (bike + rail + transfer km); the surface and
+    ``by_mode`` covers the WHOLE route (bike + rail + station km); the surface and
     road tallies describe the pedalled (bike) portion only.
     """
 
@@ -41,7 +41,7 @@ def route_composition(graph: nx.MultiDiGraph, node_path: list[int]) -> RouteComp
             continue
         label, _color = SurfaceConfig.TIER_LABEL_COLORS[surface_tier(surface=data.get("surface"))]
         by_surface[label] = by_surface.get(label, 0.0) + km
-        road, _road_color = RoadConfig.LABEL_COLORS[is_main_road(highway=data.get("highway"))]
+        road, _road_color = RoadConfig.TIER_LABEL_COLORS[road_tier(highway=data.get("highway"))]
         by_road[road] = by_road.get(road, 0.0) + km
 
     return RouteComposition(by_surface_km=by_surface, by_road_km=by_road, by_mode_km=by_mode)

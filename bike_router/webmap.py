@@ -11,7 +11,7 @@ from dataclasses import dataclass
 import altair as alt
 import pandas as pd
 
-from bike_router.constants import RoadConfig, SurfaceConfig, WebMapConfig
+from bike_router.constants import Mode, RoadConfig, SurfaceConfig, WebMapConfig
 from bike_router.geo import haversine_distance_m
 from bike_router.track import Track
 
@@ -24,7 +24,7 @@ def _hex(rgb: tuple[int, int, int]) -> str:
 # Donut label→colour maps, all derived from single sources (no re-typed labels):
 # surface/road labels+colours live in SurfaceConfig/RoadConfig; mode in WebMapConfig.
 SURFACE_DONUT_COLORS = dict(SurfaceConfig.TIER_LABEL_COLORS.values())
-ROAD_DONUT_COLORS = dict(RoadConfig.LABEL_COLORS.values())
+ROAD_DONUT_COLORS = dict(RoadConfig.TIER_LABEL_COLORS.values())
 MODE_DONUT_COLORS = {str(mode): _hex(rgb=rgb) for mode, rgb in WebMapConfig.MODE_COLORS.items()}
 
 
@@ -58,30 +58,42 @@ def composition_donut(title: str, by_km: dict[str, float], colors: dict[str, str
     return chart
 
 
+def segment_color(*, mode: str, is_bad: bool) -> list[int]:
+    """RGB for a route segment — the single source both the 3D ribbon and PNG use.
+
+    Rail is always purple; a pedalled segment is green when good and red when bad
+    (bad surface OR main road).
+    """
+    if mode == str(Mode.RAIL):
+        return list(WebMapConfig.RAIL_COLOR)
+    return list(WebMapConfig.BAD_RGB if is_bad else WebMapConfig.GOOD_RGB)
+
+
 def route_ribbon_segments(
     track: Track, float_above_m: float = WebMapConfig.RIBBON_FLOAT_ABOVE_M
-) -> list[tuple[list[int], list[list[float]]]]:
-    """Split the route into contiguous same-mode runs for two-color rendering.
+) -> list[tuple[list[int], float, list[list[float]]]]:
+    """Split the route into contiguous runs of one colour + width for rendering.
 
-    Returns a list of ``(color, points)`` where color is the mode's RGB
-    (WebMapConfig.MODE_COLORS) and points are ``[[lon, lat, elevation + float], ...]``.
-    Consecutive runs share their boundary point so the ribbon stays continuous.
+    Returns ``(color, width_m, points)`` runs where color comes from segment_color
+    (condition/mode) and width_m from the segment speed (RIBBON_WIDTH_PER_KMH_M per
+    km/h). Consecutive runs share their boundary point so the ribbon stays continuous.
 
     Args:
-        track: The computed route track from plan_route (points carry ``mode``).
+        track: The computed route track from plan_route (points carry mode/condition/speed).
         float_above_m: Metres to lift the ribbon above the terrain mesh.
     """
     assert len(track.points) >= 2, "ribbon needs at least two points to draw"
-    segments: list[tuple[list[int], list[list[float]]]] = []
+    segments: list[tuple[list[int], float, list[list[float]]]] = []
     for point in track.points:
         xyz = [point.lon, point.lat, point.elevation_m + float_above_m]
-        color = list(WebMapConfig.MODE_COLORS[point.mode])
+        color = segment_color(mode=point.mode, is_bad=point.is_bad)
+        width = point.speed_kmh * WebMapConfig.RIBBON_WIDTH_PER_KMH_M
         # Every point extends the current run (bridging the seam keeps the ribbon
-        # continuous across a color change); a color change then starts a new run.
+        # continuous); a colour OR width change then starts a new run.
         if segments:
-            segments[-1][1].append(xyz)
-        if not segments or segments[-1][0] != color:
-            segments.append((color, [xyz]))
+            segments[-1][2].append(xyz)
+        if not segments or segments[-1][0] != color or segments[-1][1] != width:
+            segments.append((color, width, [xyz]))
     return segments
 
 
