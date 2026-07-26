@@ -13,7 +13,7 @@ import networkx as nx
 
 from bike_router.composition import RouteComposition, route_composition
 from bike_router.constants import CorridorConfig, GmapsConfig, GpxConfig, RoutingParams
-from bike_router.corridor import build_corridor, corridor_within_bbox
+from bike_router.corridor import build_corridor
 from bike_router.cost import assign_edge_costs
 from bike_router.geo import haversine_distance_m
 from bike_router.geocoding import geocode_endpoint, make_geocode_fn
@@ -35,15 +35,18 @@ from bike_router.track import Track, build_track, densify_track
 logger = logging.getLogger(__name__)
 
 
-def _assert_within_coverage(corridor: object, graph_dir: Path | None) -> None:
-    """Raise ValueError if the corridor falls outside the prebuilt DACH bbox."""
+def _assert_within_coverage(
+    start_latlon: tuple[float, float], dest_latlon: tuple[float, float], graph_dir: Path | None
+) -> None:
+    """Raise ValueError if either endpoint falls outside the prebuilt graph's bbox."""
     meta = load_meta() if graph_dir is None else load_meta(graph_dir=graph_dir)
-    if not corridor_within_bbox(polygon=corridor, bbox=tuple(meta["bbox"])):
-        west, south, east, north = meta["bbox"]
-        raise ValueError(
-            "Route is outside the prebuilt graph coverage "
-            f"(covered bbox W,S,E,N = {west:.2f},{south:.2f},{east:.2f},{north:.2f})."
-        )
+    west, south, east, north = meta["bbox"]
+    for lat, lon in (start_latlon, dest_latlon):
+        if not (west <= lon <= east and south <= lat <= north):
+            raise ValueError(
+                "Route is outside the prebuilt graph coverage "
+                f"(covered bbox W,S,E,N = {west:.2f},{south:.2f},{east:.2f},{north:.2f})."
+            )
 
 
 @dataclass(frozen=True)
@@ -96,8 +99,8 @@ def plan_route(
             f"(maximum {CorridorConfig.MAX_TRIP_KM:.0f} km) — too far to plan."
         )
 
+    _assert_within_coverage(start_latlon=start_latlon, dest_latlon=dest_latlon, graph_dir=graph_dir)
     corridor = build_corridor(start_latlon=start_latlon, dest_latlon=dest_latlon)
-    _assert_within_coverage(corridor=corridor, graph_dir=graph_dir)
 
     graph = (
         load_corridor_graph(corridor=corridor)

@@ -44,17 +44,3 @@ def build_corridor(
     corridor: Polygon = scale(buffered, xfact=1.0 / lon_scale, yfact=1.0, origin=(0.0, 0.0))
     assert not corridor.is_empty, "corridor polygon must not be empty"
     return corridor
-
-
-def corridor_within_bbox(polygon: Polygon, bbox: tuple[float, float, float, float]) -> bool:
-    """True if the corridor's bbox lies fully inside ``bbox`` (west, south, east, north).
-
-    Args:
-        polygon: The corridor polygon (lon/lat degrees).
-        bbox: Coverage (west, south, east, north) in WGS84.
-    """
-    assert len(bbox) == 4, "bbox must be (west, south, east, north)"
-    west, south, east, north = bbox
-    assert west < east and south < north, "bbox must be well-ordered"
-    min_lon, min_lat, max_lon, max_lat = polygon.bounds
-    return bool(min_lon >= west and max_lon <= east and min_lat >= south and max_lat <= north)

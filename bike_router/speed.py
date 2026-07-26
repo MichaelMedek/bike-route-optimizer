@@ -5,7 +5,12 @@ surface's base speed at 0 % grade to walking pace at WALK_GRADE, and stays at
 walking pace on anything steeper. Flat and downhill ride at the base speed.
 """
 
-from bike_router.constants import SpeedConfig
+from bike_router.constants import GpxConfig, SpeedConfig
+
+
+def kmh_to_ms(kmh: float) -> float:
+    """Convert km/h to m/s — the single source for this unit conversion."""
+    return kmh * GpxConfig.METERS_PER_KM / GpxConfig.SECONDS_PER_HOUR
 
 
 def effective_speed_kmh(surface_tier: int, grade: float) -> float:

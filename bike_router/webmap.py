@@ -13,18 +13,31 @@ from bike_router.geo import haversine_distance_m
 from bike_router.track import Track
 
 
-def route_ribbon_points(track: Track, float_above_m: float = WebMapConfig.RIBBON_FLOAT_ABOVE_M) -> list[list[float]]:
-    """`[[lon, lat, elevation + float_above_m], ...]` for the route ribbon.
+def route_ribbon_segments(
+    track: Track, float_above_m: float = WebMapConfig.RIBBON_FLOAT_ABOVE_M
+) -> list[tuple[list[int], list[list[float]]]]:
+    """Split the route into contiguous same-mode runs for two-color rendering.
 
-    Reads the Track's points directly (elevations are already finite — the pipeline
-    fills DEM nodata during enrich_elevations), lifting each above the terrain mesh.
+    Returns a list of ``(color, points)`` where color is the mode's RGB
+    (WebMapConfig.MODE_COLORS) and points are ``[[lon, lat, elevation + float], ...]``.
+    Consecutive runs share their boundary point so the ribbon stays continuous.
 
     Args:
-        track: The computed route track from plan_route.
+        track: The computed route track from plan_route (points carry ``mode``).
         float_above_m: Metres to lift the ribbon above the terrain mesh.
     """
     assert len(track.points) >= 2, "ribbon needs at least two points to draw"
-    return [[point.lon, point.lat, point.elevation_m + float_above_m] for point in track.points]
+    segments: list[tuple[list[int], list[list[float]]]] = []
+    for point in track.points:
+        xyz = [point.lon, point.lat, point.elevation_m + float_above_m]
+        color = list(WebMapConfig.MODE_COLORS[point.mode])
+        # Every point extends the current run (bridging the seam keeps the ribbon
+        # continuous across a color change); a color change then starts a new run.
+        if segments:
+            segments[-1][1].append(xyz)
+        if not segments or segments[-1][0] != color:
+            segments.append((color, [xyz]))
+    return segments
 
 
 @dataclass(frozen=True)

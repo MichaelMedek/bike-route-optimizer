@@ -5,6 +5,7 @@ while accumulating ride time. GPX, stats, and elevation profile all derive from 
 one structure, so total time and GPX end-timestamp agree by construction.
 """
 
+from collections.abc import Iterator
 from dataclasses import dataclass
 from typing import Any
 
@@ -14,7 +15,7 @@ import numpy as np
 from bike_router.constants import CostConfig, GpxConfig, Mode, RailConfig, SpeedConfig
 from bike_router.cost import surface_tier
 from bike_router.geo import haversine_distance_m
-from bike_router.speed import effective_speed_kmh
+from bike_router.speed import effective_speed_kmh, kmh_to_ms
 
 
 @dataclass(frozen=True)
@@ -47,6 +48,12 @@ def cheapest_edge(edges: dict[int, dict[str, Any]]) -> dict[str, Any]:
     return edges[best_key]
 
 
+def iter_route_edges(graph: nx.MultiDiGraph, node_path: list[int]) -> Iterator[tuple[int, int, dict[str, Any]]]:
+    """Yield ``(node_a, node_b, cheapest_edge_data)`` for each hop on the A* path."""
+    for node_a, node_b in zip(node_path[:-1], node_path[1:], strict=True):
+        yield node_a, node_b, cheapest_edge(edges=graph.get_edge_data(node_a, node_b))
+
+
 def build_track(graph: nx.MultiDiGraph, node_path: list[int]) -> Track:
     """Build the full route track with adaptive-speed timing from a node path.
 
@@ -65,7 +72,7 @@ def build_track(graph: nx.MultiDiGraph, node_path: list[int]) -> Track:
     ]
     total_m = ascent = descent = elapsed_s = 0.0
     bike_m = bike_s = 0.0  # only bike legs feed the avg-speed assert (rail is far faster)
-    rail_speed_ms = RailConfig.RAIL_SPEED_KMH * GpxConfig.METERS_PER_KM / GpxConfig.SECONDS_PER_HOUR
+    rail_speed_ms = kmh_to_ms(kmh=RailConfig.RAIL_SPEED_KMH)
 
     for node_a, node_b in zip(node_path[:-1], node_path[1:], strict=True):
         data = cheapest_edge(edges=graph.get_edge_data(node_a, node_b))
@@ -81,7 +88,7 @@ def build_track(graph: nx.MultiDiGraph, node_path: list[int]) -> Track:
                 descent += -delta
             grade = delta / length_m if length_m > 0 else 0.0
             speed_kmh = effective_speed_kmh(surface_tier=surface_tier(surface=data.get("surface")), grade=grade)
-            speed_ms = speed_kmh * GpxConfig.METERS_PER_KM / GpxConfig.SECONDS_PER_HOUR
+            speed_ms = kmh_to_ms(kmh=speed_kmh)
             leg_s = length_m / speed_ms
             bike_m += length_m
             bike_s += leg_s

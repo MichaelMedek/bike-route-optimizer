@@ -1,8 +1,8 @@
-"""Corridor buffer + DEM-coverage tests."""
+"""Corridor buffer geometry tests."""
 
 from shapely.geometry import Polygon
 
-from bike_router.corridor import build_corridor, corridor_within_bbox
+from bike_router.corridor import build_corridor
 
 
 def test_build_corridor_is_polygon_covering_endpoints():
@@ -27,12 +27,6 @@ def test_corridor_isotropic_in_km():
     lon_span_km = (poly.bounds[2] - poly.bounds[0]) * 111.32 * math.cos(math.radians(48.0))
     lat_span_km = (poly.bounds[3] - poly.bounds[1]) * 111.32
     assert abs(lon_span_km - lat_span_km) < 1.0  # within 1 km → isotropic
-
-
-def test_corridor_within_bbox_true_and_false():
-    poly = build_corridor(start_latlon=(48.2, 8.2), dest_latlon=(48.4, 8.4))
-    assert corridor_within_bbox(polygon=poly, bbox=(7.0, 47.0, 9.0, 49.0))
-    assert not corridor_within_bbox(polygon=poly, bbox=(8.3, 48.3, 8.35, 48.35))
 
 
 def _pt(x: float, y: float) -> Polygon:

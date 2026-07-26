@@ -5,6 +5,8 @@ from ski-resort-designer's conftest, plus a tiny MultiDiGraph builder for cost /
 routing tests. No network, no GeoTIFF — CI-safe.
 """
 
+import pathlib
+
 import networkx as nx
 import numpy as np
 import pytest
@@ -12,7 +14,8 @@ import pytest
 from bike_router.constants import PARAM_SPECS, GeoConfig, Mode, RoutingParams
 from bike_router.elevation import DEMService
 
-METERS_PER_DEGREE = GeoConfig.METERS_PER_DEGREE_EQUATOR
+# The committed real Schwarzwald artifact — the ONLY data source e2e tests may use.
+FIXTURE_GRAPH_DIR = pathlib.Path(__file__).parent / "fixtures" / "dach_graph"
 
 
 class MockDEMService(DEMService):
@@ -47,8 +50,8 @@ class MockDEMService(DEMService):
         lats = np.asarray(lats, dtype=float)
         return (
             self.base_elevation
-            + lats * METERS_PER_DEGREE * (self.slope_ns_pct / 100)
-            - lons * METERS_PER_DEGREE * (self.slope_ew_pct / 100)
+            + lats * GeoConfig.METERS_PER_DEGREE_EQUATOR * (self.slope_ns_pct / 100)
+            - lons * GeoConfig.METERS_PER_DEGREE_EQUATOR * (self.slope_ew_pct / 100)
         )
 
 

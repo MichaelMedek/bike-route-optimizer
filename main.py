@@ -38,12 +38,12 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     params = RoutingParams(**{spec.field: getattr(arguments, spec.field) for spec in PARAM_SPECS})
-    download_graph_from_hf()  # prebuilt DACH bike+rail graph (once, cached)
+    # Progress belongs ONLY to the one-time graph download (tqdm here, st.progress in the app).
+    download_graph_from_hf(progress=tqdm_progress(desc="Downloading graph"))
     result = plan_route(
         origin=arguments.origin,
         destination=arguments.destination,
         params=params,
-        progress=tqdm_progress(desc="Routing"),
     )
 
     track = result.track

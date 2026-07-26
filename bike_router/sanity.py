@@ -5,11 +5,11 @@ model before we emit outputs.
 """
 
 import logging
-from typing import Any
 
 import networkx as nx
 
 from bike_router.constants import CostConfig, RoutingParams, SanityConfig
+from bike_router.track import cheapest_edge
 
 logger = logging.getLogger(__name__)
 
@@ -28,9 +28,9 @@ def check_simplify_shrunk(nodes_before: int, nodes_after: int) -> None:
     logger.info("Sanity 1 OK: %d → %d nodes (>50%% shrink)", nodes_before, nodes_after)
 
 
-def _edge_cost(edges: dict[int, dict[str, Any]]) -> float:
-    """Cheapest parallel-edge stored cost."""
-    return min(float(data[CostConfig.EDGE_COST]) for data in edges.values())
+def _cheapest_cost(edges: dict[int, dict[str, object]]) -> float:
+    """Stored cost of the cheapest parallel edge (via the canonical selector)."""
+    return float(cheapest_edge(edges=edges)[CostConfig.EDGE_COST])
 
 
 def check_uphill_costlier(graph: nx.MultiDiGraph, node_lower: int, node_upper: int, params: RoutingParams) -> None:
@@ -44,8 +44,8 @@ def check_uphill_costlier(graph: nx.MultiDiGraph, node_lower: int, node_upper: i
     if params.extra_km_per_uphill_100m == 0:
         logger.info("Sanity 2 skipped (uphill penalty disabled by user)")
         return
-    cost_up = _edge_cost(edges=graph.get_edge_data(node_lower, node_upper))
-    cost_down = _edge_cost(edges=graph.get_edge_data(node_upper, node_lower))
+    cost_up = _cheapest_cost(edges=graph.get_edge_data(node_lower, node_upper))
+    cost_down = _cheapest_cost(edges=graph.get_edge_data(node_upper, node_lower))
     elev_lower = graph.nodes[node_lower]["elevation"]
     elev_upper = graph.nodes[node_upper]["elevation"]
     if elev_upper > elev_lower:  # node_lower→node_upper is uphill

@@ -21,8 +21,8 @@ def _wire_offline(monkeypatch, tmp_path, graph):
         pipeline, "geocode_endpoint", lambda place, label, geocode_fn: (48.0, 8.0) if label == "Start" else (48.0, 8.2)
     )
     monkeypatch.setattr(pipeline, "build_corridor", lambda start_latlon, dest_latlon: box(7.9, 47.9, 8.1, 48.1))
-    monkeypatch.setattr(pipeline, "_assert_within_coverage", lambda corridor, graph_dir: None)
-    monkeypatch.setattr(pipeline, "load_corridor_graph", lambda corridor, progress: graph)
+    monkeypatch.setattr(pipeline, "_assert_within_coverage", lambda start_latlon, dest_latlon, graph_dir: None)
+    monkeypatch.setattr(pipeline, "load_corridor_graph", lambda corridor: graph)
     monkeypatch.setattr(pipeline, "snap_endpoints", lambda graph, start_latlon, dest_latlon: (1, 3))
     monkeypatch.setattr(
         pipeline, "route_output_paths", lambda origin, destination: (tmp_path / "r.gpx", tmp_path / "r.png")
@@ -82,7 +82,7 @@ def test_plan_route_rejects_outside_coverage(monkeypatch):
     )
     monkeypatch.setattr(pipeline, "build_corridor", lambda start_latlon, dest_latlon: box(7.9, 47.9, 8.1, 48.1))
 
-    def _outside(corridor, graph_dir):
+    def _outside(start_latlon, dest_latlon, graph_dir):
         raise ValueError("Route is outside the prebuilt graph coverage")
 
     monkeypatch.setattr(pipeline, "_assert_within_coverage", _outside)

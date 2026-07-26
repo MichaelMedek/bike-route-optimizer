@@ -53,7 +53,9 @@ def test_route_ribbon_segments_custom_float():
     """The float offset is honoured on every segment point."""
     track = _line_track()
     _color, points = route_ribbon_segments(track=track, float_above_m=250.0)[0]
-    assert all(z == pytest.approx(point.elevation_m + 250.0) for (*_, z), point in zip(points, track.points, strict=True))
+    assert all(
+        z == pytest.approx(point.elevation_m + 250.0) for (*_, z), point in zip(points, track.points, strict=True)
+    )
 
 
 def test_default_view_state_is_freudenstadt():

@@ -11,15 +11,28 @@ import streamlit as st
 
 from bike_router.constants import PARAM_SPECS, RoutingDefaults, RoutingParams, WebMapConfig
 from bike_router.geocoding import GeocodeError, geocode_endpoint, make_geocode_fn
+from bike_router.graph_store import download_graph_from_hf
 from bike_router.pipeline import plan_route
 from bike_router.webmap import default_view_state, route_ribbon_segments, route_view_state
 from bike_router.webmap_layers import build_deck
 
 
+def _download_graph_with_bar() -> None:
+    """One-time prebuilt-graph download with an st.progress bar (the ONLY bar)."""
+    bar = st.progress(0.0, text="Downloading map data…")
+
+    def _progress(done: int, total: int) -> None:
+        bar.progress(done / total, text=f"Downloading map data… {done}/{total}")
+
+    download_graph_from_hf(progress=_progress)
+    bar.empty()
+
+
 def main() -> None:
     st.set_page_config(page_title="Bike Route Optimizer", layout="centered")
+    _download_graph_with_bar()
     # Seed session_state once (nothing set/computed yet). start_latlon gates Compute.
-    for key, value in {
+    for key, initial in {
         "start_latlon": None,
         "end_latlon": None,
         "result": None,
@@ -27,7 +40,7 @@ def main() -> None:
         "view": default_view_state(),
         "camera_epoch": 0,
     }.items():
-        st.session_state.setdefault(key, value)
+        st.session_state.setdefault(key, initial)
     st.title("🚲 Bike Route Optimizer")
 
     # 1. Start | End — the only side-by-side row.

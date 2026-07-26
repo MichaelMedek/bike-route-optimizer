@@ -11,7 +11,7 @@ import networkx as nx
 import numpy as np
 from shapely.geometry import LineString
 
-from bike_router.constants import CostConfig
+from bike_router.track import cheapest_edge
 
 logger = logging.getLogger(__name__)
 
@@ -26,12 +26,10 @@ def route_to_linestring(graph: nx.MultiDiGraph, node_path: list[int]) -> LineStr
     assert len(node_path) >= 2, "route must have >= 2 nodes (distinct source/target)"
     coords: list[tuple[float, float]] = []
     for node_a, node_b in zip(node_path[:-1], node_path[1:], strict=True):
-        edges = graph.get_edge_data(node_a, node_b)
-        best_key = min(edges, key=lambda key: float(edges[key][CostConfig.EDGE_COST]))
-        data = edges[best_key]
+        data = cheapest_edge(edges=graph.get_edge_data(node_a, node_b))
         geometry = data.get("geometry")  # OSM geometry is genuinely optional
         if geometry is not None:
-            segment = list(geometry.coords)
+            segment = [(c[0], c[1]) for c in geometry.coords]  # drop any z → 2D lon/lat
         else:
             segment = [
                 (graph.nodes[node_a]["x"], graph.nodes[node_a]["y"]),
@@ -50,7 +48,7 @@ def select_waypoints(line: LineString, count: int = 10) -> list[tuple[float, flo
     triangle area until ``count`` remain (endpoints kept). Lines with <= count
     points are padded by interpolation.
     """
-    coords: list[tuple[float, float]] = [(lon, lat) for lon, lat in line.coords]  # (lon, lat)
+    coords: list[tuple[float, float]] = [(c[0], c[1]) for c in line.coords]  # (lon, lat); ignore any z
     assert count >= 2, "need at least origin + destination waypoints"
     if len(coords) <= count:
         coords = _interpolate_to_n(coords=coords, count=count)

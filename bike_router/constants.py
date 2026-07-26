@@ -40,17 +40,13 @@ class OutputConfig:
 
 
 class DEMConfig:
-    """Elevation-model file path and Hugging Face hosting.
+    """Elevation-model file path.
 
-    Mirrors the naming convention of the Alps dataset
-    (`MichaelMedek/alps_eurodem`) for the wider Central Europe region.
+    The DEM is a build-time input (elevation is baked into the prebuilt graph), so
+    only the offline builder reads it — there is no inference-time DEM download.
     """
 
     EURODEM_PATH = DATA_DIR / "region_dem.tif"
-
-    HF_REPO_ID = "MichaelMedek/central_europe_eurodem"
-    HF_FILENAME = "region_dem.tif"
-    HF_DOWNLOAD_URL = f"https://huggingface.co/datasets/{HF_REPO_ID}/resolve/main/{HF_FILENAME}"
 
 
 # Edge travel modes. `transfer` = the bike↔station link (walk to/from the platform).
@@ -326,7 +322,11 @@ class WebMapConfig:
     # in both the 3D ribbon and the debug PNG (transfer hops ride with the bike color).
     BIKE_COLOR = (255, 90, 0)  # orange
     RAIL_COLOR = (0, 120, 255)  # blue
-    MODE_COLORS = {Mode.BIKE: BIKE_COLOR, Mode.RAIL: RAIL_COLOR, Mode.TRANSFER: BIKE_COLOR}
+    MODE_COLORS: dict[str, tuple[int, int, int]] = {
+        Mode.BIKE: BIKE_COLOR,
+        Mode.RAIL: RAIL_COLOR,
+        Mode.TRANSFER: BIKE_COLOR,
+    }
     # Start/end endpoint markers — SAME colors the debug PNG uses (single visual
     # language across the PNG and the 3D map): start green, end red.
     START_COLOR = (0, 200, 83)  # #00c853
