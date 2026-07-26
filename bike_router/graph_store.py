@@ -219,7 +219,23 @@ def graph_from_tables(nodes_df: pd.DataFrame, edges_df: pd.DataFrame) -> nx.Mult
         )
         if int(u) in present and int(v) in present
     )
+    _assert_height_diffs_consistent(graph)
     return graph
+
+
+def _assert_height_diffs_consistent(graph: nx.MultiDiGraph) -> None:
+    """Hard-fail if any edge's stored height_diff disagrees with its node elevations.
+
+    height_diff_m is a convenience column derivable from the two nodes' elevation_m;
+    a mismatch beyond HEIGHT_DIFF_TOLERANCE_M means the artifact is corrupt or stale.
+    """
+    tol = GraphConfig.HEIGHT_DIFF_TOLERANCE_M
+    for u, v, data in graph.edges(data=True):
+        expected = graph.nodes[v]["elevation"] - graph.nodes[u]["elevation"]
+        assert abs(data["height_diff"] - expected) <= tol, (
+            f"height_diff mismatch on edge {u}->{v}: stored {data['height_diff']:.2f} m "
+            f"vs nodes {expected:.2f} m (tol {tol} m) — artifact corrupt or stale"
+        )
 
 
 def load_corridor_graph(corridor: Polygon, graph_dir: Path = GraphConfig.GRAPH_DIR) -> nx.MultiDiGraph:

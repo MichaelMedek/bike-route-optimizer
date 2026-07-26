@@ -1,8 +1,8 @@
 """Offline builder: a whole-region bike+rail graph from Geofabrik .osm.pbf extracts.
 
 Reads the cycling network + railway with pyrosm, normalizes to an OSMnx-shaped
-graph, simplifies/consolidates, bakes DEM elevation, then adds transfer + net-uphill
-rail hops. Returns node/edge tables; the routing sliders decide if A* uses rail.
+graph, simplifies/consolidates, bakes DEM elevation, then adds transfer + rail
+hops. Returns node/edge tables; the routing sliders decide if A* uses rail.
 """
 
 import logging
@@ -128,11 +128,11 @@ def _nearest_bike_node(graph: nx.MultiDiGraph, lat: float, lon: float) -> tuple[
 
 
 def _add_railway(graph: nx.MultiDiGraph, osm: OSM, dem: DEMService) -> int:
-    """Add station nodes, transfer edges, and net-uphill rail edges. Returns #stations.
+    """Add station nodes, transfer edges, and rail edges. Returns #stations.
 
     Stations become DEM-elevated nodes linked to their nearest bike node by
-    bidirectional transfers; consecutive stations on a line get a rail edge uphill
-    only, so the rider never boards to go downhill.
+    bidirectional transfers; consecutive stations on a line get a bidirectional
+    rail edge.
     """
     stations = _station_points(osm=osm)
     if not stations:
@@ -173,7 +173,7 @@ def _connect_stations_along_lines(
     station_nodes: list[tuple[int, str, float, float]],
     lines: list[list[tuple[float, float]]],
 ) -> None:
-    """Add net-uphill rail edges between consecutive stations on each rail line."""
+    """Add bidirectional rail edges between consecutive stations on each rail line."""
     for line in lines:
         # Stations sitting within the transfer radius of any line vertex belong to it.
         on_line = [
@@ -186,14 +186,10 @@ def _connect_stations_along_lines(
             length = haversine_distance_m(lat_a=a_lat, lon_a=a_lon, lat_b=b_lat, lon_b=b_lon)
             if length <= 0:
                 continue
-            elev_a = graph.nodes[a_id]["elevation"]
-            elev_b = graph.nodes[b_id]["elevation"]
-            # Net-uphill gate: create the directed edge only toward the higher station.
-            # Ride time is derived from length at route time (build_track), not stored.
-            if elev_b > elev_a:
-                graph.add_edge(a_id, b_id, length=length, mode=Mode.RAIL)
-            elif elev_a > elev_b:
-                graph.add_edge(b_id, a_id, length=length, mode=Mode.RAIL)
+            # Bidirectional rail hop. Ride time is derived from length at route time
+            # (build_track), not stored.
+            graph.add_edge(a_id, b_id, length=length, mode=Mode.RAIL)
+            graph.add_edge(b_id, a_id, length=length, mode=Mode.RAIL)
 
 
 def _min_vertex_dist(coords: list[tuple[float, float]], lat: float, lon: float) -> float:

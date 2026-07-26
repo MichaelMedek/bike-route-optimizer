@@ -1,8 +1,8 @@
-"""Builder tests — pyrosm→graph shim, rail/transfer wiring, net-uphill gate.
+"""Builder tests — pyrosm→graph shim, rail/station wiring.
 
 Uses pyrosm's bundled tiny test.osm.pbf (no network) for the graph shim, and
-synthetic inputs for the rail/station logic so the net-uphill gate and boarding
-waits are checked deterministically.
+synthetic inputs for the rail/station logic so the bidirectional rail edges and
+boarding waits are checked deterministically.
 """
 
 from pathlib import Path
@@ -77,17 +77,18 @@ def test_tag_bike_edges_sets_defaults():
     assert data["mode"] == Mode.BIKE
 
 
-def test_net_uphill_gate_only_creates_upward_rail_edge():
-    # Two stations on one line; B is higher than A → only A→B rail edge exists.
+def test_rail_edges_are_bidirectional():
+    # Two stations on one line get a rail edge in BOTH directions.
     graph = nx.MultiDiGraph(crs="EPSG:4326")
     graph.add_node(-1, x=8.00, y=48.0, elevation=200.0, is_station=True, station_name="A")
     graph.add_node(-2, x=8.05, y=48.0, elevation=500.0, is_station=True, station_name="B")
     line = [(48.0, 8.00), (48.0, 8.025), (48.0, 8.05)]  # (lat, lon) vertices near both
     station_nodes = [(-1, "A", 48.0, 8.00), (-2, "B", 48.0, 8.05)]
     _connect_stations_along_lines(graph=graph, station_nodes=station_nodes, lines=[line])
-    rail = [(u, v) for u, v, d in graph.edges(data=True) if d["mode"] == Mode.RAIL]
-    assert rail == [(-1, -2)]  # uphill only; no downhill -2→-1
+    rail = {(u, v) for u, v, d in graph.edges(data=True) if d["mode"] == Mode.RAIL}
+    assert rail == {(-1, -2), (-2, -1)}  # both directions
     assert graph.get_edge_data(-1, -2)[0]["length"] > 0  # real along-track length stored
+    assert graph.get_edge_data(-2, -1)[0]["length"] > 0
 
 
 def test_rail_edge_stores_length_not_time():
@@ -131,8 +132,8 @@ def test_rail_lines_flattens_multilinestring():
     assert lines[0][0] == (48.0, 8.0)  # (lat, lon) order
 
 
-def test_add_railway_wires_transfers_and_uphill_rail():
-    # A bike graph with one node; two stations near it, B higher than A.
+def test_add_railway_wires_transfers_and_bidirectional_rail():
+    # A bike graph with one node; two stations near it on one line.
     graph = nx.MultiDiGraph(crs="EPSG:4326")
     graph.add_node(100, x=8.005, y=48.0, elevation=210.0)  # bike node between the stations
     stations = gpd.GeoDataFrame(
@@ -147,11 +148,11 @@ def test_add_railway_wires_transfers_and_uphill_rail():
     assert n == 2  # two stations added
     modes = [d["mode"] for _u, _v, d in graph.edges(data=True)]
     assert Mode.TRANSFER in modes and Mode.RAIL in modes
-    # exactly one rail edge, in the uphill (east/higher) direction
-    rail = [(u, v) for u, v, d in graph.edges(data=True) if d["mode"] == Mode.RAIL]
-    assert len(rail) == 1
-    u, v = rail[0]
-    assert graph.nodes[v]["elevation"] > graph.nodes[u]["elevation"]
+    # rail runs both directions between the two stations
+    rail = {(u, v) for u, v, d in graph.edges(data=True) if d["mode"] == Mode.RAIL}
+    assert len(rail) == 2
+    (u, v) = next(iter(rail))
+    assert (v, u) in rail  # every rail edge has its reverse
     # transfer edges link the bike node to a station both ways (boarding wait is
     # applied at route time from is_station, not stored on the edge).
     transfer_targets = {(u, v) for u, v, d in graph.edges(data=True) if d["mode"] == Mode.TRANSFER}

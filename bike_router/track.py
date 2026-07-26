@@ -10,7 +10,6 @@ from dataclasses import dataclass
 from typing import Any
 
 import networkx as nx
-import numpy as np
 
 from bike_router.constants import CostConfig, GpxConfig, Mode, RailConfig, SpeedConfig
 from bike_router.cost import surface_tier
@@ -159,15 +158,13 @@ def densify_track(graph: nx.MultiDiGraph, node_path: list[int], track: Track) ->
             if i < len(seg_lengths):
                 cum += seg_lengths[i]
 
-    elevs = np.array([p.elevation_m for p in out], dtype=np.float64)
-    ascent = float(np.clip(np.diff(elevs), 0, None).sum())
-    descent = float(-np.clip(np.diff(elevs), None, 0).sum())
+    # Ascent/descent come from build_track's node-to-node elevations.
     return Track(
         points=out,
         distance_km=track.distance_km,
         duration_min=track.duration_min,
-        ascent_m=ascent,
-        descent_m=descent,
+        ascent_m=track.ascent_m,
+        descent_m=track.descent_m,
     )
 
 

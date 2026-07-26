@@ -61,8 +61,8 @@ class Mode(StrEnum):
 class RailConfig:
     """Railway integration: how a train leg is built and timed.
 
-    Rail edges are always present; sliders decide if A* uses them. Directed only
-    net-uphill so downhill stays on the bike. Boarding wait hits TIME only, not cost.
+    Rail edges are bidirectional and always present; sliders decide if A* uses
+    them. Boarding wait hits TIME only, not cost.
     """
 
     RAIL_SPEED_KMH = 80.0  # average train speed for the ride-time estimate
@@ -98,6 +98,9 @@ class GraphConfig:
     TILE_DEG = 0.5
     # Lat/lon decimal places kept when serializing geometry (6 dp ≈ 0.1 m).
     COORD_PRECISION = 6
+    # Reader tolerance: stored height_diff_m must match to_elev − from_elev within this
+    # (metres), else the artifact is corrupt/stale and the load hard-fails.
+    HEIGHT_DIFF_TOLERANCE_M = 0.5
 
 
 class GeoConfig:

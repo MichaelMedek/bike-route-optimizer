@@ -80,6 +80,35 @@ def test_graph_from_tables_drops_edges_with_missing_endpoint():
     assert graph.number_of_edges() == 0  # dangling edge dropped
 
 
+def test_graph_from_tables_rejects_inconsistent_height_diff():
+    # height_diff_m must match to_elev − from_elev; a tampered value fails loud.
+    nodes_df = pd.DataFrame(
+        [
+            {"osmid": 1, "lat": 48.0, "lon": 8.0, "elevation_m": 100.0, "station_name": None},
+            {"osmid": 2, "lat": 48.01, "lon": 8.0, "elevation_m": 130.0, "station_name": None},
+        ],
+        columns=graph_store._NODE_COLS,
+    )
+    edges_df = pd.DataFrame(
+        [
+            {
+                "from_node": 1,
+                "to_node": 2,
+                "key": 0,
+                "length_m": 1200.0,
+                "height_diff_m": 5.0,  # WRONG: real diff is 130 − 100 = 30 m
+                "surface": "asphalt",
+                "highway": "residential",
+                "mode": Mode.BIKE,
+                "geometry_wkt": None,
+            }
+        ],
+        columns=graph_store._EDGE_COLS,
+    )
+    with pytest.raises(AssertionError, match="height_diff mismatch"):
+        graph_from_tables(nodes_df=nodes_df, edges_df=edges_df)
+
+
 def test_covering_tiles_grows_by_margin():
     tiles = _covering_tiles(bounds=(8.0, 48.0, 8.2, 48.2), tile_deg=0.5, margin=1)
     # bbox falls in a single 0.5° tile; margin 1 → 3×3 = 9 tiles
