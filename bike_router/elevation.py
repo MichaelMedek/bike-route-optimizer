@@ -73,8 +73,8 @@ class DEMService:
             dem_path = self._dem_path
             if not Path(dem_path).exists():
                 raise FileNotFoundError(
-                    f"DEM file not found at {dem_path}. Crop it with "
-                    "scripts/crop_dem_to_region.py or download from Hugging Face."
+                    f"DEM file not found at {dem_path}. Create it with scripts/crop_dem_to_dach.py "
+                    "(crops the full EuroDEM to the DACH region)."
                 )
             logger.info("Loading DEM from %s ...", dem_path)
             start = time.time()

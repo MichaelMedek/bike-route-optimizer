@@ -1,11 +1,8 @@
 """Central configuration for the bicycle route optimizer."""
 
-import os
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
-
-import platformdirs
 
 from bike_router.errors import ParamOutOfRangeError
 
@@ -13,20 +10,9 @@ from bike_router.errors import ParamOutOfRangeError
 PACKAGE_DIR = Path(__file__).parent
 PROJECT_ROOT = PACKAGE_DIR.parent
 
-
-def _user_data_root() -> Path:
-    """Writable per-user OS app-data dir for the DEM download.
-
-    `BIKEROUTER_DATA_ROOT` overrides it (CI / power users) — an external
-    condition, not an internal invariant.
-    """
-    override = os.environ.get("BIKEROUTER_DATA_ROOT")
-    if override:
-        return Path(override)
-    return Path(platformdirs.user_data_dir("BikeRouteOptimizer", appauthor=False))
-
-
-DATA_DIR = _user_data_root() / "data"
+# The one build-data dir: the repo's gitignored data/ folder. The DEM and the prebuilt
+# graph both live here — written by the offline scripts, read from EXACTLY here.
+DATA_DIR = PROJECT_ROOT / "data"
 
 
 class OutputConfig:
@@ -39,10 +25,10 @@ class OutputConfig:
 
 
 class DEMConfig:
-    """Elevation-model file path.
+    """Elevation-model file path — the ONE fixed location, in the gitignored data/ dir.
 
-    The DEM is a build-time input (elevation is baked into the prebuilt graph), so
-    only the offline builder reads it — there is no inference-time DEM download.
+    The DEM is a build-time input (elevation is baked into the prebuilt graph): the
+    crop script writes here and the builder reads from here, nowhere else.
     """
 
     EURODEM_PATH = DATA_DIR / "region_dem.tif"
@@ -92,7 +78,7 @@ class GraphConfig:
 
     # Pre-saved (bundled) in the repo — small enough to ship, so no HF download at
     # inference. The offline builder writes here; the app reads it directly.
-    GRAPH_DIR = PROJECT_ROOT / "data" / "dach_graph"
+    GRAPH_DIR = DATA_DIR / "dach_graph"
     NODES_SUBDIR = "nodes"
     EDGES_SUBDIR = "edges"
     META_FILENAME = "meta.json"
@@ -114,6 +100,13 @@ class GraphConfig:
     # Each region's synthetic station ids (-1, -2, …) are shifted into a private block by
     # (region_index * this) so regions never collide, regardless of build order.
     STATION_ID_BLOCK = 100_000_000
+
+    # The DACH region actually built (WGS84 W,S,E,N degrees) — the single source both the
+    # DEM crop and the build's coverage preflight use.
+    DACH_BBOX_DEG = (5.9, 45.8, 17.2, 55.1)
+    # The DEM is cropped this much wider than DACH_BBOX_DEG so nodes near the border always
+    # have elevation coverage (consolidation can nudge a node slightly past the region edge).
+    DEM_CROP_MARGIN_DEG = 0.4
 
 
 class GeoConfig:

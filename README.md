@@ -78,9 +78,12 @@ Every node is **exactly one** kind — a cycling node or a rail-station node, ne
 
 ## Preprocessing, publishing, and auto-download
 
-The routing graph is built once offline, not per request. **One** script builds it end-to-end from zero data: it downloads the raw OpenStreetMap extracts (`.osm.pbf`, one per region, on demand), then builds each — dropping unrideable surfaces, merging near-identical junctions within about 25 m, baking in elevation sampled from a terrain model so no elevation data is ever needed at query time, adding the train links — and finally merges and writes the result as compact map-data files split into small geographic tiles.
+The routing graph is built once offline, not per request. The build bakes in elevation, so it needs a DEM covering DACH first: download the full Europe-wide EuroDEM once (from [mapsforeurope.org](https://www.mapsforeurope.org/datasets/euro-dem)) and crop it to DACH. Then **one** script builds the graph end-to-end from zero data: it downloads the raw OpenStreetMap extracts (`.osm.pbf`, one per region, on demand), then builds each — dropping unrideable surfaces, merging near-identical junctions within about 25 m, baking in the DEM elevation so no elevation data is ever needed at query time, adding the train links — and finally merges and writes the result as compact map-data files split into small geographic tiles.
 
 ```bash
+# one-time: crop the full EuroDEM to DACH (writes data/region_dem.tif, the build's fixed input)
+python scripts/crop_dem_to_dach.py --input ~/Downloads/euro-dem-tif/data/eurodem/eurodem.tif
+
 # quick check on one small region, clipped to a test bbox (Schwarzwald, ~5 min)
 python scripts/build_dach_graph.py --only karlsruhe-regbez --bbox 8.30 48.40 8.80 48.95 -v
 
@@ -93,4 +96,4 @@ python scripts/upload_graph_to_huggingface.py
 
 The app looks for the graph locally first; if it is missing it downloads it once from Hugging Face and caches it, so every later run is instant and offline.
 
-The full build writes the artifact to `data/dach_graph/` (`nodes/`, `edges/`, `meta.json`) and checkpoints each region to `data/dach_build/checkpoints/`; if it crashes or is killed, just rerun the same command and it skips finished regions and resumes. All of `data/` is gitignored — reproducible, not source. `upload_graph_to_huggingface.py` pushes `data/dach_graph/` to the dataset repo named in `GraphConfig.HF_REPO_ID`.
+Everything build-related lives in the repo's gitignored `data/` folder: the DEM at `data/region_dem.tif`, the final artifact at `data/dach_graph/` (`nodes/`, `edges/`, `meta.json`), and per-region checkpoints at `data/dach_build/checkpoints/`. If the build crashes or is killed, just rerun the same command and it skips finished regions and resumes. All of `data/` is gitignored — reproducible, not source. `upload_graph_to_huggingface.py` pushes `data/dach_graph/` to the dataset repo named in `GraphConfig.HF_REPO_ID`.

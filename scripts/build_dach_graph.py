@@ -149,11 +149,30 @@ def _build_one_region(
     return False
 
 
+def _assert_dem_covers(*, dem: DEMService, area: tuple[float, float, float, float]) -> None:
+    """Fail fast unless the DEM's bounds fully contain the area we're about to build.
+
+    ``area`` is (west, south, east, north) in WGS84 degrees. A too-small DEM would bake
+    NaN (flat) elevations for out-of-coverage nodes, silently ruining terrain routing —
+    so raise BEFORE any pbf download. Loading dem.bounds also surfaces a missing DEM file.
+
+    Args:
+        dem: The elevation service (its bounds are the DEM's real coverage).
+        area: The (W, S, E, N) region to be processed this run.
+    """
+    dw, ds, de, dn = dem.bounds
+    aw, as_, ae, an = area
+    if not (dw <= aw and ds <= as_ and de >= ae and dn >= an):
+        raise ValueError(
+            f"DEM coverage {dw:.2f},{ds:.2f},{de:.2f},{dn:.2f} does not contain the build area "
+            f"{aw:.2f},{as_:.2f},{ae:.2f},{an:.2f}. Re-crop with scripts/crop_dem_to_dach.py."
+        )
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Robust, resumable full-DACH bike+rail graph build.")
     parser.add_argument("--out", type=Path, default=GraphConfig.GRAPH_DIR, help="Final artifact dir.")
     parser.add_argument("--work", type=Path, default=GraphConfig.GRAPH_DIR.parent / "dach_build", help="Work dir.")
-    parser.add_argument("--dem", type=Path, default=DEMConfig.EURODEM_PATH)
     parser.add_argument("--tolerance", type=float, default=GraphConfig.CONSOLIDATION_TOLERANCE_M)
     parser.add_argument("--only", nargs="+", help="Build only these region keys (test a subset).")
     parser.add_argument("--retries", type=int, default=3)
@@ -178,7 +197,12 @@ def main(argv: list[str] | None = None) -> int:
     pbf_dir = args.work / "pbf"
     ckpt_dir = args.work / "checkpoints"
     bbox = tuple(args.bbox) if args.bbox else None
-    dem = DEMService(dem_path=args.dem)
+    # Fail fast: load the DEM up front (the build bakes elevation from it) and confirm it
+    # covers the area we're about to process — so a missing/too-small DEM raises BEFORE any
+    # pbf is downloaded, not hours in. Crop the DEM with crop_dem_to_dach.py.
+    dem = DEMService(dem_path=DEMConfig.EURODEM_PATH)
+    _assert_dem_covers(dem=dem, area=bbox or GraphConfig.DACH_BBOX_DEG)
+    logger.info("DEM ready: coverage W,S,E,N = %.2f, %.2f, %.2f, %.2f", *dem.bounds)
 
     started = time.time()
     # Regions already checkpointed need neither download nor build; keep them for the merge.
