@@ -228,7 +228,7 @@ PARAM_SPECS = (
     ),
     RoutingParamSpec(
         field="extra_km_per_boarding",
-        label="Train Boarding penalty",
+        label="Train boarding penalty",
         help="Extra km you'd bike rather than board a train once (the wait/hassle; high = avoid boarding).",
         default=10.0,
     ),

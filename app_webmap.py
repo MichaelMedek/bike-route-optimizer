@@ -56,7 +56,7 @@ def main() -> None:
     origin = col_start.text_input("Start", placeholder="Start location")
     destination = col_end.text_input("End", placeholder="End location")
 
-    # 2. Set start & end: geocode both, mark on the map (green start / red end), and
+    # 2. Set start & end: geocode both, mark on the map (blue start / cyan end), and
     # recenter. Recentering lives ONLY here (bumps camera_epoch), never on Compute.
     # Start is geocoded first, so a bad Start raises before the End lookup.
     if st.button("📍 Set start & end", use_container_width=True):
@@ -95,7 +95,8 @@ def main() -> None:
 
     # 4. Compute the route — draws the ribbon; does NOT recenter (step 2 owns the camera).
     needs_endpoints = st.session_state.start_latlon is None
-    if st.button("Compute route", use_container_width=True, disabled=needs_endpoints):
+    compute_help = "Set a start and end first" if needs_endpoints else "Plan the route for the current sliders"
+    if st.button("🧭 Compute route", use_container_width=True, disabled=needs_endpoints, help=compute_help):
         try:
             params = RoutingParams(**slider_values)
             with st.spinner("Planning route…"):
