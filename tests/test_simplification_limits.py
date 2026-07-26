@@ -5,10 +5,13 @@ from shapely.geometry import LineString
 
 from bike_router.constants import GmapsConfig, Mode
 from bike_router.simplify import (
+    BikeLeg,
     RailLeg,
     _interpolate_to_n,
     _triangle_area,
     _visvalingam,
+    bike_leg_endpoints,
+    format_bike_legs,
     format_rail_legs,
     route_to_linestring,
     select_waypoints,
@@ -186,4 +189,40 @@ def test_format_rail_legs_numbers_lines_and_handles_unnamed():
     assert format_rail_legs(rail_legs=legs) == [
         "Train 1: Freudenstadt → Pforzheim",
         "Train 2: (unnamed stop) → Karlsruhe",
+    ]
+
+
+# --- bike_leg_endpoints / format_bike_legs -----------------------------------
+
+
+def test_bike_leg_endpoints_pure_bike_is_origin_to_destination():
+    # No train → one leg spanning the whole trip: origin → destination.
+    ends = bike_leg_endpoints(rail_legs=[], origin="Horb", destination="Freudenstadt", n_legs=1)
+    assert ends == [("Horb", "Freudenstadt")]
+
+
+def test_bike_leg_endpoints_one_train_uses_station_names_at_inner_ends():
+    # bike → train → bike: leg 0 = origin → boarding station, leg 1 = alighting station → dest.
+    rail = [RailLeg(board="Horb-Heiligenfeld", alight="Freudenstadt Stadt")]
+    ends = bike_leg_endpoints(rail_legs=rail, origin="Horb am Neckar", destination="Freudenstadt", n_legs=2)
+    assert ends == [
+        ("Horb am Neckar", "Horb-Heiligenfeld"),
+        ("Freudenstadt Stadt", "Freudenstadt"),
+    ]
+
+
+def test_bike_leg_endpoints_unnamed_station_falls_back():
+    rail = [RailLeg(board=None, alight=None)]
+    ends = bike_leg_endpoints(rail_legs=rail, origin="A", destination="B", n_legs=2)
+    assert ends == [("A", "(unnamed stop)"), ("(unnamed stop)", "B")]
+
+
+def test_format_bike_legs_labels_each_route():
+    legs = [
+        BikeLeg(url="u0", from_place="Horb am Neckar", to_place="Horb-Heiligenfeld"),
+        BikeLeg(url="u1", from_place="Freudenstadt Stadt", to_place="Freudenstadt"),
+    ]
+    assert format_bike_legs(bike_legs=legs) == [
+        "Bike Route 1: Horb am Neckar → Horb-Heiligenfeld",
+        "Bike Route 2: Freudenstadt Stadt → Freudenstadt",
     ]

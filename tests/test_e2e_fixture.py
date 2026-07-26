@@ -55,8 +55,8 @@ def test_e2e_real_route_produced_from_fixture(tmp_path: Path, monkeypatch):
     # Real GPX + PNG written to the temp folder.
     assert result.gpx_path.exists() and result.gpx_path.stat().st_size > 0
     assert result.png_path.exists() and result.png_path.stat().st_size > 0
-    assert len(result.gmaps_urls) >= 1  # at least one pedalled leg
-    assert all(u.startswith("https://www.google.com/maps/dir/?api=1") for u in result.gmaps_urls)
+    assert len(result.bike_legs) >= 1  # at least one pedalled leg
+    assert all(leg.url.startswith("https://www.google.com/maps/dir/?api=1") for leg in result.bike_legs)
 
     # Plausible Schwarzwald route: sane distance, positive time, real elevation change.
     assert 8.0 < track.total.distance_km < 60.0
@@ -96,7 +96,7 @@ def test_e2e_baiersbronn_to_freudenstadt_takes_one_train_and_two_bike_legs(tmp_p
 
     Baiersbronn and Freudenstadt sit on one rail line ~7 km apart. Cheap boarding/rail sliders
     make the train worth it: the route is bike → board → ride → alight → bike, i.e. one
-    contiguous rail ride bracketed by two pedalled legs — so gmaps_urls has exactly 2 entries.
+    contiguous rail ride bracketed by two pedalled legs — so bike_legs has exactly 2 entries.
     """
     result = _plan(
         monkeypatch, tmp_path, _BAIERSBRONN, _FREUDENSTADT, extra_km_per_boarding=0.2, extra_km_per_rail_km=0.05
@@ -105,8 +105,14 @@ def test_e2e_baiersbronn_to_freudenstadt_takes_one_train_and_two_bike_legs(tmp_p
     assert _rail_ride_count(result.track) == 1
     assert result.composition.by_mode_km[Mode.RAIL] > 0
     # Two pedalled legs (one before boarding, one after alighting) → two bike-only Maps URLs.
-    assert len(result.gmaps_urls) == 2
-    assert all(u.startswith("https://www.google.com/maps/dir/?api=1") for u in result.gmaps_urls)
+    assert len(result.bike_legs) == 2
+    assert all(leg.url.startswith("https://www.google.com/maps/dir/?api=1") for leg in result.bike_legs)
+    # Leg labels use the real endpoints: leg 1 starts at the origin, leg 2 ends at the destination,
+    # and the inner ends are the train's boarding / alighting stations (from the one rail leg).
+    assert result.bike_legs[0].from_place == "Start"  # _plan stubs origin="Start"
+    assert result.bike_legs[1].to_place == "End"  # destination="End"
+    assert result.bike_legs[0].to_place == (result.rail_legs[0].board or "(unnamed stop)")
+    assert result.bike_legs[1].from_place == (result.rail_legs[0].alight or "(unnamed stop)")
     # Station-access hops appear (board + alight), but they are short (≤ radius each).
     assert result.composition.by_mode_km[Mode.STATION] > 0
 
@@ -126,7 +132,7 @@ def test_e2e_default_sliders_take_train_uphill_but_bike_downhill(tmp_path: Path,
     assert _rail_ride_count(downhill.track) == 0  # descent is easy → stay on the bike
     assert Mode.RAIL not in downhill.composition.by_mode_km
     assert Mode.STATION not in downhill.composition.by_mode_km  # no station touched
-    assert len(downhill.gmaps_urls) == 1
+    assert len(downhill.bike_legs) == 1
 
 
 def test_e2e_out_of_coverage_raises(tmp_path: Path, monkeypatch):

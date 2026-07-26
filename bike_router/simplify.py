@@ -17,6 +17,34 @@ from bike_router.track import cheapest_edge, iter_route_edges
 
 logger = logging.getLogger(__name__)
 
+_UNNAMED_STOP = "(unnamed stop)"  # placeholder when OSM gives a rail node no station_name
+
+
+def _named_stop(name: str | None) -> str:
+    """A station name, or the readable placeholder for an unnamed OSM stop."""
+    return name or _UNNAMED_STOP
+
+
+def _split_mode_runs(graph: nx.MultiDiGraph, node_path: list[int], mode: str) -> list[list[int]]:
+    """Maximal runs of consecutive nodes whose connecting edges are ALL ``mode``.
+
+    Each run is the node list ``[n0, n1, …]`` (>= 2 nodes) for one contiguous stretch;
+    edges of other modes break the route. Shared by split_bike_legs and split_rail_legs.
+    """
+    runs: list[list[int]] = []
+    current: list[int] = []
+    for node_a, node_b, data in iter_route_edges(graph=graph, node_path=node_path):
+        if data["mode"] == mode:
+            if not current:
+                current = [node_a]
+            current.append(node_b)
+        elif current:
+            runs.append(current)
+            current = []
+    if current:
+        runs.append(current)
+    return runs
+
 
 def split_bike_legs(graph: nx.MultiDiGraph, node_path: list[int]) -> list[list[int]]:
     """Split a route into maximal runs of consecutive BIKE edges (rail/station cut).
@@ -25,19 +53,7 @@ def split_bike_legs(graph: nx.MultiDiGraph, node_path: list[int]) -> list[list[i
     and station-access hops break the route so a pure-bike trip yields one leg and a trip
     with one train ride yields two. Sub-paths have >= 2 nodes (one usable linestring).
     """
-    legs: list[list[int]] = []
-    current: list[int] = []
-    for node_a, node_b, data in iter_route_edges(graph=graph, node_path=node_path):
-        if data["mode"] == Mode.BIKE:
-            if not current:
-                current = [node_a]
-            current.append(node_b)
-        elif current:
-            legs.append(current)
-            current = []
-    if current:
-        legs.append(current)
-    return legs
+    return _split_mode_runs(graph=graph, node_path=node_path, mode=Mode.BIKE)
 
 
 @dataclass(frozen=True)
@@ -60,40 +76,60 @@ def split_rail_legs(graph: nx.MultiDiGraph, node_path: list[int]) -> list[RailLe
     separate rides (a pedalled leg between them) yield two RailLegs — this is why a
     route with two trains shows three pedalled Google Maps legs.
     """
-    legs: list[RailLeg] = []
-    rail_nodes: list[int] = []  # rail nodes of the current train ride, in order
-    for node_a, node_b, data in iter_route_edges(graph=graph, node_path=node_path):
-        if data["mode"] == Mode.RAIL:
-            if not rail_nodes:
-                rail_nodes = [node_a]
-            rail_nodes.append(node_b)
-        elif rail_nodes:
-            legs.append(_rail_leg(graph=graph, rail_nodes=rail_nodes))
-            rail_nodes = []
-    if rail_nodes:
-        legs.append(_rail_leg(graph=graph, rail_nodes=rail_nodes))
-    return legs
-
-
-def _rail_leg(graph: nx.MultiDiGraph, rail_nodes: list[int]) -> RailLeg:
-    """RailLeg from a run of rail nodes: board at the first, alight at the last."""
-    assert len(rail_nodes) >= 2, "a train ride spans >= 2 rail nodes"
-    return RailLeg(
-        board=graph.nodes[rail_nodes[0]]["station_name"],
-        alight=graph.nodes[rail_nodes[-1]]["station_name"],
-    )
+    return [
+        RailLeg(board=graph.nodes[run[0]]["station_name"], alight=graph.nodes[run[-1]]["station_name"])
+        for run in _split_mode_runs(graph=graph, node_path=node_path, mode=Mode.RAIL)
+    ]
 
 
 def format_rail_legs(rail_legs: list[RailLeg]) -> list[str]:
     """One "Train N: board → alight" line per ride (shared by CLI + web output).
 
-    An unnamed stop (no OSM station name) renders as "(unnamed stop)" so the line is
-    still readable rather than crashing on a None the external data legitimately holds.
+    An unnamed stop (no OSM station name) renders via the shared placeholder so the line
+    is still readable rather than crashing on a None the external data legitimately holds.
     """
     return [
-        f"Train {index}: {leg.board or '(unnamed stop)'} → {leg.alight or '(unnamed stop)'}"
+        f"Train {index}: {_named_stop(leg.board)} → {_named_stop(leg.alight)}"
         for index, leg in enumerate(rail_legs, start=1)
     ]
+
+
+@dataclass(frozen=True)
+class BikeLeg:
+    """One pedalled leg's Google Maps URL plus the place names of its two ends.
+
+    ``from_place``/``to_place`` are the human endpoints of THIS pedalled leg: the trip
+    origin/destination at the outer ends, and the boarding/alighting station names where a
+    train ride abuts the leg — so the link can be labelled "Route N: from → to".
+    """
+
+    url: str
+    from_place: str
+    to_place: str
+
+
+def bike_leg_endpoints(
+    *, rail_legs: list[RailLeg], origin: str, destination: str, n_legs: int
+) -> list[tuple[str, str]]:
+    """(from_place, to_place) for each of the ``n_legs`` pedalled legs, in order.
+
+    Leg 0 starts at ``origin`` and the last leg ends at ``destination``; an interior
+    boundary is a train ride, so leg i ends where train i is boarded and leg i+1 starts
+    where that train is alighted. Unnamed stops fall back to a readable placeholder.
+    """
+    assert n_legs >= 1, "a route with a Maps link has >= 1 pedalled leg"
+    assert len(rail_legs) == n_legs - 1, "N pedalled legs are separated by N-1 train rides"
+    ends: list[tuple[str, str]] = []
+    for index in range(n_legs):
+        from_place = origin if index == 0 else _named_stop(rail_legs[index - 1].alight)
+        to_place = destination if index == n_legs - 1 else _named_stop(rail_legs[index].board)
+        ends.append((from_place, to_place))
+    return ends
+
+
+def format_bike_legs(bike_legs: list[BikeLeg]) -> list[str]:
+    """One "Bike Route N: from → to" label per pedalled leg (shared by CLI + web)."""
+    return [f"Bike Route {index}: {leg.from_place} → {leg.to_place}" for index, leg in enumerate(bike_legs, start=1)]
 
 
 def route_to_linestring(graph: nx.MultiDiGraph, node_path: list[int]) -> LineString:

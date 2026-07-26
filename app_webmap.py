@@ -17,7 +17,7 @@ from bike_router.errors import BikeRouterError
 from bike_router.geocoding import photon_autocomplete
 from bike_router.graph_store import download_graph_from_hf, load_meta, load_rail_baseline
 from bike_router.pipeline import plan_route, resolve_endpoints
-from bike_router.simplify import format_rail_legs
+from bike_router.simplify import format_bike_legs, format_rail_legs
 from bike_router.webmap import (
     MODE_DONUT_COLORS,
     ROAD_DONUT_COLORS,
@@ -85,14 +85,13 @@ def _render_route_output(result: object) -> None:
         for line in format_rail_legs(rail_legs=result.rail_legs):
             st.markdown(f"- {line}")
 
-    # One bicycling link per pedalled leg; a train ride splits the route into more.
-    if len(result.gmaps_urls) == 1:
-        st.caption("🗺️ Open in Google Maps (copy the link):")
-        st.code(result.gmaps_urls[0], language=None)
-    else:
-        st.caption("🗺️ Open in Google Maps — one bike leg per train ride (copy each link):")
-        for index, url in enumerate(result.gmaps_urls, start=1):
-            st.code(f"leg {index}: {url}", language=None)
+    # One bicycling link per pedalled leg; a train ride splits the route into more. The
+    # label ("Bike Route N: from → to") is a caption; the code block holds ONLY the URL so
+    # its copy-to-clipboard icon copies just the link.
+    st.caption("🗺️ Open in Google Maps (one bike leg per train ride):")
+    for label, leg in zip(format_bike_legs(bike_legs=result.bike_legs), result.bike_legs, strict=True):
+        st.caption(f"**{label}**")
+        st.code(leg.url, language=None)
 
     downloads = ((result.gpx_path, "application/gpx+xml"), (result.png_path, "image/png"))
     for col, (path, mime) in zip(st.columns(len(downloads)), downloads, strict=True):

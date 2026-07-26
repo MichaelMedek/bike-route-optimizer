@@ -39,8 +39,10 @@ def test_plan_route_end_to_end_offline(tmp_path: Path, monkeypatch):
     _wire_offline(monkeypatch, tmp_path, make_line_graph())
     result = pipeline.plan_route(origin="Start", destination="End", params=DEFAULT_PARAMS)
 
-    assert result.gmaps_urls == [result.gmaps_urls[0]]  # pure-bike line graph → exactly one leg
-    assert result.gmaps_urls[0].startswith("https://www.google.com/maps/dir/?api=1")
+    assert len(result.bike_legs) == 1  # pure-bike line graph → exactly one pedalled leg
+    leg = result.bike_legs[0]
+    assert leg.url.startswith("https://www.google.com/maps/dir/?api=1")
+    assert (leg.from_place, leg.to_place) == ("Start", "End")  # outer ends = origin/destination
     assert result.rail_legs == []  # pure-bike line graph → no train ride
     assert result.gpx_path.exists() and result.gpx_path.stat().st_size > 0
     assert result.png_path.exists() and result.png_path.stat().st_size > 0
