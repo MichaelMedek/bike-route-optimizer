@@ -117,16 +117,10 @@ def plot_elevation_heatmap(
         marker="*",
         label=f"end: {destination}",
     )
-    # Legend BELOW the plot (anchored under the axes) so it never overlays the route.
-    axes.legend(loc="upper center", bbox_to_anchor=(0.5, -0.05), ncol=2, fontsize=7, framealpha=0.85)
-
-    mappable = cm.ScalarMappable(norm=norm, cmap=cmap)
-    mappable.set_array([])
-    colorbar = figure.colorbar(mappable, ax=axes, fraction=0.03, pad=0.02)
-    colorbar.set_label("Elevation (m)")
-    axes.set_title(f"Bike route {origin} → {destination} — nodes colored by elevation")
-
-    overlay = (
+    # ONE combined legend below the plot: the route/marker swatches, with the full
+    # preferences + route stats + composition as the legend title (same single box,
+    # never overlaying the map). bbox_inches="tight" expands the canvas to fit it.
+    stats = (
         "Preferences (extra km):\n"
         f"  +{params.extra_km_per_uphill_100m:g} / 100 m uphill\n"
         f"  +{params.extra_km_per_unpaved_km:g} / km unpaved\n"
@@ -138,20 +132,23 @@ def plot_elevation_heatmap(
         f"  +{track.ascent_m:.0f} m / -{track.descent_m:.0f} m"
     )
     if composition is not None:
-        overlay += "\n" + format_composition(comp=composition)
-    axes.text(
-        0.02,
-        0.02,
-        overlay,
-        transform=axes.transAxes,
-        va="bottom",
-        ha="left",
+        stats += "\n" + format_composition(comp=composition)
+    legend = axes.legend(
+        loc="upper center",
+        bbox_to_anchor=(0.5, -0.05),
+        ncol=2,
         fontsize=7,
-        family="monospace",
-        color="black",
-        bbox={"boxstyle": "round", "facecolor": "white", "alpha": 0.75, "edgecolor": "#888888"},
-        zorder=6,
+        framealpha=0.9,
+        title=stats,
+        title_fontproperties={"family": "monospace", "size": 7},
     )
+    legend.get_title().set_horizontalalignment("left")
+
+    mappable = cm.ScalarMappable(norm=norm, cmap=cmap)
+    mappable.set_array([])
+    colorbar = figure.colorbar(mappable, ax=axes, fraction=0.03, pad=0.02)
+    colorbar.set_label("Elevation (m)")
+    axes.set_title(f"Bike route {origin} → {destination} — nodes colored by elevation")
 
     figure.savefig(out_path, dpi=dpi, bbox_inches="tight")
     plt.close(figure)

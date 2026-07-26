@@ -80,6 +80,7 @@ module = [
     "pyrosm.*",
     "pandas.*",
     "geopandas.*",
+    "altair.*",
 ]
 ignore_missing_imports = true
 
