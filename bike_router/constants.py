@@ -286,31 +286,31 @@ class RoutingParamSpec:
 PARAM_SPECS = (
     RoutingParamSpec(
         field="extra_km_per_uphill_100m",
-        label="Uphill penalty",
+        label="Uphill penalty (extra km per 100 m climb)",
         help="Extra km you'd ride to avoid every 100 m of climbing (0 = ignore hills; high = long detours to stay flat).",
         default=12.0,
     ),
     RoutingParamSpec(
         field="extra_km_per_unpaved_km",
-        label="Unpaved penalty",
+        label="Unpaved penalty (extra km per unpaved km)",
         help="Extra km you'd ride to avoid 1 km of unpaved surface (0 = don't mind gravel; high = detour far to stay paved).",
         default=1.0,
     ),
     RoutingParamSpec(
         field="extra_km_per_main_road_km",
-        label="Main road penalty",
+        label="Main road penalty (extra km per main-road km)",
         help="Extra km you'd ride to avoid 1 km on a busy main road (0 = don't mind them; high = detour far to avoid main roads).",
         default=1.0,
     ),
     RoutingParamSpec(
         field="extra_km_per_rail_km",
-        label="Rail distance penalty",
+        label="Rail distance penalty (extra km per rail km)",
         help="Extra km you'd bike to avoid 1 km carried by train (0 = train distance is free; high = avoid long train legs).",
         default=1.0,
     ),
     RoutingParamSpec(
         field="extra_km_per_boarding",
-        label="Train boarding penalty",
+        label="Train boarding penalty (extra km per boarding)",
         help="Extra km you'd bike to avoid boarding a train once (0 = board freely; high = avoid catching trains).",
         default=20.0,
     ),
