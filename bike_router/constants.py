@@ -264,7 +264,7 @@ PARAM_SPECS = (
         field="extra_km_per_uphill_100m",
         label="Uphill penalty",
         help="Extra km you'd ride to avoid every 100 m of climbing (0 = ignore hills).",
-        default=5.0,
+        default=10.0,
     ),
     RoutingParamSpec(
         field="extra_km_per_unpaved_km",
@@ -282,13 +282,13 @@ PARAM_SPECS = (
         field="extra_km_per_rail_km",
         label="Rail distance penalty",
         help="Extra km you'd bike to avoid 1 km carried by train (≈ ticket cost per km; high = avoid trains).",
-        default=1.0,
+        default=0.5,
     ),
     RoutingParamSpec(
         field="extra_km_per_boarding",
         label="Train boarding penalty",
         help="Extra km you'd bike rather than board a train once (the wait/hassle; high = avoid boarding).",
-        default=10.0,
+        default=5.0,
     ),
 )
 
