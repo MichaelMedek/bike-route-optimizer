@@ -117,7 +117,8 @@ def plot_elevation_heatmap(
         marker="*",
         label=f"end: {destination}",
     )
-    axes.legend(loc="upper right", fontsize=7, framealpha=0.85)
+    # Legend BELOW the plot (anchored under the axes) so it never overlays the route.
+    axes.legend(loc="upper center", bbox_to_anchor=(0.5, -0.05), ncol=2, fontsize=7, framealpha=0.85)
 
     mappable = cm.ScalarMappable(norm=norm, cmap=cmap)
     mappable.set_array([])
