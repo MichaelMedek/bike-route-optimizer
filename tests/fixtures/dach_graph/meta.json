@@ -1,0 +1,16 @@
+{
+  "bbox": [
+    8.3793577,
+    48.440002699999994,
+    8.519929000000001,
+    48.5799355
+  ],
+  "tile_deg": 0.5,
+  "tolerance_m": 25.0,
+  "n_nodes": 2499,
+  "n_edges": 7935,
+  "n_stations": 10,
+  "sources": [
+    "karlsruhe-regbez.osm.pbf"
+  ]
+}
