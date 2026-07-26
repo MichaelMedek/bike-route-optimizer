@@ -13,6 +13,7 @@ from bike_router.graph_store import (
     graph_to_tables,
     load_corridor_graph,
     load_meta,
+    load_rail_baseline,
     snap_to_node,
     write_graph_parquet,
 )
@@ -191,3 +192,20 @@ def test_snap_to_node_returns_nearest_node_with_elevation():
     lat, lon, elev = snap_to_node(lat=48.50, lon=8.43, graph_dir=FIXTURE_GRAPH_DIR)
     assert abs(lat - 48.50) < 0.05 and abs(lon - 8.43) < 0.05  # nearest node is close
     assert elev > 0  # baked elevation, no DEM involved
+
+
+def test_load_rail_baseline_returns_lifted_3d_polylines():
+    # All rail lines as [[lon, lat, z], ...], each vertex lifted above the baked terrain.
+    lift = 20.0
+    paths = load_rail_baseline(graph_dir=FIXTURE_GRAPH_DIR, float_above_m=lift)
+    assert paths, "fixture has rail edges"
+    assert all(len(vertex) == 3 for path in paths for vertex in path)  # (lon, lat, z)
+    # Same edge without the lift → every z is exactly `lift` lower (offset applied uniformly).
+    flat = load_rail_baseline(graph_dir=FIXTURE_GRAPH_DIR, float_above_m=0.0)
+    assert paths[0][0][2] == pytest.approx(flat[0][0][2] + lift)
+
+
+def test_load_rail_baseline_empty_dir_returns_empty(tmp_path):
+    # No edge tiles on disk (e.g. artifact not downloaded yet) → no rail lines, no crash.
+    (tmp_path / "edges").mkdir()
+    assert load_rail_baseline(graph_dir=tmp_path) == []

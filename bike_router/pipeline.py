@@ -153,11 +153,12 @@ def plan_route(
     track = densify_track(graph=graph, node_path=node_path, track=track)
     composition = route_composition(graph=graph, node_path=node_path)
     logger.info(
-        "%.1f km, %.0f min, +%.0f m / -%.0f m",
-        track.distance_km,
-        track.duration_min,
-        track.ascent_m,
-        track.descent_m,
+        "total %.1f km / %.0f min, bike %.1f km, +%.0f m / -%.0f m",
+        track.total.distance_km,
+        track.total.duration_min,
+        track.bike.distance_km,
+        track.bike.ascent_m,
+        track.bike.descent_m,
     )
 
     gpx_path, png_path = route_output_paths(origin=origin, destination=destination)

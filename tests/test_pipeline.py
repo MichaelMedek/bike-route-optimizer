@@ -45,9 +45,10 @@ def test_plan_route_end_to_end_offline(tmp_path: Path, monkeypatch):
     assert result.gpx_path.exists() and result.gpx_path.stat().st_size > 0
     assert result.png_path.exists() and result.png_path.stat().st_size > 0
     # line graph 1→2→3: two 800 m edges = 1.6 km; 100→130→100 m = +30 / −30 m exactly.
-    assert result.track.distance_km == pytest.approx(1.6)
-    assert result.track.duration_min > 0
-    assert result.track.ascent_m == pytest.approx(30.0) and result.track.descent_m == pytest.approx(30.0)
+    assert result.track.total.distance_km == pytest.approx(1.6)
+    assert result.track.total.duration_min > 0
+    assert result.track.total.ascent_m == pytest.approx(30.0) and result.track.total.descent_m == pytest.approx(30.0)
+    assert result.track.bike == result.track.total  # pure-bike route: bike-only == total
     # composition is all bike (line graph has no rail): bike km == the full route distance.
     assert result.composition.by_mode_km["bike"] == pytest.approx(1.6)
     assert sum(result.composition.by_surface_km.values()) == pytest.approx(1.6)

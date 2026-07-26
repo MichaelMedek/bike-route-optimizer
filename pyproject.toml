@@ -4,11 +4,12 @@
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+pythonpath = ["."]  # so bare `pytest` finds the bike_router package (not just `python -m pytest`)
 addopts = "-q --cov=bike_router --cov-report=term-missing --cov-fail-under=95"
 
 [tool.coverage.run]
 branch = true
-omit = ["scripts/*", "bike_route.py", "app_webmap.py"]
+omit = ["scripts/*"]
 
 [tool.coverage.report]
 # Lines that only run under __main__ or defensive-unreachable branches.

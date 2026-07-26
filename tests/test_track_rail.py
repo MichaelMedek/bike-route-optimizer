@@ -5,7 +5,7 @@ import numpy as np
 import pytest
 
 from bike_router.constants import GpxConfig, Mode, NodeType, RailConfig
-from bike_router.track import Track, TrackPoint, build_track, densify_track
+from bike_router.track import RouteStats, Track, TrackPoint, build_track, densify_track
 from tests.conftest import (
     make_condition_route_graph,
     make_densify_detour_graph,
@@ -20,16 +20,20 @@ def test_build_track_rail_derives_ride_time_and_boarding_wait():
     rail_ride = 7000.0 / (RailConfig.RAIL_SPEED_KMH * GpxConfig.METERS_PER_KM / GpxConfig.SECONDS_PER_HOUR)
     expected_s = RailConfig.BOARDING_WAIT_S + rail_ride  # boarding at station 2 + ride 2→3
     assert track.points[-1].elapsed_s == expected_s
-    # rail climb is NOT counted as pedalled ascent
-    assert track.ascent_m == 0.0
-    assert track.descent_m == 0.0
+    # rail climb is NOT counted as pedalled ascent (bike or total)
+    assert track.total.ascent_m == 0.0 and track.total.descent_m == 0.0
+    # bike-only vs total split: this route has NO pedalled (Mode.BIKE) edges — just a
+    # station-access hop + the train — so bike distance is 0 while total spans the 7 km ride.
+    assert track.bike.distance_km == 0.0
+    assert track.total.distance_km == pytest.approx(7.08)
+    assert track.bike.duration_min < track.total.duration_min
 
 
 def test_build_track_rail_does_not_trip_avg_speed_assert():
     # 80 km/h rail alone would exceed the 25 km/h bike ceiling — must not assert.
     graph = make_rail_graph()
     track = build_track(graph=graph, node_path=[1, 2, 3])
-    assert track.distance_km == pytest.approx(7.08)  # 80 m station + 7000 m rail, completed w/o assert
+    assert track.total.distance_km == pytest.approx(7.08)  # 80 m station + 7000 m rail, completed w/o assert
 
 
 def test_build_track_exchange_trip_charges_boarding_exactly_once():
@@ -45,7 +49,7 @@ def test_build_track_exchange_trip_charges_boarding_exactly_once():
     assert track.points[-1].elapsed_s == pytest.approx(RailConfig.BOARDING_WAIT_S + ride_s)
     # the alight hop C→end (a station edge NOT entering a rail node) adds no wait
     assert graph.nodes[2]["node_type"] == NodeType.BIKE
-    assert track.ascent_m == 0.0 and track.descent_m == 0.0  # flat rail carries no bike climb
+    assert track.total.ascent_m == 0.0 and track.total.descent_m == 0.0  # flat rail carries no bike climb
 
 
 def test_build_track_sets_condition_and_speed_per_point():
@@ -61,6 +65,7 @@ def test_densify_track_follows_baked_3d_polyline_and_keeps_timing():
     # The fixture's edge 1→2 has endpoints due-north but a baked 3D geometry that detours
     # EAST through a 200 m apex. densify_track must emit those real vertices + elevations.
     graph = make_densify_detour_graph()
+    stats = RouteStats(distance_km=3.0, duration_min=10.0, ascent_m=40.0, descent_m=0.0)
     track = Track(
         points=[
             TrackPoint(
@@ -70,19 +75,17 @@ def test_densify_track_follows_baked_3d_polyline_and_keeps_timing():
                 lat=48.02, lon=8.00, elevation_m=140.0, elapsed_s=600.0, mode=Mode.BIKE, is_bad=False, speed_kmh=18.0
             ),
         ],
-        distance_km=3.0,
-        duration_min=10.0,
-        ascent_m=40.0,  # node-level 100→140; densify must NOT recompute from noisy vertices
-        descent_m=0.0,
+        bike=stats,  # ascent 40 m from node-level 100→140; densify must NOT recompute from vertices
+        total=stats,
     )
     dense = densify_track(graph=graph, node_path=[1, 2], track=track)
     assert len(dense.points) == 3  # the three real polyline vertices
     assert dense.points[0].elapsed_s == 0.0 and dense.points[-1].elapsed_s == 600.0  # timing preserved
-    assert dense.distance_km == 3.0  # totals carried over
+    assert dense.total.distance_km == 3.0  # stats carried over unchanged
     assert max(p.lon for p in dense.points) > 8.02  # the eastward bulge is present
     assert max(p.elevation_m for p in dense.points) == 200.0  # baked apex elevation used in the profile
     # ascent/descent carried from the node-level track, NOT re-summed from the 200 m apex jitter
-    assert dense.ascent_m == pytest.approx(40.0) and dense.descent_m == pytest.approx(0.0)
+    assert dense.total.ascent_m == pytest.approx(40.0) and dense.total.descent_m == pytest.approx(0.0)
     # the leg's condition/speed propagate to every densified vertex
     assert all(not p.is_bad and p.speed_kmh == 18.0 for p in dense.points)
 
@@ -94,6 +97,7 @@ def test_densify_track_straight_hop_without_geometry():
     graph.add_node(1, x=8.0, y=48.0, elevation=100.0)
     graph.add_node(2, x=8.1, y=48.0, elevation=400.0)
     graph.add_edge(1, 2, key=0, length=8000.0, surface=None, highway=None, mode=Mode.RAIL, custom_cost=8000.0)
+    stats = RouteStats(distance_km=8.0, duration_min=6.0, ascent_m=0.0, descent_m=0.0)
     track = Track(
         points=[
             TrackPoint(
@@ -103,10 +107,8 @@ def test_densify_track_straight_hop_without_geometry():
                 lat=48.0, lon=8.1, elevation_m=400.0, elapsed_s=360.0, mode=Mode.RAIL, is_bad=False, speed_kmh=80.0
             ),
         ],
-        distance_km=8.0,
-        duration_min=6.0,
-        ascent_m=0.0,
-        descent_m=0.0,
+        bike=stats,
+        total=stats,
     )
     dense = densify_track(graph=graph, node_path=[1, 2], track=track)
     assert [round(p.elevation_m) for p in dense.points] == [100, 400]  # straight hop at node elevations

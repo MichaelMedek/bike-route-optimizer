@@ -49,10 +49,8 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     track = result.track
-    print(
-        f"\nRoute: {track.distance_km:.1f} km · {track.duration_min:.0f} min · "
-        f"+{track.ascent_m:.0f} m / -{track.descent_m:.0f} m"
-    )
+    print(f"\nTotal (bike + train): {track.total.oneline}")
+    print(f"Bike only:            {track.bike.oneline}")
     print(format_composition(comp=result.composition))
     print(f"GPX: {result.gpx_path}")
     print(f"Heatmap: {result.png_path}")

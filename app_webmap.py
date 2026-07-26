@@ -15,7 +15,7 @@ from streamlit_searchbox import st_searchbox
 from bike_router.constants import PARAM_SPECS, PhotonConfig, RoutingDefaults, RoutingParams, WebMapConfig
 from bike_router.errors import BikeRouterError
 from bike_router.geocoding import photon_autocomplete
-from bike_router.graph_store import download_graph_from_hf, load_meta
+from bike_router.graph_store import download_graph_from_hf, load_meta, load_rail_baseline
 from bike_router.pipeline import plan_route, resolve_endpoints
 from bike_router.simplify import format_rail_legs
 from bike_router.webmap import (
@@ -47,17 +47,26 @@ def _suggest(term: str, bbox: tuple[float, float, float, float]) -> list[str]:
     return photon_autocomplete(term=term, bbox=bbox)
 
 
+@st.cache_data
+def _rail_baseline() -> list[list[list[float]]]:
+    """All rail lines (lifted 3D polylines), loaded once — the always-on map baseline."""
+    return load_rail_baseline()
+
+
 def _render_route_output(result: object) -> None:
     """Stats, composition donuts, train legs, Google Maps links, and downloads."""
     track = result.track
-    metrics = (
-        ("Distance", f"{track.distance_km:.1f} km"),
-        ("Ride time", f"{track.duration_min:.0f} min"),
-        ("Ascent", f"+{track.ascent_m:.0f} m"),
-        ("Descent", f"−{track.descent_m:.0f} m"),
+    # Two metric rows: the whole journey (bike + train) and the pedalled part only.
+    # Both render the SAME four stats via RouteStats.metric_pairs (single source of format).
+    stat_rows = (
+        ("**Total** (bike + train)", track.total, "Time"),
+        ("**Bike only**", track.bike, "Ride time"),
     )
-    for col, (label, value) in zip(st.columns(len(metrics)), metrics, strict=True):
-        col.metric(label, value)
+    for caption, stats, duration_label in stat_rows:
+        st.caption(caption)
+        pairs = stats.metric_pairs(duration_label=duration_label)
+        for col, (label, value) in zip(st.columns(len(pairs)), pairs, strict=True):
+            col.metric(label, value)
 
     # Composition: three interactive donuts (% by km), side by side across the width.
     comp = result.composition
@@ -170,13 +179,19 @@ def main() -> None:
     if needs_endpoints:
         st.caption("⬆️ Set start & end first to enable **Compute route**.")
 
-    # 5. 3D map. camera_epoch (bumped only by Set start & end) keys the remount.
+    # 5. 3D map. camera_epoch (bumped only by Set start & end) keys the remount. The rail
+    # baseline (all train lines) always draws, below the route, so trains are visible up front.
     endpoints = (
         (st.session_state.start_latlon, st.session_state.end_latlon)
         if st.session_state.start_latlon is not None
         else None
     )
-    deck = build_deck(view=st.session_state.view, ribbon_segments=st.session_state.ribbon_segments, endpoints=endpoints)
+    deck = build_deck(
+        view=st.session_state.view,
+        ribbon_segments=st.session_state.ribbon_segments,
+        endpoints=endpoints,
+        rail_baseline=_rail_baseline(),
+    )
     st.pydeck_chart(deck, height=WebMapConfig.MAP_HEIGHT_PX, key=f"bike_map_{st.session_state.camera_epoch}")
 
     # 6. Stats + export controls BELOW the map, shown once a route exists.

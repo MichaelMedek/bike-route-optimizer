@@ -333,3 +333,33 @@ def make_densify_detour_graph() -> nx.MultiDiGraph:
         1, 2, key=0, **_mode_edge(Mode.BIKE, 3000.0, surface="asphalt", highway="residential"), geometry=detour
     )
     return graph
+
+
+def make_hill_vs_rail_graph(
+    *, params: RoutingParams, climb_m: float, rail_alternative: bool, bike_km: float = 6.0
+) -> nx.MultiDiGraph:
+    """Start→End joined by a paved bike path climbing ``climb_m``, optionally shadowed by rail.
+
+    Node 1 = start (elevation 100 m), node 2 = end (100 + ``climb_m``); the direct BIKE edge
+    spans ``bike_km`` at that grade. When ``rail_alternative`` is set, a station at each end
+    (nodes -1/-2) is joined by a RAIL edge of the same length — so the router picks bike vs
+    train purely on the tuned penalties. Reversing source/target makes the same hill a descent
+    (uphill penalty 0 downhill), so the train should NOT be chosen going down. Real costing.
+    """
+    from bike_router.cost import assign_edge_costs
+
+    bike_m = bike_km * 1000.0
+    graph = nx.MultiDiGraph(crs="EPSG:4326")
+    graph.add_node(1, x=8.000, y=48.000, elevation=100.0, node_type=NodeType.BIKE)  # start
+    graph.add_node(2, x=8.080, y=48.000, elevation=100.0 + climb_m, node_type=NodeType.BIKE)  # end (higher)
+    for a, b in [(1, 2), (2, 1)]:  # the pedalled climb both ways (uphill dir carries the penalty)
+        graph.add_edge(a, b, key=0, length=bike_m, surface="asphalt", highway="residential", mode=Mode.BIKE)
+    if rail_alternative:
+        graph.add_node(-1, x=8.001, y=48.000, elevation=100.0, node_type=NodeType.RAIL, station_name="Start Bf")
+        graph.add_node(-2, x=8.079, y=48.000, elevation=100.0 + climb_m, node_type=NodeType.RAIL, station_name="End Bf")
+        for a, b in [(1, -1), (-1, 1), (2, -2), (-2, 2)]:  # short station-access hops
+            graph.add_edge(a, b, key=0, length=100.0, surface=None, highway=None, mode=Mode.STATION)
+        for a, b in [(-1, -2), (-2, -1)]:  # the train ride, both directions
+            graph.add_edge(a, b, key=0, length=bike_m, surface=None, highway=None, mode=Mode.RAIL)
+    assign_edge_costs(graph=graph, params=params)
+    return graph

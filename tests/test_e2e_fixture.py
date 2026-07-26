@@ -59,9 +59,10 @@ def test_e2e_real_route_produced_from_fixture(tmp_path: Path, monkeypatch):
     assert all(u.startswith("https://www.google.com/maps/dir/?api=1") for u in result.gmaps_urls)
 
     # Plausible Schwarzwald route: sane distance, positive time, real elevation change.
-    assert 8.0 < track.distance_km < 60.0
-    assert track.duration_min > 0
-    assert track.ascent_m > 0 and track.descent_m > 0
+    assert 8.0 < track.total.distance_km < 60.0
+    assert track.total.duration_min > 0
+    assert track.total.ascent_m > 0 and track.total.descent_m > 0
+    assert track.bike.distance_km <= track.total.distance_km  # bike-only never exceeds the whole trip
     assert len(track.points) > 50  # densified along the real 3D polyline
     assert all(p.elevation_m > 0 for p in track.points)  # baked elevations, no DEM at inference
 
@@ -74,7 +75,7 @@ def test_e2e_real_route_produced_from_fixture(tmp_path: Path, monkeypatch):
 def test_e2e_flat_hater_still_routes(tmp_path: Path, monkeypatch):
     """A high uphill penalty must still produce a valid (longer/flatter) route."""
     result = _plan(monkeypatch, tmp_path, _SOUTH, _NORTH, extra_km_per_uphill_100m=50.0)
-    assert result.track.distance_km > 0
+    assert result.track.total.distance_km > 0
     assert result.gpx_path.exists()
 
 
@@ -110,13 +111,22 @@ def test_e2e_baiersbronn_to_freudenstadt_takes_one_train_and_two_bike_legs(tmp_p
     assert result.composition.by_mode_km[Mode.STATION] > 0
 
 
-def test_e2e_default_sliders_pure_bike_no_train(tmp_path: Path, monkeypatch):
-    """At default sliders the same pair is cheaper by bike: no train, no station km, one leg."""
-    result = _plan(monkeypatch, tmp_path, _BAIERSBRONN, _FREUDENSTADT)
-    assert _rail_ride_count(result.track) == 0
-    assert Mode.RAIL not in result.composition.by_mode_km
-    assert Mode.STATION not in result.composition.by_mode_km  # no station touched → no cut-through
-    assert len(result.gmaps_urls) == 1
+def test_e2e_default_sliders_take_train_uphill_but_bike_downhill(tmp_path: Path, monkeypatch):
+    """At DEFAULT sliders the tuned rider trains UP the 192 m climb but bikes back DOWN it.
+
+    Baiersbronn (≈547 m) → Freudenstadt (≈739 m) is a steep climb on a direct rail line, so
+    the default penalties make the train worth it uphill. The reverse is all descent (no uphill
+    penalty), so biking wins — no train, no station km. This is the core mode-choice contract.
+    """
+    uphill = _plan(monkeypatch, tmp_path, _BAIERSBRONN, _FREUDENSTADT)
+    assert _rail_ride_count(uphill.track) == 1  # steep climb → board the train
+    assert uphill.composition.by_mode_km[Mode.RAIL] > 0
+
+    downhill = _plan(monkeypatch, tmp_path, _FREUDENSTADT, _BAIERSBRONN)
+    assert _rail_ride_count(downhill.track) == 0  # descent is easy → stay on the bike
+    assert Mode.RAIL not in downhill.composition.by_mode_km
+    assert Mode.STATION not in downhill.composition.by_mode_km  # no station touched
+    assert len(downhill.gmaps_urls) == 1
 
 
 def test_e2e_out_of_coverage_raises(tmp_path: Path, monkeypatch):

@@ -24,6 +24,7 @@ from bike_router.webmap import (
 from bike_router.webmap_layers import (
     build_deck,
     create_endpoint_layer,
+    create_rail_baseline_layer,
     create_route_ribbon_layers,
     create_terrain_layer,
 )
@@ -147,3 +148,25 @@ def test_build_deck_layer_count_and_camera():
     ]
     deck_full = build_deck(view=view, ribbon_segments=two_run, endpoints=((48.0, 8.0, 300.0), (48.4, 8.6, 500.0)))
     assert len(deck_full.layers) == 4  # terrain + markers + 2 ribbon runs
+
+
+def test_rail_baseline_layer_is_thin_purple_pathlayer():
+    paths = [[[8.0, 48.0, 120.0], [8.1, 48.0, 130.0]]]
+    layer = create_rail_baseline_layer(paths=paths)
+    assert layer.type == "PathLayer" and layer.id == "rail_baseline"
+    assert layer.get_color == list(WebMapConfig.RAIL_COLOR)  # purple, matching trains
+    assert layer.width_min_pixels == WebMapConfig.RAIL_BASELINE_MIN_PIXELS  # stays visible when zoomed out
+
+
+def test_build_deck_draws_rail_baseline_below_the_ribbon():
+    """Rail baseline sits right after terrain and before the route ribbon (drawn under it)."""
+    view = default_view_state()
+    baseline = [[[8.0, 48.0, 120.0], [8.1, 48.0, 130.0]]]
+    ribbon = [(list(WebMapConfig.GOOD_RGB), 20.0, [[8.0, 48.0, 1100.0], [8.01, 48.0, 1100.0]])]
+    deck = build_deck(view=view, ribbon_segments=ribbon, rail_baseline=baseline)
+    ids = [layer.id for layer in deck.layers]
+    assert ids == ["terrain_3d", "rail_baseline", "route_ribbon_0"]  # baseline under the ribbon
+
+    # Empty baseline adds no layer (nothing to draw).
+    deck_empty = build_deck(view=view, ribbon_segments=None, rail_baseline=[])
+    assert [layer.id for layer in deck_empty.layers] == ["terrain_3d"]

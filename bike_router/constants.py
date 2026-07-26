@@ -356,8 +356,12 @@ class PlotConfig:
     CMAP = "plasma"
     DPI = 200
     ROUTE_ZOOM_MARGIN = 0.08  # pad the debug plot's route bounds by this fraction of the span
-    FIGSIZE = (9.0, 11.0)  # one portrait page: map on top, stats panel below
-    MAP_STATS_RATIO = 4.0  # map height : stats-panel height
+    # Figure sized to each route's geographic aspect (OSMnx keeps the map equal-aspect), so
+    # the map fills its axis in both dimensions for any route shape and the colorbar hugs it.
+    MAP_LONG_IN = 8.5  # the map's LONG side (inches); the short side is derived from the aspect
+    MAP_SHORT_MIN_IN = 4.5  # floor for the derived short side so an extreme route stays printable
+    SIDE_MARGIN_IN = 1.5  # extra width for the colorbar + its label
+    STATS_HEIGHT_IN = 3.0  # bottom stats-panel height (inches)
 
 
 class NominatimConfig:
@@ -418,6 +422,11 @@ class WebMapConfig:
     RIBBON_FLOAT_ABOVE_M = 100.0
     RIBBON_WIDTH_PER_KMH_M = 1.0
     RIBBON_MIN_PIXELS = 3
+    # All rail lines always shown as a thin purple baseline (context, even without a
+    # route): lifted just above the terrain and BELOW the ribbon so the route stays on top.
+    RAIL_BASELINE_FLOAT_ABOVE_M = 20.0
+    RAIL_BASELINE_MIN_PIXELS = 1
+    RAIL_BASELINE_WIDTH_M = 4.0
     # Endpoint markers keep their own blue/cyan; the ribbon itself is coloured by
     # CONDITION (green good / red bad for pedalled legs) and purple for trains.
     START_COLOR = (0, 150, 255)  # blue (start marker)

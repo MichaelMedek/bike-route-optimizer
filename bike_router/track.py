@@ -33,14 +33,60 @@ class TrackPoint:
 
 
 @dataclass(frozen=True)
-class Track:
-    """The full traversed route: ordered points + rolled-up totals."""
+class RouteStats:
+    """Rolled-up distance / duration / climb for a portion of the route.
 
-    points: list[TrackPoint]
+    The per-field format strings live HERE (single source): the CLI, the Streamlit
+    metrics, and the PNG overlay all render via these properties so they never drift.
+    """
+
     distance_km: float
     duration_min: float
     ascent_m: float
     descent_m: float
+
+    @property
+    def distance_str(self) -> str:
+        return f"{self.distance_km:.1f} km"
+
+    @property
+    def duration_str(self) -> str:
+        return f"{self.duration_min:.0f} min"
+
+    @property
+    def ascent_str(self) -> str:
+        return f"+{self.ascent_m:.0f} m"
+
+    @property
+    def descent_str(self) -> str:
+        return f"−{self.descent_m:.0f} m"  # unicode minus U+2212, one style everywhere
+
+    @property
+    def oneline(self) -> str:
+        """Single-line summary: ``7.0 km · 24 min · +218 m / −26 m`` (CLI + PNG)."""
+        return f"{self.distance_str} · {self.duration_str} · {self.ascent_str} / {self.descent_str}"
+
+    def metric_pairs(self, *, duration_label: str) -> tuple[tuple[str, str], ...]:
+        """(label, value) pairs for the four stat widgets (Streamlit st.metric rows)."""
+        return (
+            ("Distance", self.distance_str),
+            (duration_label, self.duration_str),
+            ("Ascent", self.ascent_str),
+            ("Descent", self.descent_str),
+        )
+
+
+@dataclass(frozen=True)
+class Track:
+    """The full traversed route: ordered points + stats split bike-only vs bike+train.
+
+    ``bike`` covers only the pedalled legs (what the rider physically cycles); ``total``
+    covers the whole journey including train rides and boarding waits.
+    """
+
+    points: list[TrackPoint]
+    bike: RouteStats
+    total: RouteStats
 
 
 def cheapest_edge(edges: dict[int, dict[str, Any]]) -> dict[str, Any]:
@@ -145,8 +191,6 @@ def build_track(graph: nx.MultiDiGraph, node_path: list[int]) -> Track:
 
     assert total_m > 0, "route distance must be positive"
     assert elapsed_s > 0, "route duration must be positive"
-    distance_km = total_m / GpxConfig.METERS_PER_KM
-    duration_min = elapsed_s / GpxConfig.SECONDS_PER_HOUR * GpxConfig.MINUTES_PER_HOUR
     # sanity: average BIKE speed must sit between the walking floor and the best base
     # speed (rail legs are excluded — 80 km/h would trip it).
     if bike_s > 0:
@@ -154,7 +198,20 @@ def build_track(graph: nx.MultiDiGraph, node_path: list[int]) -> Track:
         assert SpeedConfig.WALK_KMH - 1e-9 <= avg_kmh <= max(SpeedConfig.BASE_KMH_BY_TIER.values()) + 1e-9, (
             f"implausible average speed {avg_kmh:.1f} km/h"
         )
-    return Track(points=points, distance_km=distance_km, duration_min=duration_min, ascent_m=ascent, descent_m=descent)
+    # bike stats = pedalled legs only (ascent/descent already exclude rail); total = whole trip.
+    bike_stats = RouteStats(
+        distance_km=bike_m / GpxConfig.METERS_PER_KM,
+        duration_min=bike_s / GpxConfig.SECONDS_PER_HOUR * GpxConfig.MINUTES_PER_HOUR,
+        ascent_m=ascent,
+        descent_m=descent,
+    )
+    total_stats = RouteStats(
+        distance_km=total_m / GpxConfig.METERS_PER_KM,
+        duration_min=elapsed_s / GpxConfig.SECONDS_PER_HOUR * GpxConfig.MINUTES_PER_HOUR,
+        ascent_m=ascent,  # climb is pedalled-only; trains carry no rider ascent/descent
+        descent_m=descent,
+    )
+    return Track(points=points, bike=bike_stats, total=total_stats)
 
 
 def densify_track(graph: nx.MultiDiGraph, node_path: list[int], track: Track) -> Track:
@@ -199,14 +256,8 @@ def densify_track(graph: nx.MultiDiGraph, node_path: list[int], track: Track) ->
             if i < len(seg_lengths):
                 cum += seg_lengths[i]
 
-    # Ascent/descent come from build_track's node-to-node elevations.
-    return Track(
-        points=out,
-        distance_km=track.distance_km,
-        duration_min=track.duration_min,
-        ascent_m=track.ascent_m,
-        descent_m=track.descent_m,
-    )
+    # Stats are unchanged by densification (same legs) — carry both groups through.
+    return Track(points=out, bike=track.bike, total=track.total)
 
 
 def edge_vertices_3d(

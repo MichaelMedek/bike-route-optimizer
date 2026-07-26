@@ -6,6 +6,7 @@ foreground line. Uses the Agg backend so it works headless.
 """
 
 import logging
+import math
 
 import matplotlib
 
@@ -15,6 +16,7 @@ import networkx as nx  # noqa: E402
 import numpy as np  # noqa: E402
 import osmnx as ox  # noqa: E402
 from matplotlib import cm  # noqa: E402
+from matplotlib.axes import Axes  # noqa: E402
 from matplotlib.colors import Normalize  # noqa: E402
 from matplotlib.ticker import MaxNLocator  # noqa: E402
 
@@ -28,7 +30,7 @@ logger = logging.getLogger(__name__)
 
 
 def _prefs_text(*, params: RoutingParams, track: Track) -> str:
-    """Left stats column: rider preferences and route totals."""
+    """Left stats column: rider preferences, then bike-only and total (bike+train) route stats."""
     return (
         "PREFERENCES (extra km)\n"
         f"  +{params.extra_km_per_uphill_100m:<4g} / 100 m uphill\n"
@@ -36,21 +38,33 @@ def _prefs_text(*, params: RoutingParams, track: Track) -> str:
         f"  +{params.extra_km_per_main_road_km:<4g} / km main road\n"
         f"  +{params.extra_km_per_rail_km:<4g} / km rail\n"
         f"  +{params.extra_km_per_boarding:<4g} / boarding\n\n"
-        "ROUTE\n"
-        f"  {track.distance_km:.1f} km · {track.duration_min:.0f} min\n"
-        f"  +{track.ascent_m:.0f} m / -{track.descent_m:.0f} m"
+        f"ROUTE (bike + train)\n  {track.total.oneline}\n"
+        f"ROUTE (bike only)\n  {track.bike.oneline}"
     )
 
 
-def _draw_route_overlay(
-    *, axes: Axes, graph: nx.MultiDiGraph, route_nodes: list[int]
-) -> tuple[list[float], list[float]]:
-    """Draw each route edge coloured by condition/mode along its baked polyline, then zoom.
+def _figsize_for_route(*, route_lons: list[float], route_lats: list[float]) -> tuple[float, float, float]:
+    """Figure (width, height) + map-axis height, matched to the route's geographic aspect.
 
-    Returns the route's (lons, lats) node coordinates so the caller can place end markers.
+    Fixes the map's long side and derives the short one from the lon/lat span so the
+    equal-aspect map fills its axis for any orientation (no dead gap); short side floored.
     """
-    route_lons = [graph.nodes[node]["x"] for node in route_nodes]
-    route_lats = [graph.nodes[node]["y"] for node in route_nodes]
+    lon_span = max(route_lons) - min(route_lons)
+    lat_span = max(route_lats) - min(route_lats)
+    mean_lat_rad = math.radians((max(route_lats) + min(route_lats)) / 2.0)
+    aspect = (lon_span * math.cos(mean_lat_rad)) / lat_span if lat_span > 0 else 1.0
+    long_in, short_min = PlotConfig.MAP_LONG_IN, PlotConfig.MAP_SHORT_MIN_IN
+    if aspect >= 1.0:  # wide (E-W) route: width is the long side, height derived
+        map_w, map_h = long_in, max(short_min, long_in / aspect)
+    else:  # tall (N-S) route: height is the long side, width derived
+        map_w, map_h = max(short_min, long_in * aspect), long_in
+    return map_w + PlotConfig.SIDE_MARGIN_IN, map_h + PlotConfig.STATS_HEIGHT_IN, map_h
+
+
+def _draw_route_overlay(
+    *, axes: Axes, graph: nx.MultiDiGraph, route_nodes: list[int], route_lons: list[float], route_lats: list[float]
+) -> None:
+    """Draw each route edge coloured by condition/mode along its baked polyline, then zoom."""
     seen_labels: set[str] = set()
     for node_a, node_b in zip(route_nodes[:-1], route_nodes[1:], strict=True):
         data = cheapest_edge(edges=graph.get_edge_data(node_a, node_b))
@@ -79,7 +93,6 @@ def _draw_route_overlay(
     pad = max(max(route_lons) - min(route_lons), max(route_lats) - min(route_lats)) * PlotConfig.ROUTE_ZOOM_MARGIN
     axes.set_xlim(min(route_lons) - pad, max(route_lons) + pad)
     axes.set_ylim(min(route_lats) - pad, max(route_lats) + pad)
-    return route_lons, route_lats
 
 
 def plot_elevation_heatmap(
@@ -115,11 +128,21 @@ def plot_elevation_heatmap(
     cmap = matplotlib.colormaps[cmap_name]  # cm.get_cmap removed in matplotlib 3.9+
     node_colors = [cmap(norm(elevation)) for elevation in elevations]
 
+    # Size the page to the route's geographic aspect BEFORE drawing, so the equal-aspect
+    # map (OSMnx keeps it accurate) fills its axis and the colorbar hugs it — no dead gap.
+    route_lons = [graph.nodes[node]["x"] for node in route_nodes]
+    route_lats = [graph.nodes[node]["y"] for node in route_nodes]
+    fig_w, fig_h, map_h = _figsize_for_route(route_lons=route_lons, route_lats=route_lats)
+
     # One page: map (large) + colorbar (thin, right of the map) + stats (full-width, bottom).
+    # Row heights come straight from the computed inches (one source of truth, no drift).
     figure, mosaic = plt.subplot_mosaic(
         [["map", "cbar"], ["stats", "stats"]],
-        gridspec_kw={"width_ratios": [1.0, 0.04], "height_ratios": [PlotConfig.MAP_STATS_RATIO, 1.0]},
-        figsize=PlotConfig.FIGSIZE,
+        gridspec_kw={
+            "width_ratios": [1.0, 0.04],
+            "height_ratios": [map_h, PlotConfig.STATS_HEIGHT_IN],
+        },
+        figsize=(fig_w, fig_h),
         layout="constrained",
     )
     figure.set_facecolor("white")  # solid white page, not the default transparent canvas
@@ -141,7 +164,7 @@ def plot_elevation_heatmap(
     # Route overlay: colour each edge by CONDITION (green good / red bad) or purple for
     # trains — the same segment_color the 3D map uses (one source of truth). Each edge
     # follows its BAKED OSM polyline, so rail/bike curves render as the real path.
-    route_lons, route_lats = _draw_route_overlay(axes=axes, graph=graph, route_nodes=route_nodes)
+    _draw_route_overlay(axes=axes, graph=graph, route_nodes=route_nodes, route_lons=route_lons, route_lats=route_lats)
 
     # Start / end markers, named so the reader knows which end is which. Colors
     # read from WebMapConfig so the PNG and 3D map share one source of truth.
@@ -156,7 +179,7 @@ def plot_elevation_heatmap(
         linewidths=1.2,
         zorder=7,
         marker="o",
-        label=f"start: {origin}",
+        label="start",
     )
     axes.scatter(
         route_lons[-1],
@@ -167,9 +190,8 @@ def plot_elevation_heatmap(
         linewidths=1.2,
         zorder=7,
         marker="*",
-        label=f"end: {destination}",
+        label="end",
     )
-    axes.legend(loc="upper left", fontsize=8, framealpha=0.95, facecolor="white", edgecolor="#999999")
     axes.set_title(f"Bike route: {origin} → {destination}", fontsize=13, weight="bold")
 
     # Elevation colorbar down the right, its own axis (crisp label + evenly-spaced ticks).
@@ -179,36 +201,36 @@ def plot_elevation_heatmap(
     colorbar.set_label("Elevation (m)", fontsize=11, weight="bold", labelpad=10)
     colorbar.ax.yaxis.set_major_locator(MaxNLocator(nbins=8))
 
-    # Two-column stats panel across the bottom (own axis, no frame, light boxes):
-    # rider preferences + route totals on the left, the km composition on the right.
+    # Bottom panel (own axis, no frame): a single combined stats box on the LEFT (prefs +
+    # route + km composition, stacked so it fits any page width) and the route/marker legend
+    # on the RIGHT — kept HERE, never over the map, so the map stays clear.
     stats_ax.axis("off")
-    box = {"boxstyle": "round,pad=0.6", "facecolor": "#f5f5f5", "edgecolor": "#cccccc"}
+    stats = _prefs_text(params=params, track=track)
+    if composition is not None:
+        stats += "\n\n" + format_composition(comp=composition)
     stats_ax.text(
-        0.01,
-        0.95,
-        _prefs_text(params=params, track=track),
+        0.0,
+        1.0,
+        stats,
         transform=stats_ax.transAxes,
         family="monospace",
-        fontsize=9.5,
+        fontsize=9,
         va="top",
         ha="left",
-        linespacing=1.6,
-        bbox=box,
+        linespacing=1.5,
+        bbox={"boxstyle": "round,pad=0.6", "facecolor": "#f5f5f5", "edgecolor": "#cccccc"},
     )
-    if composition is not None:
-        stats_ax.text(
-            0.42,
-            0.95,
-            format_composition(comp=composition),
-            transform=stats_ax.transAxes,
-            family="monospace",
-            fontsize=9.5,
-            va="top",
-            ha="left",
-            linespacing=1.6,
-            bbox=box,
-        )
+    handles, labels = axes.get_legend_handles_labels()
+    stats_ax.legend(
+        handles,
+        labels,
+        loc="upper right",
+        fontsize=9,
+        framealpha=0.95,
+        facecolor="white",
+        edgecolor="#999999",
+    )
 
-    figure.savefig(out_path, dpi=dpi, facecolor="white", bbox_inches="tight", pad_inches=0.35)
+    figure.savefig(out_path, dpi=dpi, facecolor="white", bbox_inches="tight", pad_inches=0.3)
     plt.close(figure)
     logger.info("Wrote debug heatmap to %s", out_path)
