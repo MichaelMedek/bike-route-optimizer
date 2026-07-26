@@ -8,7 +8,7 @@
   "tile_deg": 0.5,
   "tolerance_m": 25.0,
   "n_nodes": 2499,
-  "n_edges": 7935,
+  "n_edges": 8003,
   "n_stations": 10,
   "sources": [
     "karlsruhe-regbez.osm.pbf"
