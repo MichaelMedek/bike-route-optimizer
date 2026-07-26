@@ -91,6 +91,20 @@ def test_ribbon_width_m_halves_when_speed_doubles():
     assert fast == pytest.approx(WebMapConfig.RIBBON_REF_WIDTH_M / 2)
 
 
+def test_rail_and_station_segments_use_fixed_width():
+    # make_rail_graph: bike node → station hop (walk pace) → rail ride (80 km/h). Neither the
+    # station nor the rail segment should get the inverted-speed width — both draw the fixed
+    # RIBBON_REF_WIDTH_M (so a 5 km/h station hop is NOT the map's fattest ribbon).
+    from bike_router.track import build_track
+    from tests.conftest import make_rail_graph
+
+    track = build_track(graph=make_rail_graph(), node_path=[1, 2, 3])
+    segments = route_ribbon_segments(track=track)
+    non_bike = [seg for seg in segments if seg.color != _rgb(Palette.GOOD)]
+    assert non_bike, "expected rail/station runs on this train route"
+    assert all(seg.width_m == WebMapConfig.RIBBON_REF_WIDTH_M for seg in non_bike)
+
+
 def test_ribbon_segment_tooltip_describes_bike_condition():
     # A pedalled segment's tooltip names surface, road, gradient sign, and est. speed.
     track = _line_track()

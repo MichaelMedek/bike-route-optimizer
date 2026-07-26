@@ -229,24 +229,36 @@ def test_format_rail_legs_numbers_lines_and_handles_unnamed():
 
 def test_bike_leg_endpoints_pure_bike_is_origin_to_destination():
     # No train → one leg spanning the whole trip: origin → destination.
-    ends = bike_leg_endpoints(rail_legs=[], origin="Horb", destination="Freudenstadt", n_legs=1)
+    graph = make_mixed_mode_graph([(1, 2, Mode.BIKE), (2, 3, Mode.BIKE)])
+    ends = bike_leg_endpoints(
+        graph=graph, node_path=[1, 2, 3], leg_paths=[[1, 2, 3]], origin="Horb", destination="Freudenstadt"
+    )
     assert ends == [("Horb", "Freudenstadt")]
 
 
 def test_bike_leg_endpoints_one_train_uses_station_names_at_inner_ends():
-    # bike → train → bike: leg 0 = origin → boarding station, leg 1 = alighting station → dest.
-    rail = [_rail_leg(board="Horb-Heiligenfeld", alight="Freudenstadt Stadt")]
-    ends = bike_leg_endpoints(rail_legs=rail, origin="Horb am Neckar", destination="Freudenstadt", n_legs=2)
-    assert ends == [
-        ("Horb am Neckar", "Horb-Heiligenfeld"),
-        ("Freudenstadt Stadt", "Freudenstadt"),
-    ]
+    # bike → station → rail → station → bike: leg 0 = origin → board station, leg 1 = alight → dest.
+    graph = make_mixed_mode_graph(
+        [(1, 2, Mode.BIKE), (2, 3, Mode.STATION), (3, 4, Mode.RAIL), (4, 5, Mode.STATION), (5, 6, Mode.BIKE)]
+    )
+    ends = bike_leg_endpoints(
+        graph=graph,
+        node_path=[1, 2, 3, 4, 5, 6],
+        leg_paths=[[1, 2], [5, 6]],
+        origin="Horb am Neckar",
+        destination="Freudenstadt",
+    )
+    assert ends == [("Horb am Neckar", "Station 3"), ("Station 4", "Freudenstadt")]
 
 
-def test_bike_leg_endpoints_unnamed_station_falls_back():
-    rail = [_rail_leg(board=None, alight=None)]
-    ends = bike_leg_endpoints(rail_legs=rail, origin="A", destination="B", n_legs=2)
-    assert ends == [("A", "(unnamed stop)"), ("(unnamed stop)", "B")]
+def test_bike_leg_endpoints_route_ending_on_a_train():
+    # Regression: a route that ENDS on the train has ONE bike leg but ONE train ride (not N-1),
+    # which used to trip an assert. The single leg is origin → boarding station.
+    graph = make_mixed_mode_graph([(1, 2, Mode.BIKE), (2, 3, Mode.STATION), (3, 4, Mode.RAIL)])
+    ends = bike_leg_endpoints(
+        graph=graph, node_path=[1, 2, 3, 4], leg_paths=[[1, 2]], origin="Start", destination="End"
+    )
+    assert ends == [("Start", "Station 3")]  # boards at station 3; never reaches destination by bike
 
 
 def test_format_bike_legs_labels_each_route():

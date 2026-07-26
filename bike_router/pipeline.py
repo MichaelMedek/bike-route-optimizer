@@ -188,7 +188,9 @@ def plan_route(
     # pure-bike trip yields one link and a one-train trip yields two. Each leg is labelled
     # by its real endpoints (origin/destination at the ends, station names where a train abuts).
     leg_paths = split_bike_legs(graph=graph, node_path=node_path)
-    endpoints = bike_leg_endpoints(rail_legs=rail_legs, origin=origin, destination=destination, n_legs=len(leg_paths))
+    endpoints = bike_leg_endpoints(
+        graph=graph, node_path=node_path, leg_paths=leg_paths, origin=origin, destination=destination
+    )
     bike_legs = [
         BikeLeg(
             url=build_gmaps_url(

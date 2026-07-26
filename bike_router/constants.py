@@ -445,9 +445,10 @@ class WebMapConfig:
     DEFAULT_BEARING = 0.0
     # Rendered map height in the browser, pixels.
     MAP_HEIGHT_PX = 600
-    # Route ribbon floats above the terrain mesh; its WIDTH is INVERSELY proportional to
-    # speed (fluid-dynamics: slow spots flow through fatter pipes → wider ribbon). A segment
-    # at RIBBON_REF_SPEED_KMH draws RIBBON_REF_WIDTH_M; half that speed → double the width.
+    # Route ribbon floats above the terrain mesh. BIKE segments size their WIDTH INVERSELY to
+    # speed (fluid-dynamics: slow spots flow through fatter pipes → wider ribbon): a segment at
+    # RIBBON_REF_SPEED_KMH draws RIBBON_REF_WIDTH_M, half that speed → double the width. RAIL and
+    # STATION segments draw the fixed RIBBON_REF_WIDTH_M (a train's pace isn't rider "effort").
     RIBBON_FLOAT_ABOVE_M = 100.0
     RIBBON_REF_SPEED_KMH = 20.0
     RIBBON_REF_WIDTH_M = 20.0

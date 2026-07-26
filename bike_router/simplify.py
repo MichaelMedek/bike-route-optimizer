@@ -12,7 +12,7 @@ import networkx as nx
 import numpy as np
 from shapely.geometry import LineString
 
-from bike_router.constants import GmapsConfig, GpxConfig, Mode
+from bike_router.constants import GmapsConfig, GpxConfig, Mode, NodeType
 from bike_router.geo import haversine_distance_m
 from bike_router.track import cheapest_edge, iter_route_edges
 
@@ -153,22 +153,40 @@ class BikeLeg:
 
 
 def bike_leg_endpoints(
-    *, rail_legs: list[RailLeg], origin: str, destination: str, n_legs: int
+    *, graph: nx.MultiDiGraph, node_path: list[int], leg_paths: list[list[int]], origin: str, destination: str
 ) -> list[tuple[str, str]]:
-    """(from_place, to_place) for each of the ``n_legs`` pedalled legs, in order.
+    """(from_place, to_place) for each pedalled leg, derived STRUCTURALLY from the node path.
 
-    Leg 0 starts at ``origin`` and the last leg ends at ``destination``; an interior
-    boundary is a train ride, so leg i ends where train i is boarded and leg i+1 starts
-    where that train is alighted. Unnamed stops fall back to a readable placeholder.
+    A leg's endpoint is ``origin``/``destination`` at the very ends of the whole route, else the
+    adjacent station it alighted-from / boards-at (the neighbouring node on the full path, which
+    is a rail-station node). Robust to a route that starts/ends on a train or chains two trains.
     """
-    assert n_legs >= 1, "a route with a Maps link has >= 1 pedalled leg"
-    assert len(rail_legs) == n_legs - 1, "N pedalled legs are separated by N-1 train rides"
+    position = {node: index for index, node in enumerate(node_path)}  # node → its index on the path
     ends: list[tuple[str, str]] = []
-    for index in range(n_legs):
-        from_place = origin if index == 0 else rail_legs[index - 1].alight.name_or_placeholder
-        to_place = destination if index == n_legs - 1 else rail_legs[index].board.name_or_placeholder
+    for leg in leg_paths:
+        head, tail = position[leg[0]], position[leg[-1]]
+        from_place = origin if head == 0 else _neighbour_station_name(graph=graph, node=node_path[head - 1])
+        to_place = (
+            destination
+            if tail == len(node_path) - 1
+            else _neighbour_station_name(graph=graph, node=node_path[tail + 1])
+        )
         ends.append((from_place, to_place))
     return ends
+
+
+def _neighbour_station_name(graph: nx.MultiDiGraph, node: int) -> str:
+    """Station name of a path-neighbour that MUST be a rail node (unnamed halt → placeholder).
+
+    A pedalled leg only ends before the route start/end when the adjacent node is the station
+    it boards/alights at — so the neighbour is invariantly a rail node. We assert that (fail
+    loud on a broken path) rather than let a stray bike node silently read as an unnamed stop.
+    """
+    data = graph.nodes[node]
+    assert data["node_type"] == NodeType.RAIL, (
+        f"bike-leg neighbour {node} must be a rail station, got {data['node_type']}"
+    )
+    return data["station_name"] or _UNNAMED_STOP
 
 
 def format_bike_legs(bike_legs: list[BikeLeg]) -> list[str]:

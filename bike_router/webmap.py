@@ -109,10 +109,11 @@ def route_ribbon_segments(
 ) -> list[RibbonSegment]:
     """Split the route into contiguous runs sharing one colour + width + tooltip, for rendering.
 
-    Colour comes from segment_color (condition/mode); width from ribbon_width_m (∝ 1/speed, so
-    slow spots are wider). A pedalled segment's tooltip describes it (surface/road/gradient/speed);
-    a train run shows its whole-leg label from ``rail_tooltips`` (one per train ride, in order).
-    Consecutive runs share their boundary point so the ribbon stays continuous.
+    Colour comes from segment_color (condition/mode). BIKE segments size their width by effort
+    (∝ 1/speed, so slow spots are wider); RAIL + STATION segments use the fixed RIBBON_REF_WIDTH_M.
+    A pedalled segment's tooltip describes it (surface/road/gradient/speed); a train run shows its
+    whole-leg label from ``rail_tooltips`` (one per train ride, in order). Consecutive runs share
+    their boundary point so the ribbon stays continuous.
 
     Args:
         track: The computed route track from plan_route (points carry mode/condition/speed/grade).
@@ -127,7 +128,10 @@ def route_ribbon_segments(
     for point in track.points[1:]:  # each point is the FAR end of one edge (point 0 has no edge)
         xyz = [point.lon, point.lat, point.elevation_m + float_above_m]
         color = segment_color(mode=point.mode, surface_bad=point.surface_bad, road_bad=point.road_bad)
-        width = ribbon_width_m(speed_kmh=point.speed_kmh)
+        # Bike segments size by effort (∝ 1/speed); rail + station segments draw the fixed
+        # reference width (a train's pace isn't rider effort; station hops are negligible links).
+        pedalled = point.mode == str(Mode.BIKE)
+        width = ribbon_width_m(speed_kmh=point.speed_kmh) if pedalled else WebMapConfig.RIBBON_REF_WIDTH_M
         if point.mode == str(Mode.RAIL):
             if prev_mode != str(Mode.RAIL):
                 rail_run += 1
