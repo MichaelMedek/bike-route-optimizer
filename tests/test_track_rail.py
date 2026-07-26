@@ -23,7 +23,8 @@ def _rail_ride_s(*, rail_m: float) -> float:
 def test_build_track_rail_derives_ride_time_and_boarding_wait():
     graph = make_rail_graph()
     track = build_track(graph=graph, node_path=[1, 2, 3])
-    expected_s = RailConfig.BOARDING_WAIT_S + _rail_ride_s(rail_m=7000.0)  # boarding at station 2 + ride 2→3
+    # One station edge (board at 2) → half a wait; the route ends on the train (no alight hop).
+    expected_s = 0.5 * RailConfig.BOARDING_WAIT_S + _rail_ride_s(rail_m=7000.0)
     assert track.points[-1].elapsed_s == expected_s
     # The WHOLE-journey climb spans every edge (like total distance): station hop 200→205 m
     # (+5) then the rail ride 205→600 m (+395) = +400 m total, all downhill-free here.
@@ -55,9 +56,9 @@ def test_build_track_rail_does_not_trip_avg_speed_assert():
 
 
 def test_build_track_exchange_trip_charges_boarding_exactly_once():
-    # bike → A → B(exchange, degree-3) → C → bike. Boarding waits live on the two station
-    # edges (board at A, alight at C); the A→B→C rail hop through the exchange adds NO extra
-    # boarding. So total time = ONE boarding wait + the two rail rides (4000 m + 3000 m).
+    # bike → A → B(exchange, degree-3) → C → bike. Each of the two station edges (board at A,
+    # alight at C) carries HALF the wait; the A→B→C rail hop through the exchange adds none.
+    # So total time = ONE full boarding wait (½ + ½) + the two rail rides (4000 m + 3000 m).
     graph = make_exchange_rail_graph()
     path = [1, -1, -2, -3, 2]  # start, A, B(exchange), C, end
     track = build_track(graph=graph, node_path=path)
@@ -65,7 +66,6 @@ def test_build_track_exchange_trip_charges_boarding_exactly_once():
     ride_s = _rail_ride_s(rail_m=rail_m)
     # exactly ONE boarding wait despite the mid-trip change at the degree-3 exchange node B
     assert track.points[-1].elapsed_s == pytest.approx(RailConfig.BOARDING_WAIT_S + ride_s)
-    # the alight hop C→end (a station edge NOT entering a rail node) adds no wait
     assert graph.nodes[2]["node_type"] == NodeType.BIKE
     assert track.total.ascent_m == 0.0 and track.total.descent_m == 0.0  # this graph is flat (all 100 m)
 

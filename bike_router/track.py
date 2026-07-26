@@ -11,7 +11,7 @@ from typing import Any
 
 import networkx as nx
 
-from bike_router.constants import CostConfig, GpxConfig, Mode, NodeType, RailConfig, SpeedConfig
+from bike_router.constants import CostConfig, GpxConfig, Mode, RailConfig, SpeedConfig
 from bike_router.cost import road_tier, surface_tier
 from bike_router.geo import haversine_distance_m
 from bike_router.speed import effective_speed_kmh, kmh_to_ms
@@ -156,8 +156,8 @@ def build_track(graph: nx.MultiDiGraph, node_path: list[int]) -> Track:
     """Build the full route track with adaptive-speed timing from a node path.
 
     Bike edges use the surface/grade speed model and count toward ascent/descent; rail
-    edges ride at RAIL_SPEED_KMH; boarding (a station edge ENTERING a rail node) adds
-    BOARDING_WAIT_S once. All leg times are DERIVED from length + rail constants.
+    edges ride at RAIL_SPEED_KMH; each station edge adds half of BOARDING_WAIT_S, so board
+    + alight sum to one full wait (mirrors the cost split). All leg times are DERIVED.
     """
     assert len(node_path) >= 2, "route must have >= 2 nodes"
 
@@ -208,9 +208,8 @@ def build_track(graph: nx.MultiDiGraph, node_path: list[int]) -> Track:
             bike_s += leg_s
         elif data["mode"] == Mode.RAIL:
             leg_s = length_m / rail_speed_ms  # train ride time, derived from length
-        elif data["mode"] == Mode.STATION:  # boarding (entering a rail node) waits; alighting is free
-            boarding = graph.nodes[node_b]["node_type"] == NodeType.RAIL
-            leg_s = RailConfig.BOARDING_WAIT_S if boarding else 0.0
+        elif data["mode"] == Mode.STATION:  # half the wait per station edge: board + alight = full wait
+            leg_s = 0.5 * RailConfig.BOARDING_WAIT_S
         else:
             raise AssertionError(f"unknown edge mode: {data['mode']!r}")
         total_s += leg_s
