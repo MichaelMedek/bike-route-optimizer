@@ -78,3 +78,5 @@ python scripts/upload_graph_to_huggingface.py
 ```
 
 The app looks for the graph locally first; if it is missing it downloads it once from Hugging Face and caches it, so every later run is instant and offline.
+
+The full build writes the artifact to `data/dach_graph/` (`nodes/`, `edges/`, `meta.json`) and checkpoints each region to `data/dach_build/checkpoints/`; if it crashes or is killed, just rerun the same command and it skips finished regions and resumes. All of `data/` is gitignored — reproducible, not source. `upload_graph_to_huggingface.py` pushes `data/dach_graph/` to the dataset repo named in `GraphConfig.HF_REPO_ID`.
