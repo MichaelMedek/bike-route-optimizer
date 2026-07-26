@@ -31,7 +31,6 @@ from bike_router.graph_ops import (
     enrich_elevations,
     normalize_pyrosm_graph,
 )
-from bike_router.graph_store import graph_to_tables
 from bike_router.sanity import check_simplify_shrunk
 
 logger = logging.getLogger(__name__)
@@ -286,26 +285,6 @@ def build_region_graph(
         n_stations,
     )
     return graph
-
-
-def build_country_graph(
-    *,
-    pbf_paths: list[Path],
-    dem: DEMService,
-    tolerance_m: float,
-    bbox: tuple[float, float, float, float] | None = None,
-) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """Build + merge several region graphs into node/edge tables for graph_store.
-
-    Regions are built independently (bounded memory) then unioned by node id. ``bbox``
-    clips every region (region tests); None builds full extents. Large resumable runs
-    use scripts/build_dach_graph.py, which shares merge_region_tables.
-    """
-    regions = [
-        graph_to_tables(graph=build_region_graph(pbf_path=p, dem=dem, tolerance_m=tolerance_m, bbox=bbox))
-        for p in pbf_paths
-    ]
-    return merge_region_tables(regions=regions)
 
 
 def merge_region_tables(regions: list[tuple[pd.DataFrame, pd.DataFrame]]) -> tuple[pd.DataFrame, pd.DataFrame]:

@@ -18,10 +18,11 @@ from bike_router.builder import (
     _rail_lines,
     _station_points,
     _tag_bike_defaults,
-    build_country_graph,
     build_region_graph,
+    merge_region_tables,
 )
 from bike_router.constants import Mode, NodeType
+from bike_router.graph_store import graph_to_tables
 from tests.conftest import MockDEMService
 
 _TEST_PBF = Path(pyrosm.get_data("test_pbf"))
@@ -50,9 +51,12 @@ def test_build_region_graph_shim_and_modes():
     assert Mode.BIKE in modes  # the bundled extract has cycling ways
 
 
-def test_build_country_graph_returns_schema_tables():
+def test_merge_region_tables_returns_schema_tables():
+    # One region built + merged → the exact node/edge schema graph_store persists (the shim
+    # from build_region_graph → graph_to_tables → merge_region_tables the build script uses).
     dem = MockDEMService(base_elevation=300.0)
-    nodes_df, edges_df = build_country_graph(pbf_paths=[_TEST_PBF], dem=dem, tolerance_m=25.0)
+    tables = graph_to_tables(graph=build_region_graph(pbf_path=_TEST_PBF, dem=dem, tolerance_m=25.0))
+    nodes_df, edges_df = merge_region_tables(regions=[tables])
     assert len(nodes_df) > 0 and len(edges_df) > 0
     assert {"osmid", "lat", "lon", "elevation_m", "node_type", "station_name"} == set(nodes_df.columns)
     assert {
