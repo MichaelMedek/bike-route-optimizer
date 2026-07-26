@@ -1,6 +1,9 @@
 # Dependencies live here ONLY (single source of truth). setup.py reads this file
 # into install_requires; pyproject.toml holds tooling config, not dependencies.
 
+# Install the package itself (editable), so `bike_router` is importable in CI/dev.
+-e .
+
 # Geocoding
 geopy>=2.4.0
 
