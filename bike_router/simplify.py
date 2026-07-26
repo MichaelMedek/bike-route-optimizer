@@ -21,9 +21,9 @@ logger = logging.getLogger(__name__)
 _UNNAMED_STOP = "(unnamed stop)"  # placeholder when OSM gives a rail node no station_name
 
 
-def _named_stop(name: str | None) -> str:
-    """A station name, or the readable placeholder for an unnamed OSM stop."""
-    return name or _UNNAMED_STOP
+def place_label(*, name: str, elevation_m: float) -> str:
+    """``Name (739 m)`` — the ONE name+elevation label (start/end + station markers/tooltips)."""
+    return f"{name} ({elevation_m:.0f} m)"
 
 
 def _split_mode_runs(graph: nx.MultiDiGraph, node_path: list[int], mode: str) -> list[list[int]]:
@@ -58,19 +58,39 @@ def split_bike_legs(graph: nx.MultiDiGraph, node_path: list[int]) -> list[list[i
 
 
 @dataclass(frozen=True)
+class Station:
+    """One boarded/alighted rail stop: its name (may be None for an unnamed halt) + position."""
+
+    name: str | None
+    lat: float
+    lon: float
+    elevation_m: float
+
+    @property
+    def name_or_placeholder(self) -> str:
+        """The station name, or a readable placeholder for an unnamed OSM stop."""
+        return self.name or _UNNAMED_STOP
+
+    @property
+    def label(self) -> str:
+        """``Name (739 m)`` for map markers/tooltips — the shared name+elevation format."""
+        return place_label(name=self.name_or_placeholder, elevation_m=self.elevation_m)
+
+
+@dataclass(frozen=True)
 class RailLeg:
     """One train ride the rider takes: the station boarded at and the one alighted at.
 
-    Names come from the rail nodes' ``station_name`` (OSM data — may be None for an
-    unnamed halt), so the rider can look the actual train up in a railway app.
+    Each ``Station`` carries name + position (from the rail node), so the CLI/web lists, the
+    map's station markers, and the ribbon's train-leg tooltip all read from this one structure.
     """
 
-    board: str | None
-    alight: str | None
+    board: Station
+    alight: Station
 
 
 def split_rail_legs(graph: nx.MultiDiGraph, node_path: list[int]) -> list[RailLeg]:
-    """Boarding + alighting station names for each train ride on the route.
+    """Boarding + alighting station (name + position) for each train ride on the route.
 
     A train ride is a maximal run of consecutive RAIL edges (an on-train change at a
     junction stays one ride); the first rail node is boarded, the last alighted. Two
@@ -78,9 +98,32 @@ def split_rail_legs(graph: nx.MultiDiGraph, node_path: list[int]) -> list[RailLe
     route with two trains shows three pedalled Google Maps legs.
     """
     return [
-        RailLeg(board=graph.nodes[run[0]]["station_name"], alight=graph.nodes[run[-1]]["station_name"])
+        RailLeg(board=_station(graph=graph, node=run[0]), alight=_station(graph=graph, node=run[-1]))
         for run in _split_mode_runs(graph=graph, node_path=node_path, mode=Mode.RAIL)
     ]
+
+
+def _station(graph: nx.MultiDiGraph, node: int) -> Station:
+    """Build a Station from a rail node's baked attributes."""
+    data = graph.nodes[node]
+    return Station(name=data["station_name"], lat=data["y"], lon=data["x"], elevation_m=data["elevation"])
+
+
+def route_station_markers(rail_legs: list[RailLeg]) -> list[tuple[float, float, float, str]]:
+    """(lat, lon, elevation_m, label) for every boarded/alighted station across all train rides.
+
+    Feeds the map's station markers; the label is the shared "Name (elev m)" text.
+    """
+    markers: list[tuple[float, float, float, str]] = []
+    for leg in rail_legs:
+        for stop in (leg.board, leg.alight):
+            markers.append((stop.lat, stop.lon, stop.elevation_m, stop.label))
+    return markers
+
+
+def rail_leg_tooltips(rail_legs: list[RailLeg]) -> list[str]:
+    """One "Train: A (e) → B (e)" hover label per train ride, in order (board → alight)."""
+    return [f"Train: {leg.board.label} → {leg.alight.label}" for leg in rail_legs]
 
 
 def format_rail_legs(rail_legs: list[RailLeg]) -> list[str]:
@@ -90,7 +133,7 @@ def format_rail_legs(rail_legs: list[RailLeg]) -> list[str]:
     is still readable rather than crashing on a None the external data legitimately holds.
     """
     return [
-        f"Train {index}: {_named_stop(leg.board)} → {_named_stop(leg.alight)}"
+        f"Train {index}: {leg.board.name_or_placeholder} → {leg.alight.name_or_placeholder}"
         for index, leg in enumerate(rail_legs, start=1)
     ]
 
@@ -122,8 +165,8 @@ def bike_leg_endpoints(
     assert len(rail_legs) == n_legs - 1, "N pedalled legs are separated by N-1 train rides"
     ends: list[tuple[str, str]] = []
     for index in range(n_legs):
-        from_place = origin if index == 0 else _named_stop(rail_legs[index - 1].alight)
-        to_place = destination if index == n_legs - 1 else _named_stop(rail_legs[index].board)
+        from_place = origin if index == 0 else rail_legs[index - 1].alight.name_or_placeholder
+        to_place = destination if index == n_legs - 1 else rail_legs[index].board.name_or_placeholder
         ends.append((from_place, to_place))
     return ends
 

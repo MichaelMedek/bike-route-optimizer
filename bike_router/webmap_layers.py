@@ -10,7 +10,7 @@ from dataclasses import asdict
 import pydeck as pdk
 
 from bike_router.constants import WebMapConfig
-from bike_router.webmap import ViewState
+from bike_router.webmap import RibbonSegment, ViewState
 
 
 def create_terrain_layer(mesh_max_error: float = 1.0) -> pdk.Layer:
@@ -26,73 +26,127 @@ def create_terrain_layer(mesh_max_error: float = 1.0) -> pdk.Layer:
     )
 
 
-def create_route_ribbon_layers(segments: list[tuple[list[int], float, list[list[float]]]]) -> list[pdk.Layer]:
-    """One PathLayer per contiguous run, in its condition colour and speed-scaled width.
+def create_route_ribbon_layers(segments: list[RibbonSegment]) -> list[pdk.Layer]:
+    """One pickable PathLayer per contiguous run, in its condition colour + speed-scaled width.
+
+    Each datum carries a ``tooltip`` string so the deck-level tooltip config shows the
+    segment's surface/road/gradient/speed (or, for a train run, the whole train leg) on hover.
 
     Args:
-        segments: ``(color, width_m, points)`` runs from webmap.route_ribbon_segments;
-            color is RGB, width_m scales with segment speed, points are
-            ``[[lon, lat, z], ...]`` (z already lifted).
+        segments: RibbonSegment runs from webmap.route_ribbon_segments (color RGB, width_m,
+            points ``[[lon, lat, z], ...]`` z-lifted, tooltip text).
     """
     return [
         pdk.Layer(
             "PathLayer",
-            [{"path": points, "color": color}],
+            [{"path": seg.points, "color": seg.color, "tooltip": seg.tooltip}],
             get_path="path",
             get_color="color",
-            get_width=width,
+            get_width=seg.width_m,
             width_min_pixels=WebMapConfig.RIBBON_MIN_PIXELS,
             cap_rounded=True,
             joint_rounded=True,
             id=f"route_ribbon_{index}",
-            pickable=False,
+            pickable=True,
         )
-        for index, (color, width, points) in enumerate(segments)
+        for index, seg in enumerate(segments)
     ]
 
 
-def create_endpoint_layer(start: tuple[float, float, float], end: tuple[float, float, float]) -> pdk.Layer:
-    """ScatterplotLayer with the start (green) and end (red) endpoint markers.
+def _marker_layer(*, layer_id: str, markers: list[dict[str, object]], radius_m: float, min_pixels: int) -> pdk.Layer:
+    """A pickable ScatterplotLayer of billboard markers, each row: position/color/tooltip.
 
-    Each endpoint is ``(lat, lon, elevation_m)`` (snapped to its graph node); the
-    marker hovers RIBBON_FLOAT_ABOVE_M above that elevation, matching the ribbon.
-    Colors match the debug PNG so the PNG and 3D map speak one visual language.
+    Shared by the start/end markers and the (smaller) station hop-on/hop-off markers. Every
+    row's ``tooltip`` feeds the deck-level tooltip config. Drawn on top of the terrain mesh.
     """
-    lift = WebMapConfig.RIBBON_FLOAT_ABOVE_M
-    data = [
-        {"position": [start[1], start[0], start[2] + lift], "color": list(WebMapConfig.START_COLOR)},
-        {"position": [end[1], end[0], end[2] + lift], "color": list(WebMapConfig.END_COLOR)},
-    ]
     return pdk.Layer(
         "ScatterplotLayer",
-        data,
+        markers,
         get_position="position",
         get_fill_color="color",
-        get_radius=WebMapConfig.MARKER_RADIUS_M,
-        radius_min_pixels=WebMapConfig.MARKER_MIN_PIXELS,
+        get_radius=radius_m,
+        radius_min_pixels=min_pixels,
         stroked=True,
         get_line_color=[0, 0, 0],
         line_width_min_pixels=1,
         billboard=True,  # face the camera in the 3D tilted view
         parameters={"depthTest": False},  # draw ON TOP of the terrain mesh, never buried
-        id="route_endpoints",
-        pickable=False,
+        id=layer_id,
+        pickable=True,
+    )
+
+
+def _marker_row(*, lat: float, lon: float, elev: float, color: list[int], tooltip: str) -> dict[str, object]:
+    """One marker datum, lifted above the terrain like the ribbon (single source of the shape)."""
+    return {"position": [lon, lat, elev + WebMapConfig.RIBBON_FLOAT_ABOVE_M], "color": color, "tooltip": tooltip}
+
+
+def create_endpoint_layer(
+    start: tuple[float, float, float], end: tuple[float, float, float], start_label: str, end_label: str
+) -> pdk.Layer:
+    """ScatterplotLayer with the start (blue) and end (cyan) markers, each with a name+elev tooltip.
+
+    Each endpoint is ``(lat, lon, elevation_m)`` (snapped to its graph node); the marker hovers
+    RIBBON_FLOAT_ABOVE_M above that elevation. Colors match the debug PNG.
+    """
+    markers = [
+        _marker_row(
+            lat=start[0], lon=start[1], elev=start[2], color=list(WebMapConfig.START_COLOR), tooltip=start_label
+        ),
+        _marker_row(lat=end[0], lon=end[1], elev=end[2], color=list(WebMapConfig.END_COLOR), tooltip=end_label),
+    ]
+    return _marker_layer(
+        layer_id="route_endpoints",
+        markers=markers,
+        radius_m=WebMapConfig.MARKER_RADIUS_M,
+        min_pixels=WebMapConfig.MARKER_MIN_PIXELS,
+    )
+
+
+def create_station_layer(stations: list[tuple[float, float, float, str]]) -> pdk.Layer:
+    """Rail-coloured markers at each hop-on/hop-off station, smaller than the start/end markers.
+
+    Args:
+        stations: ``(lat, lon, elevation_m, label)`` per boarded/alighted station; the label is
+            the shared "Name (elev m)" text shown on hover.
+    """
+    rail = list(WebMapConfig.RAIL_COLOR)
+    markers = [
+        _marker_row(lat=lat, lon=lon, elev=elev, color=rail, tooltip=label) for lat, lon, elev, label in stations
+    ]
+    return _marker_layer(
+        layer_id="route_stations",
+        markers=markers,
+        radius_m=WebMapConfig.STATION_MARKER_RADIUS_M,
+        min_pixels=WebMapConfig.STATION_MARKER_MIN_PIXELS,
     )
 
 
 def build_deck(
     view: ViewState,
-    ribbon_segments: list[tuple[list[int], float, list[list[float]]]] | None,
+    ribbon_segments: list[RibbonSegment] | None,
     endpoints: tuple[tuple[float, float, float], tuple[float, float, float]] | None = None,
+    endpoint_labels: tuple[str, str] | None = None,
+    stations: list[tuple[float, float, float, str]] | None = None,
 ) -> pdk.Deck:
-    """Assemble the Deck bottom→top: terrain, endpoints, then the route ribbon."""
+    """Assemble the Deck bottom→top: terrain, stations, endpoints, then the route ribbon.
+
+    One deck-level tooltip (``{tooltip}``) serves every pickable layer — each ribbon segment,
+    endpoint, and station datum carries its own ``tooltip`` string (the proven pydeck idiom).
+    """
     layers = [create_terrain_layer()]
+    if stations:
+        layers.append(create_station_layer(stations=stations))
     if endpoints is not None:
-        layers.append(create_endpoint_layer(start=endpoints[0], end=endpoints[1]))
+        labels = endpoint_labels or ("Start", "End")
+        layers.append(
+            create_endpoint_layer(start=endpoints[0], end=endpoints[1], start_label=labels[0], end_label=labels[1])
+        )
     if ribbon_segments is not None:
         layers.extend(create_route_ribbon_layers(segments=ribbon_segments))
     return pdk.Deck(
         layers=layers,
         initial_view_state=pdk.ViewState(**asdict(view)),
         map_provider=None,  # TerrainLayer is the basemap; no Mapbox style needed
+        tooltip={"html": "{tooltip}", "style": {"backgroundColor": "rgba(255,255,255,0.95)", "color": "#333"}},
     )

@@ -445,10 +445,12 @@ class WebMapConfig:
     DEFAULT_BEARING = 0.0
     # Rendered map height in the browser, pixels.
     MAP_HEIGHT_PX = 600
-    # Route ribbon rendered as a PathLayer floating above the terrain mesh; its WIDTH
-    # scales with segment speed (RIBBON_WIDTH_PER_KMH_M metres per km/h — fast = wide).
+    # Route ribbon floats above the terrain mesh; its WIDTH is INVERSELY proportional to
+    # speed (fluid-dynamics: slow spots flow through fatter pipes → wider ribbon). A segment
+    # at RIBBON_REF_SPEED_KMH draws RIBBON_REF_WIDTH_M; half that speed → double the width.
     RIBBON_FLOAT_ABOVE_M = 100.0
-    RIBBON_WIDTH_PER_KMH_M = 1.0
+    RIBBON_REF_SPEED_KMH = 20.0
+    RIBBON_REF_WIDTH_M = 20.0
     RIBBON_MIN_PIXELS = 3
     # Endpoint markers keep their own blue/cyan; the ribbon itself is coloured by
     # CONDITION (green good / graded reds for bad) and purple for trains. All colours come
@@ -466,6 +468,9 @@ class WebMapConfig:
     }
     MARKER_RADIUS_M = 60.0
     MARKER_MIN_PIXELS = 8
+    # Station hop-on/hop-off markers: smaller than the start/end markers, rail-coloured.
+    STATION_MARKER_RADIUS_M = 35.0
+    STATION_MARKER_MIN_PIXELS = 5
     # Zoom, same log formula as ski-resort's MapConfig.zoom_for_span_m:
     VIEWING_ZOOM = 12.0
     ZOOM_SPAN_ANCHOR_M = 8000.0  # a route this long fits at VIEWING_ZOOM

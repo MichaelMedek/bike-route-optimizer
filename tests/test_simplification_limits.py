@@ -7,6 +7,7 @@ from bike_router.constants import GmapsConfig, Mode
 from bike_router.simplify import (
     BikeLeg,
     RailLeg,
+    Station,
     _interpolate_to_n,
     _thin_close_points,
     _triangle_area,
@@ -150,6 +151,19 @@ def test_split_bike_legs_all_rail_yields_no_bike_leg():
 # --- split_rail_legs / format_rail_legs --------------------------------------
 
 
+def _names(legs) -> list[tuple[str | None, str | None]]:  # noqa: ANN001 — list[RailLeg]
+    """(board name, alight name) per leg — the Station→name projection the assertions want."""
+    return [(leg.board.name, leg.alight.name) for leg in legs]
+
+
+def _rail_leg(board: str | None, alight: str | None) -> RailLeg:
+    """A RailLeg from two station names (positions irrelevant for the format/endpoint tests)."""
+    return RailLeg(
+        board=Station(name=board, lat=48.0, lon=8.0, elevation_m=0.0),
+        alight=Station(name=alight, lat=48.0, lon=8.1, elevation_m=0.0),
+    )
+
+
 def test_split_rail_legs_pure_bike_has_no_train():
     graph = make_mixed_mode_graph([(1, 2, Mode.BIKE), (2, 3, Mode.BIKE)])
     assert split_rail_legs(graph=graph, node_path=[1, 2, 3]) == []
@@ -167,7 +181,7 @@ def test_split_rail_legs_one_ride_names_board_and_alight():
         ]
     )
     legs = split_rail_legs(graph=graph, node_path=[1, 2, 3, 4, 5, 6])
-    assert [(leg.board, leg.alight) for leg in legs] == [("Station 3", "Station 4")]
+    assert _names(legs) == [("Station 3", "Station 4")]
 
 
 def test_split_rail_legs_change_stays_one_ride():
@@ -175,7 +189,7 @@ def test_split_rail_legs_change_stays_one_ride():
     # alight last rail node — NOT split at the intermediate station.
     graph = make_mixed_mode_graph([(1, 2, Mode.STATION), (2, 3, Mode.RAIL), (3, 4, Mode.RAIL), (4, 5, Mode.STATION)])
     legs = split_rail_legs(graph=graph, node_path=[1, 2, 3, 4, 5])
-    assert [(leg.board, leg.alight) for leg in legs] == [("Station 2", "Station 4")]
+    assert _names(legs) == [("Station 2", "Station 4")]
 
 
 def test_split_rail_legs_two_separate_rides():
@@ -192,18 +206,18 @@ def test_split_rail_legs_two_separate_rides():
         ]
     )
     legs = split_rail_legs(graph=graph, node_path=[1, 2, 3, 4, 5, 6, 7, 8])
-    assert [(leg.board, leg.alight) for leg in legs] == [("Station 2", "Station 3"), ("Station 6", "Station 7")]
+    assert _names(legs) == [("Station 2", "Station 3"), ("Station 6", "Station 7")]
 
 
 def test_split_rail_legs_ride_at_end_of_path():
     # Route whose LAST edge is rail (no closing station hop) → the ride still emits a leg.
     graph = make_mixed_mode_graph([(1, 2, Mode.STATION), (2, 3, Mode.RAIL)])
     legs = split_rail_legs(graph=graph, node_path=[1, 2, 3])
-    assert [(leg.board, leg.alight) for leg in legs] == [("Station 2", "Station 3")]
+    assert _names(legs) == [("Station 2", "Station 3")]
 
 
 def test_format_rail_legs_numbers_lines_and_handles_unnamed():
-    legs = [RailLeg(board="Freudenstadt", alight="Pforzheim"), RailLeg(board=None, alight="Karlsruhe")]
+    legs = [_rail_leg(board="Freudenstadt", alight="Pforzheim"), _rail_leg(board=None, alight="Karlsruhe")]
     assert format_rail_legs(rail_legs=legs) == [
         "Train 1: Freudenstadt → Pforzheim",
         "Train 2: (unnamed stop) → Karlsruhe",
@@ -221,7 +235,7 @@ def test_bike_leg_endpoints_pure_bike_is_origin_to_destination():
 
 def test_bike_leg_endpoints_one_train_uses_station_names_at_inner_ends():
     # bike → train → bike: leg 0 = origin → boarding station, leg 1 = alighting station → dest.
-    rail = [RailLeg(board="Horb-Heiligenfeld", alight="Freudenstadt Stadt")]
+    rail = [_rail_leg(board="Horb-Heiligenfeld", alight="Freudenstadt Stadt")]
     ends = bike_leg_endpoints(rail_legs=rail, origin="Horb am Neckar", destination="Freudenstadt", n_legs=2)
     assert ends == [
         ("Horb am Neckar", "Horb-Heiligenfeld"),
@@ -230,7 +244,7 @@ def test_bike_leg_endpoints_one_train_uses_station_names_at_inner_ends():
 
 
 def test_bike_leg_endpoints_unnamed_station_falls_back():
-    rail = [RailLeg(board=None, alight=None)]
+    rail = [_rail_leg(board=None, alight=None)]
     ends = bike_leg_endpoints(rail_legs=rail, origin="A", destination="B", n_legs=2)
     assert ends == [("A", "(unnamed stop)"), ("(unnamed stop)", "B")]
 

@@ -13,7 +13,6 @@ import pytest
 from bike_router import pipeline
 from bike_router.constants import Mode
 from bike_router.errors import OutOfCoverageError
-from bike_router.simplify import _UNNAMED_STOP
 from tests.conftest import FIXTURE_GRAPH_DIR, params
 
 # Two real points inside the fixture coverage (Schwarzwald, ~18 km apart, net downhill).
@@ -111,8 +110,8 @@ def test_e2e_baiersbronn_to_freudenstadt_takes_one_train_and_two_bike_legs(tmp_p
     # and the inner ends are the train's boarding / alighting stations (from the one rail leg).
     assert result.bike_legs[0].from_place == "Start"  # _plan stubs origin="Start"
     assert result.bike_legs[1].to_place == "End"  # destination="End"
-    assert result.bike_legs[0].to_place == (result.rail_legs[0].board or _UNNAMED_STOP)
-    assert result.bike_legs[1].from_place == (result.rail_legs[0].alight or _UNNAMED_STOP)
+    assert result.bike_legs[0].to_place == result.rail_legs[0].board.name_or_placeholder
+    assert result.bike_legs[1].from_place == result.rail_legs[0].alight.name_or_placeholder
     # Station hops fold into the "bike route" bucket (not a separate mode); both buckets present.
     assert result.composition.by_mode_km["bike route"] > 0
     assert "station" not in result.composition.by_mode_km

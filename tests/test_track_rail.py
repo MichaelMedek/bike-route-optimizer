@@ -96,6 +96,7 @@ def test_densify_track_follows_baked_3d_polyline_and_keeps_timing():
                 mode=Mode.BIKE,
                 surface_bad=False,
                 road_bad=False,
+                grade=0.0,
                 speed_kmh=25.0,
             ),
             TrackPoint(
@@ -106,6 +107,7 @@ def test_densify_track_follows_baked_3d_polyline_and_keeps_timing():
                 mode=Mode.BIKE,
                 surface_bad=False,
                 road_bad=False,
+                grade=0.0,
                 speed_kmh=18.0,
             ),
         ],
@@ -142,6 +144,7 @@ def test_densify_track_straight_hop_without_geometry():
                 mode=Mode.RAIL,
                 surface_bad=False,
                 road_bad=False,
+                grade=0.0,
                 speed_kmh=80.0,
             ),
             TrackPoint(
@@ -152,6 +155,7 @@ def test_densify_track_straight_hop_without_geometry():
                 mode=Mode.RAIL,
                 surface_bad=False,
                 road_bad=False,
+                grade=0.0,
                 speed_kmh=80.0,
             ),
         ],

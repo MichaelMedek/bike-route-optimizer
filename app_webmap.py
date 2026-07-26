@@ -14,7 +14,13 @@ from bike_router.errors import BikeRouterError
 from bike_router.geocoding import photon_autocomplete
 from bike_router.graph_store import download_graph_from_hf, load_meta
 from bike_router.pipeline import plan_route, resolve_endpoints
-from bike_router.simplify import format_bike_legs, format_rail_legs
+from bike_router.simplify import (
+    format_bike_legs,
+    format_rail_legs,
+    place_label,
+    rail_leg_tooltips,
+    route_station_markers,
+)
 from bike_router.webmap import (
     MODE_DONUT_COLORS,
     ROAD_DONUT_COLORS,
@@ -138,6 +144,7 @@ def main() -> None:
         "end_latlon": None,
         "result": None,
         "ribbon_segments": None,
+        "stations": None,
         "view": default_view_state(),
         "camera_epoch": 0,
     }.items():
@@ -165,6 +172,7 @@ def main() -> None:
                 end_latlon=end,
                 result=None,  # stale route from the previous endpoints
                 ribbon_segments=None,
+                stations=None,
                 view=route_view_state(start_latlon=start[:2], end_latlon=end[:2]),
                 camera_epoch=st.session_state.camera_epoch + 1,
             )
@@ -192,24 +200,42 @@ def main() -> None:
             params = RoutingParams(**slider_values)
             with st.spinner("Planning route…"):
                 result = plan_route(origin=origin, destination=destination, params=params)
-            # No camera_epoch bump → the map keeps the view set in step 2.
-            st.session_state.update(result=result, ribbon_segments=route_ribbon_segments(track=result.track))
+            # No camera_epoch bump → the map keeps the view set in step 2. Rail-leg tooltips label
+            # the train ribbon runs; station markers mark each hop-on/hop-off stop.
+            ribbon = route_ribbon_segments(
+                track=result.track, rail_tooltips=rail_leg_tooltips(rail_legs=result.rail_legs)
+            )
+            st.session_state.update(
+                result=result,
+                ribbon_segments=ribbon,
+                stations=route_station_markers(rail_legs=result.rail_legs),
+            )
         except BikeRouterError as error:  # too short/long, out of coverage, or no route
             st.toast(str(error), icon="⚠️")
     if needs_endpoints:
         st.caption("⬆️ Set start & end first to enable **Compute route**.")
 
-    # 5. 3D map. camera_epoch (bumped only by Set start & end) keys the remount. The rail
-    # baseline (all train lines) always draws, below the route, so trains are visible up front.
+    # 5. 3D map. camera_epoch (bumped only by Set start & end) keys the remount.
     endpoints = (
         (st.session_state.start_latlon, st.session_state.end_latlon)
         if st.session_state.start_latlon is not None
+        else None
+    )
+    # Start/end markers show the typed place + its snapped elevation on hover.
+    endpoint_labels = (
+        (
+            place_label(name=origin, elevation_m=st.session_state.start_latlon[2]),
+            place_label(name=destination, elevation_m=st.session_state.end_latlon[2]),
+        )
+        if endpoints is not None
         else None
     )
     deck = build_deck(
         view=st.session_state.view,
         ribbon_segments=st.session_state.ribbon_segments,
         endpoints=endpoints,
+        endpoint_labels=endpoint_labels,
+        stations=st.session_state.stations,
     )
     st.pydeck_chart(deck, height=WebMapConfig.MAP_HEIGHT_PX, key=f"bike_map_{st.session_state.camera_epoch}")
 

@@ -11,9 +11,9 @@ from dataclasses import dataclass
 import altair as alt
 import pandas as pd
 
-from bike_router.constants import Palette, RoadConfig, SurfaceConfig, WebMapConfig
+from bike_router.constants import Mode, Palette, RoadConfig, SurfaceConfig, WebMapConfig
 from bike_router.geo import haversine_distance_m
-from bike_router.track import Track, classify_condition
+from bike_router.track import Track, TrackPoint, classify_condition
 
 
 def _hex(rgb: tuple[int, int, int]) -> str:
@@ -68,31 +68,88 @@ def segment_color(*, mode: str, surface_bad: bool, road_bad: bool) -> list[int]:
     return list(Palette.hex_to_rgb(hex_color=Palette.CONDITION_COLORS[condition]))
 
 
-def route_ribbon_segments(
-    track: Track, float_above_m: float = WebMapConfig.RIBBON_FLOAT_ABOVE_M
-) -> list[tuple[list[int], float, list[list[float]]]]:
-    """Split the route into contiguous runs of one colour + width for rendering.
+@dataclass(frozen=True)
+class RibbonSegment:
+    """One contiguous run of the route ribbon: colour, width, 3D points, and a hover tooltip."""
 
-    Returns ``(color, width_m, points)`` runs where color comes from segment_color
-    (condition/mode) and width_m from the segment speed (RIBBON_WIDTH_PER_KMH_M per
-    km/h). Consecutive runs share their boundary point so the ribbon stays continuous.
+    color: list[int]
+    width_m: float
+    points: list[list[float]]
+    tooltip: str
+
+
+def place_label(*, name: str, elevation_m: float) -> str:
+    """``Name (739 m)`` — the ONE marker/tooltip label format (start, end, stations, legs)."""
+    return f"{name} ({elevation_m:.0f} m)"
+
+
+def _segment_tooltip(point: TrackPoint) -> str:
+    """Hover text for a pedalled ribbon segment: surface · road · gradient · est. speed."""
+    surface = "unpaved" if point.surface_bad else "paved"
+    road = "main road" if point.road_bad else "quiet way"
+    grade_pct = point.grade * 100
+    slope = f"{grade_pct:+.0f}% {'uphill' if grade_pct > 0.5 else 'downhill' if grade_pct < -0.5 else 'flat'}"
+    return f"{surface} · {road} · {slope} · ~{point.speed_kmh:.0f} km/h"
+
+
+def ribbon_width_m(speed_kmh: float) -> float:
+    """Ribbon width from speed, INVERSELY (fluid-dynamics): half the speed → double the width.
+
+    Slow spots read as fat/congested pipes, fast spots as thin fast-flowing ones — the eye is
+    drawn to the slow parts. Anchored at RIBBON_REF_SPEED_KMH → RIBBON_REF_WIDTH_M.
+    """
+    assert speed_kmh > 0, "speed must be positive to size the ribbon"
+    return WebMapConfig.RIBBON_REF_WIDTH_M * WebMapConfig.RIBBON_REF_SPEED_KMH / speed_kmh
+
+
+def route_ribbon_segments(
+    track: Track,
+    float_above_m: float = WebMapConfig.RIBBON_FLOAT_ABOVE_M,
+    rail_tooltips: list[str] | None = None,
+) -> list[RibbonSegment]:
+    """Split the route into contiguous runs sharing one colour + width + tooltip, for rendering.
+
+    Colour comes from segment_color (condition/mode); width from ribbon_width_m (∝ 1/speed, so
+    slow spots are wider). A pedalled segment's tooltip describes it (surface/road/gradient/speed);
+    a train run shows its whole-leg label from ``rail_tooltips`` (one per train ride, in order).
+    Consecutive runs share their boundary point so the ribbon stays continuous.
 
     Args:
-        track: The computed route track from plan_route (points carry mode/condition/speed).
+        track: The computed route track from plan_route (points carry mode/condition/speed/grade).
         float_above_m: Metres to lift the ribbon above the terrain mesh.
+        rail_tooltips: Whole-leg hover text per train ride (rail_leg_tooltips); None → generic.
     """
     assert len(track.points) >= 2, "ribbon needs at least two points to draw"
-    segments: list[tuple[list[int], float, list[list[float]]]] = []
-    for point in track.points:
+    tips = rail_tooltips or []
+    segments: list[RibbonSegment] = []
+    rail_run = -1  # index into tips; bumped when a fresh train run starts
+    prev_mode = None
+    for point in track.points[1:]:  # each point is the FAR end of one edge (point 0 has no edge)
         xyz = [point.lon, point.lat, point.elevation_m + float_above_m]
         color = segment_color(mode=point.mode, surface_bad=point.surface_bad, road_bad=point.road_bad)
-        width = point.speed_kmh * WebMapConfig.RIBBON_WIDTH_PER_KMH_M
-        # Every point extends the current run (bridging the seam keeps the ribbon
-        # continuous); a colour OR width change then starts a new run.
-        if segments:
-            segments[-1][2].append(xyz)
-        if not segments or segments[-1][0] != color or segments[-1][1] != width:
-            segments.append((color, width, [xyz]))
+        width = ribbon_width_m(speed_kmh=point.speed_kmh)
+        if point.mode == str(Mode.RAIL):
+            if prev_mode != str(Mode.RAIL):
+                rail_run += 1
+            tooltip = tips[rail_run] if rail_run < len(tips) else "Train"
+        else:
+            tooltip = _segment_tooltip(point=point)
+        prev_mode = point.mode
+        # First point of the ribbon anchors the first run; then a colour/width/tooltip change
+        # opens a new run, and every point extends the current run (shared seam = continuous).
+        if not segments:
+            start = track.points[0]
+            segments.append(
+                RibbonSegment(
+                    color=color,
+                    width_m=width,
+                    points=[[start.lon, start.lat, start.elevation_m + float_above_m]],
+                    tooltip=tooltip,
+                )
+            )
+        segments[-1].points.append(xyz)
+        if segments[-1].color != color or segments[-1].width_m != width or segments[-1].tooltip != tooltip:
+            segments.append(RibbonSegment(color=color, width_m=width, points=[xyz], tooltip=tooltip))
     return segments
 
 

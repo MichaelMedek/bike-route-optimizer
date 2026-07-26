@@ -30,6 +30,7 @@ class TrackPoint:
     mode: str
     surface_bad: bool  # pedalled segment on an unpaved/rough surface (tier != 0); False for rail
     road_bad: bool  # pedalled segment on a main road (road tier != 0); False for rail
+    grade: float  # signed rise/run of the arriving edge (+ uphill, − downhill); 0 for the start
     speed_kmh: float  # segment speed (bike: adaptive; rail: RAIL_SPEED_KMH) — drives ribbon width
 
 
@@ -127,9 +128,12 @@ def edge_condition_speed(
         grade = (elev_target - elev_source) / length_m if length_m > 0 else 0.0
         speed_kmh = effective_speed_kmh(surface_tier=s_tier, grade=grade)
         return s_tier != 0, road_tier(highway=data.get("highway")) != 0, speed_kmh
-    if mode == Mode.RAIL:
+    elif mode == Mode.RAIL:
         return False, False, RailConfig.RAIL_SPEED_KMH
-    return False, False, SpeedConfig.WALK_KMH  # station edge: short walk to the platform
+    elif mode == Mode.STATION:
+        return False, False, SpeedConfig.WALK_KMH  # short walk to the platform
+    else:
+        raise AssertionError(f"unknown edge mode: {mode!r}")
 
 
 def classify_condition(*, mode: str, surface_bad: bool, road_bad: bool) -> str:
@@ -165,6 +169,8 @@ def build_track(graph: nx.MultiDiGraph, node_path: list[int]) -> Track:
         elev_target=float(graph.nodes[node_path[1]]["elevation"]),
         length_m=float(first_data["length"]),
     )
+    first_len = float(first_data["length"])
+    first_grade = (float(graph.nodes[node_path[1]]["elevation"]) - float(first["elevation"])) / first_len
     points = [
         TrackPoint(
             lat=first["y"],
@@ -174,6 +180,7 @@ def build_track(graph: nx.MultiDiGraph, node_path: list[int]) -> Track:
             mode=str(first_data["mode"]),
             surface_bad=first_surface_bad,
             road_bad=first_road_bad,
+            grade=first_grade,
             speed_kmh=first_speed,
         )
     ]
@@ -201,13 +208,16 @@ def build_track(graph: nx.MultiDiGraph, node_path: list[int]) -> Track:
             bike_s += leg_s
         elif data["mode"] == Mode.RAIL:
             leg_s = length_m / rail_speed_ms  # train ride time, derived from length
-        else:  # Mode.STATION — boarding (entering a rail node) waits; alighting is free
+        elif data["mode"] == Mode.STATION:  # boarding (entering a rail node) waits; alighting is free
             boarding = graph.nodes[node_b]["node_type"] == NodeType.RAIL
             leg_s = RailConfig.BOARDING_WAIT_S if boarding else 0.0
+        else:
+            raise AssertionError(f"unknown edge mode: {data['mode']!r}")
         total_s += leg_s
         total_m += length_m
 
         target = graph.nodes[node_b]
+        grade = delta / length_m
         points.append(
             TrackPoint(
                 lat=target["y"],
@@ -217,6 +227,7 @@ def build_track(graph: nx.MultiDiGraph, node_path: list[int]) -> Track:
                 mode=str(data["mode"]),
                 surface_bad=surface_bad,
                 road_bad=road_bad,
+                grade=grade,
                 speed_kmh=speed_kmh,
             )
         )
@@ -264,6 +275,7 @@ def densify_track(graph: nx.MultiDiGraph, node_path: list[int], track: Track) ->
         # Condition + speed are per-edge; the arriving point (index+1) carries the leg's.
         leg_point = track.points[index + 1]
         leg_surface_bad, leg_road_bad, leg_speed = leg_point.surface_bad, leg_point.road_bad, leg_point.speed_kmh
+        leg_grade = leg_point.grade  # the leg's node-level gradient, shared by its dense vertices
         verts = edge_vertices_3d(graph=graph, node_a=node_a, node_b=node_b, data=data)
         t_start, t_end = track.points[index].elapsed_s, track.points[index + 1].elapsed_s
         seg_lengths = [
@@ -285,6 +297,7 @@ def densify_track(graph: nx.MultiDiGraph, node_path: list[int], track: Track) ->
                     mode=mode,
                     surface_bad=leg_surface_bad,
                     road_bad=leg_road_bad,
+                    grade=leg_grade,
                     speed_kmh=leg_speed,
                 )
             )
