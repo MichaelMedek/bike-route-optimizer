@@ -1,8 +1,8 @@
 """Eco- & surface-optimized bicycle route planner — CLI entrypoint.
 
 Usage:
-    python main.py "Freudenstadt, Germany" "Pforzheim, Germany"
-    python main.py "A" "B" --extra_km_per_uphill_100m 100   # force a flat route
+    python bike_route.py "Freudenstadt, Germany" "Pforzheim, Germany"
+    python bike_route.py "A" "B" --extra_km_per_uphill_100m 100   # force a flat route
 
 Computes one route tuned by five "extra km" preferences, written to a place-stamped
 GPX + debug PNG. The prebuilt DACH bike+rail graph (downloaded from Hugging Face on

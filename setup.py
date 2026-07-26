@@ -26,9 +26,9 @@ setup(
     long_description_content_type="text/markdown",
     url="https://github.com/MichaelMedek/bike-route-optimizer",
     packages=find_packages(include=["bike_router", "bike_router.*"]),
-    py_modules=["main"],
+    py_modules=["bike_route"],
     install_requires=requirements,
-    entry_points={"console_scripts": ["bike-route=main:main"]},
+    entry_points={"console_scripts": ["bike-route=bike_route:main"]},
     classifiers=[
         "Programming Language :: Python :: 3.11",
         "License :: OSI Approved :: MIT License",
