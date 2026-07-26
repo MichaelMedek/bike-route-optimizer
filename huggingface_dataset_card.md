@@ -38,9 +38,9 @@ The exact bounding box built is recorded in `meta.json` (`bbox` = `[west, south,
 
 ## What's in the graph
 
-- **Bike network** — every bike-legal way, with soft/unrideable surfaces (mud, sand, grass) removed, degree-2 pass-through nodes contracted, and intersections within **25 m** consolidated to shrink the graph while keeping the true road shape.
-- **Railway** — stations wired into the network with bike↔station *transfer* edges (within 500 m) and station→station *rail* edges.
-- **Baked elevation** — every node has an `elevation_m`, and every bike edge's geometry is a 3D `LINESTRING Z (lon lat elev …)`, so the elevation profile follows the real road.
+- **Bike network** — every bike-legal way, with genuinely unrideable surfaces (mud, sand, rock, …) removed while rough-but-rideable ground (dirt, grass, earth, …) is kept and penalised, degree-2 pass-through nodes contracted, and intersections within **25 m** consolidated to shrink the graph while keeping the true road shape.
+- **Railway** — stations wired into the network with bike↔station *station* access edges (nearest bike nodes within **200 m**) and station→station *rail* edges.
+- **Baked elevation** — every node has an `elevation_m`, and every bike and rail edge's geometry is a 3D `LINESTRING Z (lon lat elev …)`, so the elevation profile follows the real road/track.
 
 ## File layout
 
@@ -54,12 +54,12 @@ edges/tile_<row>_<col>.parquet
 
 ### Schema
 
-**nodes** — `osmid, lat, lon, elevation_m, station_name` (a null `station_name` marks a plain bike node; a non-null one marks a railway station).
+**nodes** — `osmid, lat, lon, elevation_m, node_type, station_name` (`node_type` is `bike` or `rail`; `station_name` is null for bike nodes and, on a rail node, may still be null for an unnamed halt).
 
 **edges** — `from_node, to_node, key, length_m, height_diff_m, surface, highway, mode, geometry_wkt`
 
-- `mode` is one of `bike`, `rail`, `transfer`.
-- `geometry_wkt` is a 3D `LINESTRING Z` for bike edges; null for straight rail/transfer hops.
+- `mode` is one of `bike`, `rail`, `station` (a `station` edge is the bike↔station access link).
+- `geometry_wkt` is a 3D `LINESTRING Z` for bike and rail edges; null for straight station hops.
 - `key` is the parallel-edge index (a `(from_node, to_node, key)` triple is unique).
 
 Coordinates are WGS84 (EPSG:4326), rounded to 6 decimals (~0.1 m).
