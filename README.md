@@ -87,8 +87,8 @@ python scripts/crop_dem_to_dach.py --input ~/Downloads/euro-dem-tif/data/eurodem
 # quick check on one small region, clipped to a test bbox (Schwarzwald, ~5 min).
 python scripts/build_dach_graph.py --only karlsruhe-regbez --bbox 8.30 48.40 8.80 48.95
 
-# full DACH (downloads ~5 GB of extracts, runs for hours). Output dir must be empty first. Use detached so it survives closing the terminal, logging live to build_dach.log:
-nohup python -u scripts/build_dach_graph.py > build_dach.log 2>&1 &
+# full DACH (~5 GB, hours; output dir must be empty). Detached + no-sleep, logs to build_dach.log:
+nohup caffeinate -s .venv/bin/python -u scripts/build_dach_graph.py > build_dach.log 2>&1 &
 
 # publish the finished graph to Hugging Face (separate step; log in once when prompted)
 python scripts/upload_graph_to_huggingface.py
