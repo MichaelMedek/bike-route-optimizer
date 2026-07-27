@@ -290,17 +290,21 @@ def reindex_region(nodes_df: pd.DataFrame, edges_df: pd.DataFrame, offset: int) 
 def dedup_by_geometry(nodes_df: pd.DataFrame, edges_df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Collapse border duplicates that appear in two regions' reference-complete extracts.
 
-    Nodes coinciding in (lat, lon) to COORD_PRECISION collapse to the lower-(lat, lon) copy
-    (others repointed onto it); edges collapse only if endpoints AND geometry (rounded WKT, or
-    endpoints+mode for null-geometry hops) coincide — so genuinely parallel roads both survive.
+    Nodes coinciding in (lat, lon, node_type) to COORD_PRECISION collapse to the lower-(lat, lon)
+    copy (others repointed onto it) — node_type is IN the key so a bike node and a station/rail node
+    at the same spot stay SEPARATE (a station is its own node reachable only via a station edge).
+    Edges collapse only if endpoints AND geometry (rounded WKT, or endpoints+mode for null-geometry
+    hops) coincide — so genuinely parallel roads both survive.
     """
     prec = GraphConfig.COORD_PRECISION
     nodes_df = nodes_df.copy()
-    # Canonical node per rounded (lat, lon): the row with the lowest (lat, lon), then id.
+    # Canonical node per rounded (lat, lon, node_type): the row with the lowest (lat, lon), then id.
+    # node_type MUST be in the key — else a coincident bike+rail node would merge, leaving a bike
+    # edge pointing at a rail node (breaks the type invariant the graph model guarantees).
     nodes_df = nodes_df.sort_values(["lat", "lon", "osmid"], kind="stable")
     key_lat = nodes_df["lat"].round(prec)
     key_lon = nodes_df["lon"].round(prec)
-    nodes_df["_key"] = list(zip(key_lat, key_lon, strict=True))
+    nodes_df["_key"] = list(zip(key_lat, key_lon, nodes_df["node_type"], strict=True))
     canonical = nodes_df.groupby("_key")["osmid"].transform("first")
     repoint = dict(zip(nodes_df["osmid"], canonical, strict=True))  # every id → its kept id
     kept_nodes = nodes_df.drop_duplicates(subset="_key", keep="first").drop(columns="_key")

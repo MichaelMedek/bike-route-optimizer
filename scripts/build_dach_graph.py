@@ -18,7 +18,9 @@ Usage:
     python scripts/build_dach_graph.py
 
 Why sub-regions (Regierungsbezirke etc.) not whole countries: consolidation memory
-scales with a region's node count; a regbez peaks ~20 GB, whole-Germany would OOM.
+scales with a region's node count; a regbez peaks ~20-32 GB, whole-Germany would OOM.
+Austria and Switzerland have no Geofabrik sub-extracts, so they are bbox-split east/west
+(one shared pbf, ~0.5° overlapping halves that Phase-3 dedup stitches) — see DACH_REGIONS.
 """
 
 import argparse
@@ -31,6 +33,7 @@ import socket
 import time
 import urllib.error
 import urllib.request
+from dataclasses import dataclass
 from pathlib import Path
 
 import networkx as nx
@@ -65,58 +68,91 @@ _VALIDATION_PROBES = 10  # Phase 4: random cross-region node pairs checked for c
 # Sanity ceiling on the merged node count (DACH is ~3–5M); a larger total means a logic error
 # upstream, so Phase 3 fails fast rather than writing a suspect artifact.
 _MAX_TOTAL_NODES = 100_000_000_000
-_VALIDATION_PROBES = 10  # Phase 4: random cross-region node pairs checked for connectivity
+
+Bbox = tuple[float, float, float, float]  # (west, south, east, north) in WGS84 degrees
+
+
+def split_geofabrik_path(geofabrik_path: str) -> str:
+    """The Geofabrik leaf name (cache filename) — bbox-split halves share it so a pbf downloads once."""
+    return geofabrik_path.rsplit("/", maxsplit=1)[-1]
+
+
+@dataclass(frozen=True)
+class Region:
+    """One region to build: a unique output key, its Geofabrik pbf, and an optional bbox clip.
+
+    ``bbox`` splits a too-big whole-country pbf into memory-bounded halves that share one downloaded pbf.
+    Adjacent halves OVERLAP by ~0.5° (~75 km, > the ~29 km longest rail edge);
+    Phase-3 geometry-dedup then collapses the duplicated seam (the same mechanism that already
+    merges Geofabrik regions, which overlap 60–90 km). ``pbf_name`` is the shared cache filename.
+    """
+
+    key: str
+    geofabrik_path: str
+    bbox: Bbox | None = None
+
+    @property
+    def pbf_name(self) -> str:
+        """Cache filename for the raw pbf — the Geofabrik leaf, so split halves reuse one download."""
+        return split_geofabrik_path(geofabrik_path=self.geofabrik_path)
+
 
 # DACH at Geofabrik sub-region granularity. Big Flächenländer are split into their
-# Regierungsbezirke (bounded per-region memory); smaller states + AT + CH stay whole.
-# key → geofabrik path (without the -latest.osm.pbf suffix).
-DACH_REGIONS: dict[str, str] = {
+# Regierungsbezirke (bounded per-region memory); smaller states stay whole.
+# Austria and Switzerland have NO Geofabrik sub-extracts, so they are bbox-split east/west here.
+_AUSTRIA = "austria"  # extent ~9.53–17.16 E; split meridian 13.35, ±0.5° overlap
+_SWITZERLAND = "switzerland"  # extent ~5.96–10.49 E; split meridian 8.22, ±0.5° overlap
+DACH_REGIONS: list[Region] = [
     # Baden-Württemberg
-    "freiburg-regbez": "germany/baden-wuerttemberg/freiburg-regbez",
-    "karlsruhe-regbez": "germany/baden-wuerttemberg/karlsruhe-regbez",
-    "stuttgart-regbez": "germany/baden-wuerttemberg/stuttgart-regbez",
-    "tuebingen-regbez": "germany/baden-wuerttemberg/tuebingen-regbez",
+    Region("freiburg-regbez", "germany/baden-wuerttemberg/freiburg-regbez"),
+    Region("karlsruhe-regbez", "germany/baden-wuerttemberg/karlsruhe-regbez"),
+    Region("stuttgart-regbez", "germany/baden-wuerttemberg/stuttgart-regbez"),
+    Region("tuebingen-regbez", "germany/baden-wuerttemberg/tuebingen-regbez"),
     # Bayern
-    "mittelfranken": "germany/bayern/mittelfranken",
-    "niederbayern": "germany/bayern/niederbayern",
-    "oberbayern": "germany/bayern/oberbayern",
-    "oberfranken": "germany/bayern/oberfranken",
-    "oberpfalz": "germany/bayern/oberpfalz",
-    "schwaben": "germany/bayern/schwaben",
-    "unterfranken": "germany/bayern/unterfranken",
+    Region("mittelfranken", "germany/bayern/mittelfranken"),
+    Region("niederbayern", "germany/bayern/niederbayern"),
+    Region("oberbayern", "germany/bayern/oberbayern"),
+    Region("oberfranken", "germany/bayern/oberfranken"),
+    Region("oberpfalz", "germany/bayern/oberpfalz"),
+    Region("schwaben", "germany/bayern/schwaben"),
+    Region("unterfranken", "germany/bayern/unterfranken"),
     # Nordrhein-Westfalen
-    "arnsberg-regbez": "germany/nordrhein-westfalen/arnsberg-regbez",
-    "detmold-regbez": "germany/nordrhein-westfalen/detmold-regbez",
-    "duesseldorf-regbez": "germany/nordrhein-westfalen/duesseldorf-regbez",
-    "koeln-regbez": "germany/nordrhein-westfalen/koeln-regbez",
-    "muenster-regbez": "germany/nordrhein-westfalen/muenster-regbez",
+    Region("arnsberg-regbez", "germany/nordrhein-westfalen/arnsberg-regbez"),
+    Region("detmold-regbez", "germany/nordrhein-westfalen/detmold-regbez"),
+    Region("duesseldorf-regbez", "germany/nordrhein-westfalen/duesseldorf-regbez"),
+    Region("koeln-regbez", "germany/nordrhein-westfalen/koeln-regbez"),
+    Region("muenster-regbez", "germany/nordrhein-westfalen/muenster-regbez"),
     # Remaining German states (whole — each smaller than a big Flächenland regbez)
-    "berlin": "germany/berlin",
-    "brandenburg": "germany/brandenburg",
-    "bremen": "germany/bremen",
-    "hamburg": "germany/hamburg",
-    "hessen": "germany/hessen",
-    "mecklenburg-vorpommern": "germany/mecklenburg-vorpommern",
-    "niedersachsen": "germany/niedersachsen",
-    "rheinland-pfalz": "germany/rheinland-pfalz",
-    "saarland": "germany/saarland",
-    "sachsen": "germany/sachsen",
-    "sachsen-anhalt": "germany/sachsen-anhalt",
-    "schleswig-holstein": "germany/schleswig-holstein",
-    "thueringen": "germany/thueringen",
-    # Austria + Switzerland (sit directly under europe/, same as our base URL).
-    "austria": "austria",
-    "switzerland": "switzerland",
-}
+    Region("berlin", "germany/berlin"),
+    Region("brandenburg", "germany/brandenburg"),
+    Region("bremen", "germany/bremen"),
+    Region("hamburg", "germany/hamburg"),
+    Region("hessen", "germany/hessen"),
+    Region("mecklenburg-vorpommern", "germany/mecklenburg-vorpommern"),
+    Region("niedersachsen", "germany/niedersachsen"),
+    Region("rheinland-pfalz", "germany/rheinland-pfalz"),
+    Region("saarland", "germany/saarland"),
+    Region("sachsen", "germany/sachsen"),
+    Region("sachsen-anhalt", "germany/sachsen-anhalt"),
+    Region("schleswig-holstein", "germany/schleswig-holstein"),
+    Region("thueringen", "germany/thueringen"),
+    # Austria — one pbf, split east/west at 13.35° E with ±0.5° (~75 km) overlap.
+    Region("austria-west", _AUSTRIA, bbox=(9.4, 46.3, 13.85, 49.1)),
+    Region("austria-east", _AUSTRIA, bbox=(12.85, 46.3, 17.25, 49.1)),
+    # Switzerland — one pbf, split east/west at 8.22° E with ±0.5° (~75 km) overlap.
+    Region("switzerland-west", _SWITZERLAND, bbox=(5.85, 45.7, 8.72, 47.9)),
+    Region("switzerland-east", _SWITZERLAND, bbox=(7.72, 45.7, 10.55, 47.9)),
+]
 
 
-def _download_pbf(*, region_key: str, geofabrik_path: str) -> Path:
+def _download_pbf(*, geofabrik_path: str) -> Path:
     """Download a region's .osm.pbf if missing (atomic: temp + rename). Returns its path.
 
+    Cached by the Geofabrik leaf name, so bbox-split halves sharing one pbf download it once.
     A failed transfer unlinks its partial .tmp and re-raises so no orphan/partial lingers.
     """
     _PBF_DIR.mkdir(parents=True, exist_ok=True)
-    dest = _PBF_DIR / f"{region_key}.osm.pbf"
+    dest = _PBF_DIR / f"{split_geofabrik_path(geofabrik_path=geofabrik_path)}.osm.pbf"
     if dest.exists() and dest.stat().st_size > 0:
         return dest
     url = f"{_GEOFABRIK}/{geofabrik_path}-latest.osm.pbf"
@@ -137,7 +173,7 @@ def _download_pbf(*, region_key: str, geofabrik_path: str) -> Path:
     return dest
 
 
-def _download_region(*, region_key: str, geofabrik_path: str) -> Path:
+def _download_region(*, geofabrik_path: str) -> Path:
     """Download one region's pbf, retrying only transient network failures.
 
     A retry-exhausted download raises (aborting the whole run) — a missing region must
@@ -146,9 +182,9 @@ def _download_region(*, region_key: str, geofabrik_path: str) -> Path:
     """
     for attempt in range(1, _DOWNLOAD_RETRIES + 1):
         try:
-            return _download_pbf(region_key=region_key, geofabrik_path=geofabrik_path)
+            return _download_pbf(geofabrik_path=geofabrik_path)
         except (urllib.error.URLError, TimeoutError) as error:  # transient network only
-            logger.warning(f"download {region_key} attempt {attempt}/{_DOWNLOAD_RETRIES} failed: {error}")
+            logger.warning(f"download {geofabrik_path} attempt {attempt}/{_DOWNLOAD_RETRIES} failed: {error}")
             if attempt == _DOWNLOAD_RETRIES:
                 raise
             time.sleep(5 * attempt)
@@ -322,8 +358,8 @@ def main(argv: list[str] | None = None) -> int:
         level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s", datefmt="%H:%M:%S"
     )
 
-    regions = {k: DACH_REGIONS[k] for k in args.only} if args.only else dict(DACH_REGIONS)
-    bbox = tuple(args.bbox) if args.bbox else None
+    regions = [r for r in DACH_REGIONS if r.key in set(args.only)] if args.only else list(DACH_REGIONS)
+    cli_bbox = tuple(args.bbox) if args.bbox else None  # global test clip; overrides each region's own bbox
     out_dir = GraphConfig.GRAPH_DIR
     tolerance_m = GraphConfig.CONSOLIDATION_TOLERANCE_M
 
@@ -331,30 +367,38 @@ def main(argv: list[str] | None = None) -> int:
     # the area we're about to build (a too-small DEM would bake flat elevations everywhere).
     _assert_output_empty(out_dir=out_dir)
     dem = DEMService(dem_path=DEMConfig.EURODEM_PATH)
-    _assert_dem_covers(dem=dem, area=bbox or GraphConfig.DACH_BBOX_DEG)
+    _assert_dem_covers(dem=dem, area=cli_bbox or GraphConfig.DACH_BBOX_DEG)
     w, s, e, n = dem.bounds
     logger.info(f"DEM ready: coverage W,S,E,N = {w:.2f}, {s:.2f}, {e:.2f}, {n:.2f}")
 
     started = time.time()
 
-    # Phase 1 — DOWNLOAD every region's raw pbf up front (skip-if-present). Any failure aborts.
+    # Phase 1 — DOWNLOAD every distinct pbf up front (skip-if-present). Split halves share one pbf,
+    # so dedup by geofabrik_path. Any failure aborts.
     pbfs = {
-        region_key: _download_region(region_key=region_key, geofabrik_path=geofabrik_path)
-        for region_key, geofabrik_path in tqdm(regions.items(), desc="1/4 Downloading pbfs", unit="region")
+        gp: _download_region(geofabrik_path=gp)
+        for gp in tqdm(sorted({r.geofabrik_path for r in regions}), desc="1/4 Downloading pbfs", unit="pbf")
     }
 
-    # Phase 2 — PROCESS each region in isolation: build, remap to contiguous ids, write its own
-    # app-loadable artifact, then free the ~20 GB graph before the next (peak RSS ≈ one region).
-    # Skip regions already flagged confirmed_complete; a build failure aborts (real bug).
-    for region_key, pbf in tqdm(pbfs.items(), desc="2/4 Building regions", unit="region"):
-        if _region_complete(region_key=region_key):
-            logger.info(f"{region_key}: skipped, already complete")
+    # Phase 2 — PROCESS each region in isolation: build (clipped to the region's bbox if any), remap
+    # to contiguous ids, write its own artifact, then free the ~20 GB graph before the next (peak RSS
+    # ≈ one region). Skip regions already flagged confirmed_complete; a build failure aborts (real bug).
+    for region in tqdm(regions, desc="2/4 Building regions", unit="region"):
+        if _region_complete(region_key=region.key):
+            logger.info(f"{region.key}: skipped, already complete")
             continue
-        _process_region(region_key=region_key, pbf=pbf, dem=dem, bbox=bbox, tolerance_m=tolerance_m)
-        logger.info(f"{region_key}: peak RSS {_peak_rss_gb():.1f} GB")
+        _process_region(
+            region_key=region.key,
+            pbf=pbfs[region.geofabrik_path],
+            dem=dem,
+            bbox=cli_bbox or region.bbox,
+            tolerance_m=tolerance_m,
+        )
+        logger.info(f"{region.key}: peak RSS {_peak_rss_gb():.1f} GB")
 
-    # Phase 3 — COMBINE per-region artifacts into globally-consistent tiled shards.
-    built = sorted(regions)
+    # Phase 3 — COMBINE per-region artifacts into globally-consistent tiled shards (zstd — the final
+    # artifact uploaded to HF, ~35% smaller than snappy; readers auto-detect the codec).
+    built = sorted(r.key for r in regions)
     _assert_all_regions_complete(regions=built)
     nodes_df, edges_df = _combine_regions(regions=built)
     meta = {
@@ -366,7 +410,7 @@ def main(argv: list[str] | None = None) -> int:
         "n_stations": int((nodes_df["node_type"] == NodeType.RAIL).sum()),
         "regions_built": built,
     }
-    write_graph_parquet(nodes_df=nodes_df, edges_df=edges_df, meta=meta, out_dir=out_dir)
+    write_graph_parquet(nodes_df=nodes_df, edges_df=edges_df, meta=meta, out_dir=out_dir, compression="zstd")
     del nodes_df, edges_df
     gc.collect()
 

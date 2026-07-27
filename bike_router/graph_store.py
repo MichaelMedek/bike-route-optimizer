@@ -77,11 +77,15 @@ def compute_bbox(nodes_df: pd.DataFrame) -> tuple[float, float, float, float]:
     )
 
 
-def write_graph_parquet(nodes_df: pd.DataFrame, edges_df: pd.DataFrame, meta: dict[str, Any], out_dir: Path) -> None:
+def write_graph_parquet(
+    nodes_df: pd.DataFrame, edges_df: pd.DataFrame, meta: dict[str, Any], out_dir: Path, compression: str = "snappy"
+) -> None:
     """Write node/edge tables as lat/lon-tiled Parquet + meta.json under ``out_dir``.
 
     Nodes are tiled by their own coordinate; edges by their ``from_node``'s tile, so a
-    corridor read (covering tiles + 1 margin) reliably pulls both endpoints.
+    corridor read (covering tiles + 1 margin) reliably pulls both endpoints. ``compression``
+    is the parquet codec: "snappy" (fast, for per-region intermediates) or "zstd" (~35%
+    smaller, for the final artifact uploaded to HF — readers auto-detect the codec).
     """
     assert list(nodes_df.columns) == _NODE_COLS, f"nodes schema drift: {list(nodes_df.columns)}"
     assert list(edges_df.columns) == _EDGE_COLS, f"edges schema drift: {list(edges_df.columns)}"
@@ -106,9 +110,13 @@ def write_graph_parquet(nodes_df: pd.DataFrame, edges_df: pd.DataFrame, meta: di
     edges_df = edges_df.assign(_tile=edge_tiles)
 
     for (row, col), group in nodes_df.groupby("_tile"):
-        group[_NODE_COLS].to_parquet(nodes_dir / f"{_tile_name(row=row, col=col)}.parquet", index=False)
+        group[_NODE_COLS].to_parquet(
+            nodes_dir / f"{_tile_name(row=row, col=col)}.parquet", index=False, compression=compression
+        )
     for (row, col), group in edges_df.groupby("_tile"):
-        group[_EDGE_COLS].to_parquet(edges_dir / f"{_tile_name(row=row, col=col)}.parquet", index=False)
+        group[_EDGE_COLS].to_parquet(
+            edges_dir / f"{_tile_name(row=row, col=col)}.parquet", index=False, compression=compression
+        )
 
     (out_dir / GraphConfig.META_FILENAME).write_text(json.dumps(meta, indent=2))
     logger.info(f"Wrote {len(nodes_df)} nodes / {len(edges_df)} edges across tiles to {out_dir}")

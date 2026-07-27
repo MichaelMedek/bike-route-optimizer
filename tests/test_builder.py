@@ -159,8 +159,13 @@ _EDGE_COLS = ["from_node", "to_node", "key", "length_m", "height_diff_m", "surfa
 
 
 def _nodes(rows: list[tuple]) -> gpd.GeoDataFrame:  # noqa: ANN001
-    """(osmid, lat, lon) rows → a node frame with the standard schema."""
+    """(osmid, lat, lon) rows → a node frame with the standard schema (all bike)."""
     return gpd.GeoDataFrame([(i, lat, lon, 0.0, "bike", None) for i, lat, lon in rows], columns=_NODE_COLS)
+
+
+def _typed_nodes(rows: list[tuple]) -> gpd.GeoDataFrame:  # noqa: ANN001
+    """(osmid, lat, lon, node_type) rows → a node frame; lets tests place bike + rail at one coord."""
+    return gpd.GeoDataFrame([(i, lat, lon, 0.0, nt, None) for i, lat, lon, nt in rows], columns=_NODE_COLS)
 
 
 def _edges(rows: list[tuple]) -> gpd.GeoDataFrame:  # noqa: ANN001
@@ -232,6 +237,58 @@ def test_dedup_beyond_precision_not_merged():
     edges = _edges([(0, 1, 0, "bike", None)])
     kn, ke = dedup_by_geometry(nodes_df=nodes, edges_df=edges)
     assert sorted(kn["osmid"]) == [0, 1] and len(ke) == 1
+
+
+def test_dedup_bike_and_rail_at_same_coord_NOT_merged():
+    # REGRESSION (the Phase-3 corruption bug): a bike node and a rail node at the SAME rounded
+    # coordinate are DIFFERENT nodes and must NOT merge — node_type is part of the dedup key. Merging
+    # them would leave a bike edge pointing at a rail node, breaking the type invariant.
+    nodes = _typed_nodes([(0, 48.0, 8.0, "bike"), (1, 48.0, 8.0, "rail")])  # identical coord, diff type
+    edges = _edges([(0, 0, 0, "bike", None), (1, 1, 0, "rail", None)])  # self-loops just to reference each
+    kn, _ke = dedup_by_geometry(nodes_df=nodes, edges_df=edges)
+    assert len(kn) == 2, "bike + rail at one coord must stay TWO separate nodes"
+    assert set(kn["node_type"]) == {"bike", "rail"}
+    assert sorted(kn["osmid"]) == [0, 1]  # neither dropped
+
+
+def test_dedup_same_type_at_same_coord_still_merges():
+    # The node_type key must NOT over-separate: two BIKE nodes at one coord still collapse to one.
+    nodes = _typed_nodes([(0, 48.0, 8.0, "bike"), (1, 48.0, 8.0, "bike")])
+    edges = _edges([(1, 0, 0, "bike", None)])
+    kn, ke = dedup_by_geometry(nodes_df=nodes, edges_df=edges)
+    assert list(kn["osmid"]) == [0]  # merged to the lower id
+    assert list(ke["from_node"]) == [0] and list(ke["to_node"]) == [0]  # edge repointed onto survivor
+
+
+def test_dedup_two_rail_at_same_coord_merge_but_not_with_bike():
+    # Mixed: at one coord sit two RAIL nodes + one BIKE node. The two rail merge into one; the bike
+    # stays separate. Result: exactly 2 nodes (one rail, one bike), types intact.
+    nodes = _typed_nodes([(0, 48.0, 8.0, "rail"), (1, 48.0, 8.0, "rail"), (2, 48.0, 8.0, "bike")])
+    edges = _edges([(1, 2, 0, "station", None)])  # rail(1)↔bike(2) station edge
+    kn, ke = dedup_by_geometry(nodes_df=nodes, edges_df=edges)
+    assert len(kn) == 2 and set(kn["node_type"]) == {"rail", "bike"}
+    assert sorted(kn["osmid"]) == [0, 2]  # rail 1→0 (merged), bike 2 kept
+    assert list(ke["from_node"]) == [0] and list(ke["to_node"]) == [2]  # station edge repointed rail→0
+
+
+def test_dedup_coincident_bike_rail_keeps_edges_type_consistent_through_rebuild():
+    # END-TO-END: coincident bike+rail + their edges survive dedup AND graph_from_tables' node/edge
+    # type-consistency assertion (which raised "bike edge has rail endpoint" before the fix).
+    from bike_router.graph_store import graph_from_tables
+
+    nodes = _typed_nodes([(0, 48.0, 8.0, "bike"), (1, 48.0, 8.0, "rail"), (2, 48.05, 8.0, "bike")])
+    edges = _edges(
+        [
+            (0, 2, 0, "bike", "LINESTRING (8.0 48.0, 8.0 48.05)"),  # bike↔bike
+            (2, 0, 0, "bike", "LINESTRING (8.0 48.05, 8.0 48.0)"),
+            (0, 1, 0, "station", None),  # bike↔rail (the coincident pair)
+            (1, 0, 0, "station", None),
+        ]
+    )
+    kn, ke = dedup_by_geometry(nodes_df=nodes, edges_df=edges)
+    assert len(kn) == 3  # nothing wrongly merged
+    graph = graph_from_tables(nodes_df=kn, edges_df=ke)  # asserts type consistency internally — must not raise
+    assert graph.number_of_nodes() == 3 and graph.number_of_edges() == 4
 
 
 def test_dedup_preserves_rail_station_types_through_graph_rebuild():
