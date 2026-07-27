@@ -244,12 +244,10 @@ def _assert_all_regions_complete(*, regions: list[str]) -> None:
 
 
 def _combine_regions(*, regions: list[str]) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """Phase 3: read each region's contiguous-id artifact, offset into a global id space, dedup.
+    """Phase 3: offset each region's contiguous ids into a global space, dedup the seam, re-densify.
 
-    Regions are processed in sorted order with a running offset (ΣN of earlier regions) so the
-    merged ids are collision-free, border duplicates are collapsed by geometry, then a final
-    contiguous remap closes the holes dedup left (so n_nodes == max_id + 1). Returns the combined
-    (nodes_df, edges_df) ready to re-tile.
+    A running offset (ΣN of earlier regions) makes ids collision-free; geometry dedup collapses
+    border duplicates; a final remap closes the holes (n_nodes == max_id + 1). Returns (nodes, edges).
     """
     node_frames: list[pd.DataFrame] = []
     edge_frames: list[pd.DataFrame] = []
@@ -272,11 +270,8 @@ def _combine_regions(*, regions: list[str]) -> tuple[pd.DataFrame, pd.DataFrame]
 def _validate_connectivity(*, out_dir: Path) -> None:
     """Phase 4: load the saved production graph and assert it is ONE connected network.
 
-    Builds the whole graph from the final parquet (exactly what the app reads), then:
-    (1) exhaustively asserts a single strongly-connected component — the real routable invariant,
-        catching ANY fragmentation the merge/dedup could introduce; and
-    (2) spot-checks _VALIDATION_PROBES random CROSS-TILE node pairs with has_path as a fast,
-        human-readable confirmation that region seams are traversable. Fails loud on any break.
+    Exhaustively asserts a single strongly-connected component (the routable invariant), then
+    spot-checks _VALIDATION_PROBES random cross-tile pairs with has_path. Fails loud on any break.
     """
     graph = read_full_graph(graph_dir=out_dir)
     nodes = list(graph.nodes)

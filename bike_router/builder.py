@@ -299,12 +299,10 @@ def build_region_graph(
 
 
 def remap_contiguous(nodes_df: pd.DataFrame, edges_df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """Renumber a region's node ids to contiguous ``0..N-1`` (Phase 2).
+    """Renumber a region's gapped/negative node ids to contiguous ``0..N-1`` (Phase 2).
 
-    osmnx consolidation leaves gapped 0-based bike ids and our station code adds negative
-    ids, so a region spans e.g. ``[-3 .. 103561]`` with holes. Map every id to its rank in
-    sorted order and rewrite ``osmid`` + both edge endpoints, so afterwards
-    ``n_nodes == max_id + 1`` (no gaps, no negatives). Station-ness lives in ``node_type``.
+    Maps every id to its rank in sorted order and rewrites ``osmid`` + both edge endpoints, so
+    afterwards ``n_nodes == max_id + 1``. Station-ness lives in ``node_type``, not the id sign.
     """
     ordered = sorted(nodes_df["osmid"].tolist())
     remap = {old: new for new, old in enumerate(ordered)}
@@ -335,10 +333,9 @@ def reindex_region(nodes_df: pd.DataFrame, edges_df: pd.DataFrame, offset: int) 
 def dedup_by_geometry(nodes_df: pd.DataFrame, edges_df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Collapse border duplicates that appear in two regions' reference-complete extracts.
 
-    Nodes are the same physical node if their (lat, lon) coincide to COORD_PRECISION; the
-    lower-(lat, lon) copy is kept and the others' ids are repointed onto it. Edges are the
-    same only if BOTH endpoints AND the 3D geometry (rounded WKT, or endpoints+mode for a
-    null-geometry rail/station hop) coincide — so genuinely parallel distinct roads survive.
+    Nodes coinciding in (lat, lon) to COORD_PRECISION collapse to the lower-(lat, lon) copy
+    (others repointed onto it); edges collapse only if endpoints AND geometry (rounded WKT, or
+    endpoints+mode for null-geometry hops) coincide — so genuinely parallel roads both survive.
     """
     prec = GraphConfig.COORD_PRECISION
     nodes_df = nodes_df.copy()
