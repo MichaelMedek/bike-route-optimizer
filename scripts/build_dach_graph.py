@@ -1,28 +1,24 @@
-"""The single preprocessing script: from zero data to the finished tiled graph fixture.
+"""The single preprocessing script: from zero data to the finished tiled graph.
 
-Two phases with their own progress bars — first DOWNLOAD every outstanding region's
-Geofabrik .osm.pbf, then BUILD + CHECKPOINT each in isolation (bounded memory) — before
-merging/tiling to the final GeoParquet. Rerunning skips checkpointed regions, so a crash
-loses only the region it died on. (Publishing to Hugging Face is the separate
-upload_graph_to_huggingface.py.)
+ONE fixed workflow: download every region's Geofabrik .osm.pbf, build each
+to a bike+rail graph with baked elevation, merge, and write the lat/lon-tiled GeoParquet to
+GraphConfig.GRAPH_DIR. (Publishing to Hugging Face is the separate upload_graph_to_huggingface.py.)
+
+The output dir must be EMPTY (or absent): a single leftover file — e.g. from a `--only`
+smoke run — fails fast, so a partial/clipped artifact can never be mistaken for a full one.
+
+Everything except WHICH regions (--only) and an optional test clip (--bbox) is a fixed.
+
+Usage:
+    # Confirm on a small clipped region first (~5 min) — writes to the same fixed output dir,
+    # so DELETE that dir before the real run:
+    python scripts/build_dach_graph.py --only karlsruhe-regbez --bbox 8.30 48.40 8.80 48.95
+
+    # Full DACH (downloads ~5 GB of pbf, runs for hours). Output dir must be empty first.
+    python scripts/build_dach_graph.py
 
 Why sub-regions (Regierungsbezirke etc.) not whole countries: consolidation memory
 scales with a region's node count; a regbez peaks ~20 GB, whole-Germany would OOM.
-Per-region isolation keeps peak RAM bounded.
-
-Usage:
-    # Confirm on a small clipped region first (~5 min):
-    python scripts/build_dach_graph.py --only karlsruhe-regbez --bbox 8.30 48.40 8.80 48.95
-
-    # Full DACH overnight (downloads ~5 GB of pbf, runs for hours):
-    python scripts/build_dach_graph.py
-
-    # Resume after a crash — just run the same command again.
-    # Force a clean rebuild of everything:
-    python scripts/build_dach_graph.py --fresh
-
-Regions that fail after retries are logged and skipped so one bad extract cannot
-abort the whole run; the final summary lists any skipped regions.
 """
 
 import argparse
@@ -38,17 +34,14 @@ from tqdm import tqdm
 from bike_router.builder import build_region_graph, merge_region_tables
 from bike_router.constants import DEMConfig, GraphConfig
 from bike_router.elevation import DEMService
-from bike_router.graph_store import (
-    compute_bbox,
-    graph_to_tables,
-    read_region_checkpoint,
-    write_graph_parquet,
-    write_region_checkpoint,
-)
+from bike_router.graph_store import compute_bbox, graph_to_tables, write_graph_parquet
 
 logger = logging.getLogger("build_dach")
 
 _GEOFABRIK = "https://download.geofabrik.de/europe"
+# Raw pbf downloads are cached beside the artifact (re-fetchable input, not build state).
+_PBF_DIR = GraphConfig.GRAPH_DIR.parent / "dach_build" / "pbf"
+_DOWNLOAD_RETRIES = 5  # transient network blips only; a final failure aborts the whole run
 
 # DACH at Geofabrik sub-region granularity. Big Flächenländer are split into their
 # Regierungsbezirke (bounded per-region memory); smaller states + AT + CH stay whole.
@@ -93,55 +86,44 @@ DACH_REGIONS: dict[str, str] = {
 }
 
 
-def _download_pbf(region_key: str, geofabrik_path: str, pbf_dir: Path) -> Path:
-    """Download a region's .osm.pbf if missing (atomic: temp + rename). Returns path."""
-    pbf_dir.mkdir(parents=True, exist_ok=True)
-    dest = pbf_dir / f"{region_key}.osm.pbf"
+def _download_pbf(*, region_key: str, geofabrik_path: str) -> Path:
+    """Download a region's .osm.pbf if missing (atomic: temp + rename). Returns its path.
+
+    A failed transfer unlinks its partial .tmp and re-raises so no orphan/partial lingers.
+    """
+    _PBF_DIR.mkdir(parents=True, exist_ok=True)
+    dest = _PBF_DIR / f"{region_key}.osm.pbf"
     if dest.exists() and dest.stat().st_size > 0:
         return dest
     url = f"{_GEOFABRIK}/{geofabrik_path}-latest.osm.pbf"
     tmp = dest.with_suffix(".pbf.tmp")
     logger.info("Downloading %s …", url)
-    urllib.request.urlretrieve(url, tmp)  # noqa: S310 — trusted Geofabrik host
-    tmp.replace(dest)
+    try:
+        urllib.request.urlretrieve(url, tmp)  # noqa: S310 — trusted Geofabrik host
+        tmp.replace(dest)
+    except BaseException:
+        tmp.unlink(missing_ok=True)  # never leave a partial behind
+        raise
     logger.info("  %.0f MB → %s", dest.stat().st_size / 1024 / 1024, dest.name)
     return dest
 
 
-def _download_region(*, region_key: str, geofabrik_path: str, pbf_dir: Path, retries: int) -> Path | None:
-    """Download one region's pbf with retries. Returns its path, or None if it never succeeds.
+def _download_region(*, region_key: str, geofabrik_path: str) -> Path:
+    """Download one region's pbf, retrying only transient network failures.
 
-    Only genuine network/IO failures are retried; anything else is a real bug and propagates.
+    A retry-exhausted download raises (aborting the whole run) — a missing region must
+    never yield a silently-partial artifact. Non-network OSErrors are real bugs: they
+    propagate immediately, uncaught.
     """
-    for attempt in range(1, retries + 1):
+    for attempt in range(1, _DOWNLOAD_RETRIES + 1):
         try:
-            return _download_pbf(region_key=region_key, geofabrik_path=geofabrik_path, pbf_dir=pbf_dir)
-        except (urllib.error.URLError, OSError, TimeoutError) as error:  # external: net/disk only
-            logger.warning("download %s attempt %d/%d failed: %s", region_key, attempt, retries, error)
+            return _download_pbf(region_key=region_key, geofabrik_path=geofabrik_path)
+        except (urllib.error.URLError, TimeoutError) as error:  # transient network only
+            logger.warning("download %s attempt %d/%d failed: %s", region_key, attempt, _DOWNLOAD_RETRIES, error)
+            if attempt == _DOWNLOAD_RETRIES:
+                raise
             time.sleep(5 * attempt)
-    logger.error("✗ %s: download gave up after %d attempts — SKIPPED", region_key, retries)
-    return None
-
-
-def _build_one_region(
-    *,
-    region_key: str,
-    pbf: Path,
-    ckpt_dir: Path,
-    dem: DEMService,
-    tolerance_m: float,
-    bbox: tuple[float, float, float, float] | None,
-) -> None:
-    """Build + checkpoint one already-downloaded region.
-
-    No try/except: a build failure on a valid extract is a real bug (bad data would have
-    failed at download), so it propagates and aborts the run rather than silently skipping.
-    ``bbox`` clips the region (fast test builds); None builds its full extent.
-    """
-    graph = build_region_graph(pbf_path=pbf, dem=dem, tolerance_m=tolerance_m, bbox=bbox)
-    nodes_df, edges_df = graph_to_tables(graph=graph)
-    write_region_checkpoint(nodes_df=nodes_df, edges_df=edges_df, ckpt_dir=ckpt_dir, region_key=region_key)
-    logger.info("✓ %s: %d nodes / %d edges", region_key, len(nodes_df), len(edges_df))
+    raise AssertionError("unreachable")  # loop either returns or raises
 
 
 def _assert_dem_covers(*, dem: DEMService, area: tuple[float, float, float, float]) -> None:
@@ -164,14 +146,22 @@ def _assert_dem_covers(*, dem: DEMService, area: tuple[float, float, float, floa
         )
 
 
+def _assert_output_empty(*, out_dir: Path) -> None:
+    """Fail fast unless the output dir is absent or empty — no partial/stale artifact reuse.
+
+    A single leftover file (e.g. from an earlier `--only` smoke run) aborts the run, so a
+    clipped or half-written graph can never be mistaken for a complete one. Delete the dir
+    to rebuild.
+    """
+    if out_dir.exists() and any(out_dir.iterdir()):
+        raise ValueError(
+            f"Output dir {out_dir} is not empty — delete it to rebuild (this build runs fully or not at all)."
+        )
+
+
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Robust, resumable full-DACH bike+rail graph build.")
-    parser.add_argument("--out", type=Path, default=GraphConfig.GRAPH_DIR, help="Final artifact dir.")
-    parser.add_argument("--work", type=Path, default=GraphConfig.GRAPH_DIR.parent / "dach_build", help="Work dir.")
-    parser.add_argument("--tolerance", type=float, default=GraphConfig.CONSOLIDATION_TOLERANCE_M)
+    parser = argparse.ArgumentParser(description="Build the full DACH bike+rail graph (runs fully or not at all).")
     parser.add_argument("--only", nargs="+", help="Build only these region keys (test a subset).")
-    parser.add_argument("--retries", type=int, default=3)
-    parser.add_argument("--fresh", action="store_true", help="Ignore existing checkpoints (clean rebuild).")
     parser.add_argument(
         "--bbox",
         nargs=4,
@@ -180,90 +170,56 @@ def main(argv: list[str] | None = None) -> int:
         default=None,
         help="Optional lon/lat clip (west south east north) to build a small test region fast.",
     )
-    parser.add_argument("-v", "--verbose", action="store_true")
     args = parser.parse_args(argv)
 
-    logging.basicConfig(
-        level=logging.INFO if args.verbose else logging.WARNING, format="%(levelname)s %(name)s: %(message)s"
-    )
-    logger.setLevel(logging.INFO)
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
 
     regions = {k: DACH_REGIONS[k] for k in args.only} if args.only else dict(DACH_REGIONS)
-    pbf_dir = args.work / "pbf"
-    ckpt_dir = args.work / "checkpoints"
     bbox = tuple(args.bbox) if args.bbox else None
-    # Fail fast: load the DEM up front (the build bakes elevation from it) and confirm it
-    # covers the area we're about to process — so a missing/too-small DEM raises BEFORE any
-    # pbf is downloaded, not hours in. Crop the DEM with crop_dem_to_dach.py.
+    out_dir = GraphConfig.GRAPH_DIR
+    tolerance_m = GraphConfig.CONSOLIDATION_TOLERANCE_M
+
+    # Fail fast, before any download: the output dir must be empty, and the DEM must cover
+    # the area we're about to build (a too-small DEM would bake flat elevations everywhere).
+    _assert_output_empty(out_dir=out_dir)
     dem = DEMService(dem_path=DEMConfig.EURODEM_PATH)
     _assert_dem_covers(dem=dem, area=bbox or GraphConfig.DACH_BBOX_DEG)
     logger.info("DEM ready: coverage W,S,E,N = %.2f, %.2f, %.2f, %.2f", *dem.bounds)
 
     started = time.time()
-    # Regions already checkpointed need neither download nor build; keep them for the merge.
-    done = {
-        k for k in regions if not args.fresh and read_region_checkpoint(ckpt_dir=ckpt_dir, region_key=k) is not None
+
+    # Phase 1 — download every region's raw pbf up front (one bar). Any failure aborts.
+    pbfs = {
+        region_key: _download_region(region_key=region_key, geofabrik_path=geofabrik_path)
+        for region_key, geofabrik_path in tqdm(regions.items(), desc="Downloading pbfs", unit="region")
     }
-    todo = {k: regions[k] for k in regions if k not in done}
-    built: list[str] = list(done)  # sorted just before the merge (order-independent)
-    skipped: list[str] = []
 
-    # Phase 1 — download every outstanding region's raw pbf up front (one bar).
-    pbfs: dict[str, Path] = {}
-    for region_key, geofabrik_path in tqdm(todo.items(), desc="Downloading pbfs", unit="region"):
-        pbf = _download_region(
-            region_key=region_key, geofabrik_path=geofabrik_path, pbf_dir=pbf_dir, retries=args.retries
-        )
-        if pbf is None:
-            skipped.append(region_key)
-        else:
-            pbfs[region_key] = pbf
+    # Phase 2 — build each region to its (nodes, edges) tables (second bar). Any failure
+    # aborts (a build error on a valid extract is a real bug, not something to skip).
+    region_tables = [
+        graph_to_tables(graph=build_region_graph(pbf_path=pbf, dem=dem, tolerance_m=tolerance_m, bbox=bbox))
+        for pbf in tqdm(pbfs.values(), desc="Building regions", unit="region")
+    ]
 
-    # Phase 2 — build + checkpoint each downloaded region to a graph (second bar). A build
-    # failure propagates (real bug); only download failures are skipped (external, in phase 1).
-    for region_key, pbf in tqdm(pbfs.items(), desc="Building regions", unit="region"):
-        _build_one_region(
-            region_key=region_key,
-            pbf=pbf,
-            ckpt_dir=ckpt_dir,
-            dem=dem,
-            tolerance_m=args.tolerance,
-            bbox=bbox,
-        )
-        built.append(region_key)
-
-    # Merge every checkpointed region → tile → write final artifact. Sorted for a
-    # deterministic station-id block assignment regardless of build/resume order. A region
-    # in `built` was just checkpointed, so a missing read is a real bug (fail loud).
-    if not built:
-        logger.error("No regions built successfully — nothing to write.")
-        return 1
-    built = sorted(built)
-    region_tables = []
-    for region_key in built:
-        tables = read_region_checkpoint(ckpt_dir=ckpt_dir, region_key=region_key)
-        assert tables is not None, f"checkpoint for built region {region_key!r} is missing/corrupt"
-        region_tables.append(tables)
-
+    # Merge → tile → write the final artifact. Sorted regions give a deterministic
+    # station-id block assignment (merge offsets by list index).
     nodes_df, edges_df = merge_region_tables(regions=region_tables)
-    bbox = compute_bbox(nodes_df=nodes_df)
+    bbox_out = compute_bbox(nodes_df=nodes_df)
+    built = sorted(regions)
     meta = {
-        "bbox": list(bbox),
+        "bbox": list(bbox_out),
         "tile_deg": GraphConfig.TILE_DEG,
-        "tolerance_m": args.tolerance,
+        "tolerance_m": tolerance_m,
         "n_nodes": int(len(nodes_df)),
         "n_edges": int(len(edges_df)),
         "n_stations": int((nodes_df["osmid"] < 0).sum()),
         "regions_built": built,
-        "regions_skipped": skipped,
     }
-    write_graph_parquet(nodes_df=nodes_df, edges_df=edges_df, meta=meta, out_dir=args.out)
+    write_graph_parquet(nodes_df=nodes_df, edges_df=edges_df, meta=meta, out_dir=out_dir)
 
     print(json.dumps(meta, indent=2))
-    print(f"\nBuilt {len(built)} regions ({len(skipped)} skipped) in {(time.time() - started) / 60:.1f} min")
-    if skipped:
-        print(f"SKIPPED regions (rerun to retry): {', '.join(skipped)}")
-    print(f"Artifact: {args.out}")
+    print(f"\nBuilt {len(built)} regions in {(time.time() - started) / 60:.1f} min")
+    print(f"Artifact: {out_dir}")
     return 0
 
 

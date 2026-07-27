@@ -114,31 +114,6 @@ def write_graph_parquet(nodes_df: pd.DataFrame, edges_df: pd.DataFrame, meta: di
     logger.info("Wrote %d nodes / %d edges across tiles to %s", len(nodes_df), len(edges_df), out_dir)
 
 
-def write_region_checkpoint(nodes_df: pd.DataFrame, edges_df: pd.DataFrame, ckpt_dir: Path, region_key: str) -> None:
-    """Persist one region's built tables so an overnight run can resume after a crash.
-
-    Written atomically (temp file + rename) so a kill mid-write never leaves a
-    half-parquet that a later resume would mistake for a completed region.
-    """
-    assert list(nodes_df.columns) == _NODE_COLS, f"nodes schema drift: {list(nodes_df.columns)}"
-    assert list(edges_df.columns) == _EDGE_COLS, f"edges schema drift: {list(edges_df.columns)}"
-    ckpt_dir.mkdir(parents=True, exist_ok=True)
-    for name, frame in (("nodes", nodes_df), ("edges", edges_df)):
-        final = ckpt_dir / f"{region_key}.{name}.parquet"
-        tmp = ckpt_dir / f"{region_key}.{name}.parquet.tmp"
-        frame.to_parquet(tmp, index=False)
-        tmp.replace(final)
-
-
-def read_region_checkpoint(ckpt_dir: Path, region_key: str) -> tuple[pd.DataFrame, pd.DataFrame] | None:
-    """Return a region's checkpointed (nodes, edges), or None if not both present."""
-    nodes_path = ckpt_dir / f"{region_key}.nodes.parquet"
-    edges_path = ckpt_dir / f"{region_key}.edges.parquet"
-    if not (nodes_path.exists() and edges_path.exists()):
-        return None
-    return pd.read_parquet(nodes_path), pd.read_parquet(edges_path)
-
-
 def download_graph_from_hf(target_dir: Path = GraphConfig.GRAPH_DIR, progress: ProgressFn = null_progress) -> Path:
     """Download the prebuilt DACH graph artifact from Hugging Face if missing.
 
