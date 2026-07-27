@@ -9,6 +9,8 @@ from pathlib import Path
 
 import geopandas as gpd
 import networkx as nx
+import numpy as np
+import osmnx as ox
 import pyrosm
 from shapely.geometry import LineString, Point
 
@@ -18,6 +20,7 @@ from bike_router.builder import (
     _cycling_graph,
     _open_osm,
     _rail_network,
+    _station_entrances,
     _station_points,
     _tag_bike_defaults,
     build_region_graph,
@@ -368,3 +371,64 @@ def test_station_edges_touch_bike_nodes_not_each_other():
     assert station_edges, "expected station edges within radius"
     for u, v in station_edges:
         assert 500 in (u, v), f"station edge {u}->{v} does not touch the bike node"
+
+
+def test_station_entrances_empty_bike_graph_returns_none():
+    # Edge case: a station with ZERO candidate bike nodes (empty arrays) must return [] cleanly,
+    # not raise. np.argmin/np.argsort on empty would blow up; the flatnonzero guard prevents it.
+    empty = np.array([], dtype=np.float64)
+    got = _station_entrances(node_ids=np.array([], dtype=np.int64), node_lats=empty, node_lons=empty, lat=48.0, lon=8.0)
+    assert got == []
+
+
+def test_add_railway_orphaned_station_dropped_by_scc():
+    # Edge case: stations with NO bike node within the radius get zero access edges → they form
+    # an isolated rail island. The strongly-connected filter (run AFTER railway in build_region_graph)
+    # must drop them, leaving zero dangling rail nodes. Proven: this is the no-dangling guarantee.
+    graph = nx.MultiDiGraph(crs="EPSG:4326")
+    # a connected bike triangle FAR (~37 km east) from the stations → no station is in-radius
+    for i, x in enumerate((8.50, 8.5001, 8.50005)):
+        graph.add_node(i, x=x, y=48.0 + (i == 2) * 0.0005, elevation=100.0, node_type=NodeType.BIKE)
+    for a, b in [(0, 1), (1, 0), (1, 2), (2, 1), (2, 0), (0, 2)]:
+        graph.add_edge(a, b, length=40.0, mode=Mode.BIKE)
+    stations = gpd.GeoDataFrame({"name": ["A", "B"]}, geometry=[Point(8.0, 48.0), Point(8.05, 48.0)], crs="EPSG:4326")
+    rails = gpd.GeoDataFrame(geometry=[LineString([(8.0, 48.0), (8.05, 48.0)])], crs="EPSG:4326")
+    _add_railway(
+        graph=graph, osm=_FakeOSM(stations=stations, rail_edges=rails), dem=MockDEMService(base_elevation=100.0)
+    )
+    assert not [u for u, v, d in graph.edges(data=True) if d["mode"] == Mode.STATION]  # no access edges
+    survivors = ox.truncate.largest_component(graph, strongly=True)
+    assert all(d["node_type"] == NodeType.BIKE for _n, d in survivors.nodes(data=True))  # rail island dropped
+
+
+def test_add_railway_passthrough_station_without_road_access_is_kept():
+    # LEGITIMATE: a mid-chain station B (A—B—C) where the train stops but there is NO road nearby.
+    # B has zero station-access edges, yet it MUST survive: it is reachable as bike→A→(rail)→B→(rail)→C→bike
+    # because rail edges are bidirectional. Only a rail island touching NO road ANYWHERE is dropped.
+    graph = nx.MultiDiGraph(crs="EPSG:4326")
+    graph.add_node(1000, x=8.0005, y=48.0, elevation=100.0, node_type=NodeType.BIKE)  # ~37 m from A
+    graph.add_node(1001, x=8.1005, y=48.0, elevation=100.0, node_type=NodeType.BIKE)  # ~37 m from C
+    graph.add_edge(1000, 1001, length=7000.0, mode=Mode.BIKE)
+    graph.add_edge(1001, 1000, length=7000.0, mode=Mode.BIKE)
+    # A(8.00) B(8.05 — NO bike node near) C(8.10) on one continuous rail line through all three.
+    stations = gpd.GeoDataFrame(
+        {"name": ["A", "B", "C"]},
+        geometry=[Point(8.0, 48.0), Point(8.05, 48.0), Point(8.10, 48.0)],
+        crs="EPSG:4326",
+    )
+    rails = gpd.GeoDataFrame(geometry=[LineString([(8.0, 48.0), (8.05, 48.0), (8.10, 48.0)])], crs="EPSG:4326")
+    _add_railway(
+        graph=graph, osm=_FakeOSM(stations=stations, rail_edges=rails), dem=MockDEMService(base_elevation=100.0)
+    )
+    # Only A and C got road access; B is a genuine no-road pass-through stop. Station edges link a
+    # bike node to a (negative-id) rail node — collect the rail endpoint's station name.
+    access = {
+        graph.nodes[u if u < 0 else v]["station_name"]
+        for u, v, d in graph.edges(data=True)
+        if d["mode"] == Mode.STATION
+    }
+    assert access == {"A", "C"}
+    survivors = ox.truncate.largest_component(graph, strongly=True)
+    survivor_stations = {d["station_name"] for _n, d in survivors.nodes(data=True) if d["node_type"] == NodeType.RAIL}
+    assert survivor_stations == {"A", "B", "C"}  # pass-through B KEPT (bidirectional rail anchors it)
+    assert nx.is_strongly_connected(survivors)  # whole graph is ONE connected component

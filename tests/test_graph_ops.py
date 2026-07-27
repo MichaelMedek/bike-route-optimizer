@@ -95,6 +95,23 @@ def test_enrich_elevations_fills_nodata_with_mean():
     assert np.isfinite(graph.nodes[2]["elevation"])
 
 
+def test_enrich_elevations_all_nodata_falls_back_to_zero():
+    # Edge case: a region ENTIRELY outside DEM coverage → every sample NaN. np.nanmean would
+    # return NaN + RuntimeWarning on an all-NaN slice; the fill must guard that and use 0.0 so
+    # the "all elevations finite" assertion never trips (proven: numpy nanmean all-NaN → NaN).
+    graph = nx.MultiDiGraph()
+    graph.add_node(1, x=0.0, y=0.0)
+    graph.add_node(2, x=0.0, y=1.0)
+
+    class _AllNanDEM(MockDEMService):
+        def get_elevations(self, lons, lats):  # noqa: ANN001, ANN201
+            return np.full(len(lons), np.nan)
+
+    enrich_elevations(graph=graph, dem=_AllNanDEM(base_elevation=0.0))
+    assert graph.nodes[1]["elevation"] == 0.0 and graph.nodes[2]["elevation"] == 0.0
+    assert all(np.isfinite(d["elevation"]) for _n, d in graph.nodes(data=True))
+
+
 def test_snap_endpoints_maps_latlon_to_nodes(monkeypatch):
     calls = []
 
