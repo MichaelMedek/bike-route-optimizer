@@ -44,11 +44,12 @@ def _network_graph(
 ) -> nx.MultiDiGraph:
     """The ONE routable-graph builder for BOTH the bike and rail layers (only the filter differs).
 
-    Roads and rail take the exact same path — pyrosm ``get_network(nodes=True)`` → ``to_graph`` —
-    so there is no per-layer hand-rolled stitching. ``network_type`` sets the graph directionality
-    semantics; ``custom_filter`` (a bracket string, e.g. ``'["railway"~"rail"]'``, with
-    ``filter_type="keep"``) selects WHICH ways are kept. A plain-dict filter is deliberately NOT used
-    (it defaults to exclude + highway-only, silently returning the whole road net).
+    Roads and rail take the exact same path — pyrosm ``get_network(nodes=True)`` → ``to_graph``.
+    ``custom_filter`` (a bracket string, e.g. ``'["railway"~"rail"]'``, with ``filter_type="keep"``)
+    selects WHICH ways are kept (a plain-dict filter is NOT used — it defaults to exclude + highway-
+    only, silently returning the whole road net). ``force_bidirectional=True`` for BOTH layers: every
+    edge exists in both directions (same length, opposite elevation delta) — a bike may ride any road
+    up or down, and trains run both ways. pyrosm's ``network_type`` alone would honour ``oneway``.
     """
     res = cast(
         "tuple[gpd.GeoDataFrame, gpd.GeoDataFrame] | None",
@@ -56,7 +57,14 @@ def _network_graph(
     )
     assert res is not None, "pbf has no matching network"
     nodes, edges = res
-    graph: nx.MultiDiGraph = osm.to_graph(nodes, edges, graph_type="networkx", osmnx_compatible=True, retain_all=True)
+    graph: nx.MultiDiGraph = osm.to_graph(
+        nodes,
+        edges,
+        graph_type="networkx",
+        osmnx_compatible=True,
+        retain_all=True,
+        force_bidirectional=True,
+    )
     normalize_pyrosm_graph(graph=graph)
     return graph
 

@@ -61,6 +61,7 @@ class _SpyOSM:
         self._real = _open_osm(pbf_path=_TEST_PBF, bbox=None)
         self.network_calls: list[tuple[str, object, object]] = []
         self.data_filters: list[dict] = []
+        self.to_graph_bidirectional: list[bool] = []
 
     def get_network(self, *, network_type, custom_filter, filter_type, nodes):  # noqa: ANN001, ANN003, ANN201
         self.network_calls.append((network_type, custom_filter, filter_type))
@@ -69,6 +70,7 @@ class _SpyOSM:
         )
 
     def to_graph(self, *args, **kwargs):  # noqa: ANN002, ANN003, ANN201
+        self.to_graph_bidirectional.append(kwargs.get("force_bidirectional"))
         return self._real.to_graph(*args, **kwargs)
 
     def get_data_by_custom_criteria(self, custom_filter, **kwargs):  # noqa: ANN001, ANN003, ANN201
@@ -314,6 +316,23 @@ def test_rail_graph_tags_rail_and_never_returns_road_net():
         osm=_open_osm(pbf_path=_TEST_PBF, bbox=None), network_type="cycling", custom_filter=None, filter_type=None
     )
     assert rail.number_of_nodes() < bike.number_of_nodes()  # rail is the small layer, not the road net
+
+
+def test_both_layers_forced_bidirectional():
+    # Unified rule: BOTH bike and rail go through _network_graph with force_bidirectional=True → every
+    # edge exists both ways (same length, opposite elevation delta). A bike may ride any road up OR
+    # down; trains run both ways. pyrosm network_type="cycling" alone would honour oneway (2.5% of
+    # cycling ways) and make those one-directional — force_bidirectional overrides that for both.
+    spy = _SpyOSM()
+    _rail_graph(osm=spy)
+    assert spy.to_graph_bidirectional == [True]  # rail forced bidirectional
+    spy2 = _SpyOSM()
+    _network_graph(osm=spy2, network_type="cycling", custom_filter=None, filter_type=None)
+    assert spy2.to_graph_bidirectional == [True]  # bike ALSO forced bidirectional (ride up or down)
+    # every directed edge has its reverse (no one-way edges survive in either layer)
+    bike = _network_graph(osm=spy2, network_type="cycling", custom_filter=None, filter_type=None)
+    directed = set(bike.edges())
+    assert all((v, u) in directed for u, v in directed), "every bike edge must be traversable both ways"
 
 
 def test_bike_graph_is_roads_only_and_never_returns_rail():
