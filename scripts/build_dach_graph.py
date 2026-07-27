@@ -121,7 +121,7 @@ def _download_pbf(*, region_key: str, geofabrik_path: str) -> Path:
         return dest
     url = f"{_GEOFABRIK}/{geofabrik_path}-latest.osm.pbf"
     tmp = dest.with_suffix(".pbf.tmp")
-    logger.info("Downloading %s …", url)
+    logger.info(f"Downloading {url} …")
     try:
         # urlretrieve honours the global default socket timeout; a stalled read then raises
         # socket.timeout (a TimeoutError subclass) instead of hanging forever.
@@ -133,7 +133,7 @@ def _download_pbf(*, region_key: str, geofabrik_path: str) -> Path:
         raise
     finally:
         socket.setdefaulttimeout(None)  # restore (don't leak the timeout to other sockets)
-    logger.info("  %.0f MB → %s", dest.stat().st_size / 1024 / 1024, dest.name)
+    logger.info(f"  {dest.stat().st_size / 1024 / 1024:.0f} MB → {dest.name}")
     return dest
 
 
@@ -148,7 +148,7 @@ def _download_region(*, region_key: str, geofabrik_path: str) -> Path:
         try:
             return _download_pbf(region_key=region_key, geofabrik_path=geofabrik_path)
         except (urllib.error.URLError, TimeoutError) as error:  # transient network only
-            logger.warning("download %s attempt %d/%d failed: %s", region_key, attempt, _DOWNLOAD_RETRIES, error)
+            logger.warning(f"download {region_key} attempt {attempt}/{_DOWNLOAD_RETRIES} failed: {error}")
             if attempt == _DOWNLOAD_RETRIES:
                 raise
             time.sleep(5 * attempt)
@@ -291,10 +291,7 @@ def _validate_connectivity(*, out_dir: Path) -> None:
                 f"Validation FAILED: no path between cross-region nodes {source} and {target} — "
                 "the merged network is fragmented."
             )
-    logger.info(
-        "Validation OK: 1 strongly-connected component; %d cross-region pairs all connected",
-        _VALIDATION_PROBES,
-    )
+    logger.info(f"Validation OK: 1 strongly-connected component; {_VALIDATION_PROBES} cross-region pairs all connected")
 
 
 def _random_cross_tile_pair(*, graph: nx.MultiDiGraph, nodes: list[int], rng: random.Random) -> tuple[int, int]:
@@ -335,7 +332,8 @@ def main(argv: list[str] | None = None) -> int:
     _assert_output_empty(out_dir=out_dir)
     dem = DEMService(dem_path=DEMConfig.EURODEM_PATH)
     _assert_dem_covers(dem=dem, area=bbox or GraphConfig.DACH_BBOX_DEG)
-    logger.info("DEM ready: coverage W,S,E,N = %.2f, %.2f, %.2f, %.2f", *dem.bounds)
+    w, s, e, n = dem.bounds
+    logger.info(f"DEM ready: coverage W,S,E,N = {w:.2f}, {s:.2f}, {e:.2f}, {n:.2f}")
 
     started = time.time()
 
@@ -350,10 +348,10 @@ def main(argv: list[str] | None = None) -> int:
     # Skip regions already flagged confirmed_complete; a build failure aborts (real bug).
     for region_key, pbf in tqdm(pbfs.items(), desc="2/4 Building regions", unit="region"):
         if _region_complete(region_key=region_key):
-            logger.info("%s: skipped, already complete", region_key)
+            logger.info(f"{region_key}: skipped, already complete")
             continue
         _process_region(region_key=region_key, pbf=pbf, dem=dem, bbox=bbox, tolerance_m=tolerance_m)
-        logger.info("%s: peak RSS %.1f GB", region_key, _peak_rss_gb())
+        logger.info(f"{region_key}: peak RSS {_peak_rss_gb():.1f} GB")
 
     # Phase 3 — COMBINE per-region artifacts into globally-consistent tiled shards.
     built = sorted(regions)

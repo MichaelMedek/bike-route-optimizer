@@ -233,4 +233,4 @@ def plot_elevation_heatmap(
 
     figure.savefig(out_path, dpi=dpi, facecolor="white", bbox_inches="tight", pad_inches=0.3)
     plt.close(figure)
-    logger.info("Wrote debug heatmap to %s", out_path)
+    logger.info(f"Wrote debug heatmap to {out_path}")

@@ -7,7 +7,9 @@ rail hops. Returns node/edge tables; the routing sliders decide if A* uses rail.
 
 import logging
 from pathlib import Path
+from typing import cast
 
+import geopandas as gpd
 import networkx as nx
 import numpy as np
 import osmnx as ox
@@ -37,10 +39,23 @@ from bike_router.sanity import check_simplify_shrunk
 logger = logging.getLogger(__name__)
 
 
+def _get_network(
+    osm: OSM, custom_filter: dict[str, list[str]] | None, network_type: str = "all"
+) -> tuple[gpd.GeoDataFrame, gpd.GeoDataFrame] | None:
+    """One entry point to pyrosm's routable-network builder for BOTH bike and rail layers.
+
+    Returns pyrosm's ``(nodes_gdf, edges_gdf)`` (or None if the layer is absent). Both networks go
+    through the same LineString-only extractor — no layer gets special geometry handling.
+    """
+    res = osm.get_network(network_type=network_type, custom_filter=custom_filter, nodes=True)
+    return cast("tuple[gpd.GeoDataFrame, gpd.GeoDataFrame] | None", res)
+
+
 def _cycling_graph(osm: OSM) -> nx.MultiDiGraph:
     """Read the cycling network from a pbf as a normalized OSMnx-shaped graph."""
-    nodes, edges = osm.get_network(network_type="cycling", nodes=True)
-    assert nodes is not None and edges is not None, "pbf has no cycling network"
+    res = _get_network(osm=osm, custom_filter=None, network_type="cycling")
+    assert res is not None, "pbf has no cycling network"
+    nodes, edges = res
     graph: nx.MultiDiGraph = osm.to_graph(nodes, edges, graph_type="networkx", osmnx_compatible=True, retain_all=True)
     normalize_pyrosm_graph(graph=graph)
     return graph
@@ -83,25 +98,26 @@ def _station_points(osm: OSM) -> list[tuple[str, float, float]]:
     ]
 
 
-def _rail_lines(osm: OSM) -> list[list[tuple[float, float]]]:
-    """Extract rail lines as lists of (lat, lon) vertices (each Line/MultiLine part)."""
-    rails = osm.get_data_by_custom_criteria(
-        custom_filter={"railway": list(RailConfig.RAIL_TAGS)},
-        filter_type="keep",
-        keep_nodes=False,
-        keep_ways=True,
-        keep_relations=False,
-    )
-    if rails is None or rails.empty:
-        return []
-    lines: list[list[tuple[float, float]]] = []
-    for geom in rails.geometry:
-        parts = geom.geoms if geom.geom_type == "MultiLineString" else [geom]
-        for part in parts:
-            coords = [(lat, lon) for lon, lat in part.coords]
-            if len(coords) >= 2:
-                lines.append(coords)
-    return lines
+def _rail_network(osm: OSM) -> nx.Graph:
+    """Undirected graph of the whole rail network, built by pyrosm's own network builder.
+
+    Uses the SAME ``_get_network`` extractor as the bike graph (LineString edges only — mistagged
+    area/polygon rail is excluded for free). Vertices are keyed on rounded (lat, lon) so the
+    station-snapping below can match by coordinate; edge weight is the real segment length.
+    """
+    res = _get_network(osm=osm, custom_filter={"railway": list(RailConfig.RAIL_TAGS)})
+    net: nx.Graph = nx.Graph()
+    if res is None:
+        return net
+    _nodes, edges = res
+    for geom in edges.geometry:
+        coords = list(geom.coords)  # (lon, lat) segment vertices; get_network → LineString only
+        for (lon_a, lat_a), (lon_b, lat_b) in zip(coords[:-1], coords[1:], strict=True):
+            ka = (round(lat_a, GraphConfig.COORD_PRECISION), round(lon_a, GraphConfig.COORD_PRECISION))
+            kb = (round(lat_b, GraphConfig.COORD_PRECISION), round(lon_b, GraphConfig.COORD_PRECISION))
+            if ka != kb:
+                net.add_edge(ka, kb, length=haversine_distance_m(lat_a=lat_a, lon_a=lon_a, lat_b=lat_b, lon_b=lon_b))
+    return net
 
 
 def _station_entrances(
@@ -130,7 +146,7 @@ def _add_railway(graph: nx.MultiDiGraph, osm: OSM, dem: DEMService) -> int:
     if not stations:
         logger.warning("No railway stations in extract — rail edges skipped")
         return 0
-    lines = _rail_lines(osm=osm)
+    net = _rail_network(osm=osm)
 
     # Snapshot the BIKE node coordinates BEFORE adding any station node, so a station's
     # entrances are only cycling nodes — never another station (which would island them off
@@ -160,41 +176,22 @@ def _add_railway(graph: nx.MultiDiGraph, osm: OSM, dem: DEMService) -> int:
             graph.add_edge(bike_node, node_id, length=dist, mode=Mode.STATION)
             graph.add_edge(node_id, bike_node, length=dist, mode=Mode.STATION)
 
-    _connect_stations_along_lines(graph=graph, station_nodes=station_nodes, lines=lines)
+    _connect_stations_along_lines(graph=graph, station_nodes=station_nodes, net=net)
     return len(station_nodes)
-
-
-def _rail_network(lines: list[list[tuple[float, float]]]) -> nx.Graph:
-    """Undirected graph of the whole rail network: vertices joined where segments meet.
-
-    OSM splits a physical line into thousands of tiny ways; we stitch them by keying
-    each vertex on its rounded (lat, lon) so shared endpoints become one node. Edge
-    weight is the real great-circle segment length in metres.
-    """
-    net: nx.Graph = nx.Graph()
-    for line in lines:
-        for (lat_a, lon_a), (lat_b, lon_b) in zip(line[:-1], line[1:], strict=True):
-            ka = (round(lat_a, 6), round(lon_a, 6))
-            kb = (round(lat_b, 6), round(lon_b, 6))
-            if ka != kb:
-                net.add_edge(ka, kb, length=haversine_distance_m(lat_a=lat_a, lon_a=lon_a, lat_b=lat_b, lon_b=lon_b))
-    return net
 
 
 def _connect_stations_along_lines(
     graph: nx.MultiDiGraph,
     station_nodes: list[tuple[int, str, float, float]],
-    lines: list[list[tuple[float, float]]],
+    net: nx.Graph,
 ) -> None:
     """Add rail edges between stations ADJACENT along the connected rail network.
 
-    Builds the whole rail network (segments stitched at shared vertices), snaps each
-    station to its nearest rail vertex, then joins two stations iff the shortest rail
-    path between them passes through NO other station vertex — i.e. they are consecutive
-    stops (handles both directions and branches at junctions). Robust to OSM splitting a
-    physical line into thousands of tiny ways.
+    Snaps each station to its nearest rail vertex, then joins two stations iff the shortest
+    rail path between them passes through NO other station vertex — i.e. they are consecutive
+    stops (handles both directions and branches at junctions). ``net`` is the stitched rail
+    graph from ``_rail_network``.
     """
-    net = _rail_network(lines=lines)
     if net.number_of_nodes() == 0:
         return
     net_vertices = list(net.nodes)
@@ -269,31 +266,27 @@ def build_region_graph(
     graph = _cycling_graph(osm=osm)
     raw_count = graph.number_of_nodes()
     name = pbf_path.name
-    logger.info("%s: [1/9] parsed %d raw cycling nodes", name, raw_count)
+    logger.info(f"{name}: [1/9] parsed {raw_count} raw cycling nodes")
     drop_disallowed_edges(graph=graph)
-    logger.info("%s: [2/9] dropped disallowed edges → %d edges", name, graph.number_of_edges())
+    logger.info(f"{name}: [2/9] dropped disallowed edges → {graph.number_of_edges()} edges")
     graph = contract_interstitial_nodes(graph=graph)
-    logger.info("%s: [3/9] contracted degree-2 nodes → %d nodes", name, graph.number_of_nodes())
+    logger.info(f"{name}: [3/9] contracted degree-2 nodes → {graph.number_of_nodes()} nodes")
     graph = consolidate_graph(graph=graph, tolerance_m=tolerance_m)
-    logger.info("%s: [4/9] consolidated intersections → %d nodes", name, graph.number_of_nodes())
+    logger.info(f"{name}: [4/9] consolidated intersections → {graph.number_of_nodes()} nodes")
     graph = ox.truncate.largest_component(graph, strongly=True)
-    logger.info("%s: [5/9] largest strongly-connected component → %d nodes", name, graph.number_of_nodes())
+    logger.info(f"{name}: [5/9] largest strongly-connected component → {graph.number_of_nodes()} nodes")
     check_simplify_shrunk(nodes_before=raw_count, nodes_after=graph.number_of_nodes())
     _tag_bike_defaults(graph=graph)
     enrich_elevations(graph=graph, dem=dem)
-    logger.info("%s: [6/9] baked node elevations", name)
+    logger.info(f"{name}: [6/9] baked node elevations")
     n_stations = _add_railway(graph=graph, osm=osm, dem=dem)
-    logger.info("%s: [7/9] wired %d railway stations", name, n_stations)
+    logger.info(f"{name}: [7/9] wired {n_stations} railway stations")
     bake_edge_geometry_elevations(graph=graph, dem=dem)  # 3D vertices → inference needs no DEM
-    logger.info("%s: [8/9] baked edge geometry elevations", name)
+    logger.info(f"{name}: [8/9] baked edge geometry elevations")
     # Re-run the strongly-connected filter AFTER railway wiring: guarantees ZERO dangling nodes.
     graph = ox.truncate.largest_component(graph, strongly=True)
     logger.info(
-        "%s: [9/9] done — %d nodes, %d edges, %d stations",
-        name,
-        graph.number_of_nodes(),
-        graph.number_of_edges(),
-        n_stations,
+        f"{name}: [9/9] done — {graph.number_of_nodes()} nodes, {graph.number_of_edges()} edges, {n_stations} stations"
     )
     return graph
 

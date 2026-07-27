@@ -155,7 +155,7 @@ def photon_autocomplete(
     try:
         payload = http_get(url=PhotonConfig.BASE_URL, params=params, timeout=PhotonConfig.TIMEOUT_S)
     except requests.RequestException as exc:  # ONLY the genuine network/HTTP failure
-        logger.info("Photon autocomplete failed for %r — offering no suggestions (%s)", term, exc)
+        logger.info(f"Photon autocomplete failed for {term!r} — offering no suggestions ({exc})")
         return []
     features = payload["features"]  # type: ignore[index]  # a well-formed Photon reply always has it
     return [photon_label(properties=feature["properties"]) for feature in features]

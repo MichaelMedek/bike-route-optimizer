@@ -76,7 +76,7 @@ class DEMService:
                     f"DEM file not found at {dem_path}. Create it with scripts/crop_dem_to_dach.py "
                     "(crops the full EuroDEM to the DACH region)."
                 )
-            logger.info("Loading DEM from %s ...", dem_path)
+            logger.info(f"Loading DEM from {dem_path} ...")
             start = time.time()
             dataset = rasterio.open(dem_path)
             dem_array = dataset.read(1)
@@ -88,12 +88,7 @@ class DEMService:
                 self._to_dem = Transformer.from_crs("EPSG:4326", self._dem_crs, always_xy=True)
             self._wgs84_bounds = self._compute_wgs84_bounds(native_bounds=dataset.bounds)
             self._dem_transform = dataset.transform  # set LAST — is_loaded checks this
-            logger.info(
-                "DEM loaded in %.2fs (shape=%s, CRS=%s)",
-                time.time() - start,
-                dem_array.shape,
-                self._dem_crs,
-            )
+            logger.info(f"DEM loaded in {time.time() - start:.2f}s (shape={dem_array.shape}, CRS={self._dem_crs})")
 
     def _compute_wgs84_bounds(self, native_bounds: object) -> tuple[float, float, float, float]:
         """WGS84 (west, south, east, north) from the DEM's native-CRS bounds."""

@@ -170,9 +170,7 @@ def consolidate_graph(graph: nx.MultiDiGraph, tolerance_m: float) -> nx.MultiDiG
         projected, tolerance=tolerance_m, rebuild_graph=True, dead_ends=False, reconnect_edges=True
     )
     unprojected: nx.MultiDiGraph = ox.projection.project_graph(consolidated, to_latlong=True)
-    logger.info(
-        "Consolidated (%.0fm): %d → %d nodes", tolerance_m, graph.number_of_nodes(), unprojected.number_of_nodes()
-    )
+    logger.info(f"Consolidated ({tolerance_m:.0f}m): {graph.number_of_nodes()} → {unprojected.number_of_nodes()} nodes")
     return unprojected
 
 
@@ -220,7 +218,7 @@ def enrich_elevations(graph: nx.MultiDiGraph, dem: DEMService) -> None:
 
     elevations, nan_count = _fill_nan_with_mean(values=elevations)
     if nan_count:
-        logger.warning("%d/%d nodes had no DEM coverage (nodata) → neutral-filled", nan_count, len(nodes))
+        logger.warning(f"{nan_count}/{len(nodes)} nodes had no DEM coverage (nodata) → neutral-filled")
 
     assert not np.any(np.isnan(elevations)), "all node elevations must be finite after fill"
     for node, elevation in zip(nodes, elevations, strict=True):

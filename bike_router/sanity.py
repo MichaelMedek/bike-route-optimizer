@@ -20,12 +20,12 @@ def check_simplify_shrunk(nodes_before: int, nodes_after: int) -> None:
     Guarded: only meaningful when the raw graph is non-trivial (>= 20 nodes).
     """
     if nodes_before < SanityConfig.MIN_MEANINGFUL_NODES:
-        logger.info("Sanity 1 skipped (raw graph too small: %d nodes)", nodes_before)
+        logger.info(f"Sanity 1 skipped (raw graph too small: {nodes_before} nodes)")
         return
     assert nodes_after < 0.5 * nodes_before, (
         f"Sanity 1 failed: simplified graph did not shrink >50% ({nodes_before} → {nodes_after} nodes)"
     )
-    logger.info("Sanity 1 OK: %d → %d nodes (>50%% shrink)", nodes_before, nodes_after)
+    logger.info(f"Sanity 1 OK: {nodes_before} → {nodes_after} nodes (>50% shrink)")
 
 
 def _cheapest_cost(edges: dict[int, dict[str, object]]) -> float:
@@ -54,7 +54,7 @@ def check_uphill_costlier(graph: nx.MultiDiGraph, node_lower: int, node_upper: i
         assert cost_down > cost_up, f"Sanity 2 failed: uphill {cost_down} !> downhill {cost_up}"
     else:
         raise AssertionError("Sanity 2 misused: edge is flat (caller must pass a non-flat edge)")
-    logger.info("Sanity 2 OK: uphill %.1f > downhill %.1f", cost_up, cost_down)
+    logger.info(f"Sanity 2 OK: uphill {cost_up:.1f} > downhill {cost_down:.1f}")
 
 
 def check_strongly_connected(graph: nx.MultiDiGraph) -> None:

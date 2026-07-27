@@ -115,7 +115,7 @@ def plan_route(
     # Fail-fast: a bad Start raises before Destination is ever looked up.
     start_latlon = geocode_endpoint(place=origin, label="Start", geocode_fn=geocode_fn)
     dest_latlon = geocode_endpoint(place=destination, label="Destination", geocode_fn=geocode_fn)
-    logger.info("Geocoded: %s=%s, %s=%s", origin, start_latlon, destination, dest_latlon)
+    logger.info(f"Geocoded: {origin}={start_latlon}, {destination}={dest_latlon}")
 
     trip_km = (
         haversine_distance_m(lat_a=start_latlon[0], lon_a=start_latlon[1], lat_b=dest_latlon[0], lon_b=dest_latlon[1])
@@ -148,25 +148,21 @@ def plan_route(
         node_path = shortest_route(graph=graph, source=source, target=target)
     except nx.NetworkXNoPath as exc:
         raise NoRouteError("No bike route found between the two places within the corridor.") from exc
-    logger.info("Route: %d nodes", len(node_path))
+    logger.info(f"Route: {len(node_path)} nodes")
 
     track = build_track(graph=graph, node_path=node_path)
     # Expand to the full baked 3D road polyline (elevation already in the artifact).
     track = densify_track(graph=graph, node_path=node_path, track=track)
     composition = route_composition(graph=graph, node_path=node_path)
     logger.info(
-        "total %.1f km / %.0f min, bike %.1f km, +%.0f m / -%.0f m",
-        track.total.distance_km,
-        track.total.duration_min,
-        track.bike.distance_km,
-        track.bike.ascent_m,
-        track.bike.descent_m,
+        f"total {track.total.distance_km:.1f} km / {track.total.duration_min:.0f} min, "
+        f"bike {track.bike.distance_km:.1f} km, +{track.bike.ascent_m:.0f} m / -{track.bike.descent_m:.0f} m"
     )
 
     gpx_path, png_path = route_output_paths(origin=origin, destination=destination, params=params)
     gpx_path.parent.mkdir(parents=True, exist_ok=True)
     gpx_path.write_text(build_gpx(track=track))
-    logger.info("Wrote %s (%d trackpoints)", gpx_path, len(track.points))
+    logger.info(f"Wrote {gpx_path} ({len(track.points)} trackpoints)")
 
     png_path.parent.mkdir(parents=True, exist_ok=True)
     plot_elevation_heatmap(

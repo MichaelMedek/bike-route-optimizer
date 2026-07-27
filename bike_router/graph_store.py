@@ -111,7 +111,7 @@ def write_graph_parquet(nodes_df: pd.DataFrame, edges_df: pd.DataFrame, meta: di
         group[_EDGE_COLS].to_parquet(edges_dir / f"{_tile_name(row=row, col=col)}.parquet", index=False)
 
     (out_dir / GraphConfig.META_FILENAME).write_text(json.dumps(meta, indent=2))
-    logger.info("Wrote %d nodes / %d edges across tiles to %s", len(nodes_df), len(edges_df), out_dir)
+    logger.info(f"Wrote {len(nodes_df)} nodes / {len(edges_df)} edges across tiles to {out_dir}")
 
 
 def download_graph_from_hf(target_dir: Path = GraphConfig.GRAPH_DIR, progress: ProgressFn = null_progress) -> Path:
@@ -123,10 +123,10 @@ def download_graph_from_hf(target_dir: Path = GraphConfig.GRAPH_DIR, progress: P
     """
     meta_path = target_dir / GraphConfig.META_FILENAME
     if meta_path.exists():
-        logger.debug("DACH graph already present at %s", target_dir)
+        logger.debug(f"DACH graph already present at {target_dir}")
         return target_dir
     target_dir.mkdir(parents=True, exist_ok=True)
-    logger.info("Downloading DACH graph from HF %s …", GraphConfig.HF_REPO_ID)
+    logger.info(f"Downloading DACH graph from HF {GraphConfig.HF_REPO_ID} …")
     files = list_repo_files(repo_id=GraphConfig.HF_REPO_ID, repo_type="dataset")
     progress(0, len(files))
     for done, filename in enumerate(files, start=1):

@@ -10,12 +10,14 @@ from pathlib import Path
 import geopandas as gpd
 import networkx as nx
 import pyrosm
-from shapely.geometry import LineString, MultiLineString, Point
+from shapely.geometry import LineString, Point
 
 from bike_router.builder import (
     _add_railway,
     _connect_stations_along_lines,
-    _rail_lines,
+    _cycling_graph,
+    _open_osm,
+    _rail_network,
     _station_points,
     _tag_bike_defaults,
     build_region_graph,
@@ -31,14 +33,24 @@ _TEST_PBF = Path(pyrosm.get_data("test_pbf"))
 
 
 class _FakeOSM:
-    """Minimal OSM stand-in returning fixed station/rail GeoDataFrames."""
+    """Minimal OSM stand-in returning fixed station points + a rail network (nodes, edges)."""
 
-    def __init__(self, stations: gpd.GeoDataFrame | None, rails: gpd.GeoDataFrame | None) -> None:
+    def __init__(self, stations: gpd.GeoDataFrame | None, rail_edges: gpd.GeoDataFrame | None) -> None:
         self._stations = stations
-        self._rails = rails
+        self._rail_edges = rail_edges
 
     def get_data_by_custom_criteria(self, custom_filter, **_kwargs):  # noqa: ANN001, ANN003
-        return self._stations if "station" in str(custom_filter) or "halt" in str(custom_filter) else self._rails
+        return self._stations  # only ever queried for stations in these tests
+
+    def get_network(self, network_type, custom_filter, nodes):  # noqa: ANN001, ANN201
+        if self._rail_edges is None:
+            return None
+        return gpd.GeoDataFrame(geometry=[]), self._rail_edges
+
+
+def _rail_edges_gdf(lines: list[list[tuple[float, float]]]) -> gpd.GeoDataFrame:
+    """Build a get_network-shaped rail edge GDF from (lat, lon) polylines (test helper)."""
+    return gpd.GeoDataFrame(geometry=[LineString([(lon, lat) for lat, lon in line]) for line in lines], crs="EPSG:4326")
 
 
 def test_build_region_graph_shim_and_modes():
@@ -212,7 +224,8 @@ def test_rail_edges_are_bidirectional():
     graph.add_node(-2, x=8.05, y=48.0, elevation=500.0, node_type=NodeType.RAIL, station_name="B")
     line = [(48.0, 8.00), (48.0, 8.025), (48.0, 8.05)]  # (lat, lon) vertices near both
     station_nodes = [(-1, "A", 48.0, 8.00), (-2, "B", 48.0, 8.05)]
-    _connect_stations_along_lines(graph=graph, station_nodes=station_nodes, lines=[line])
+    net = _rail_network(osm=_FakeOSM(stations=None, rail_edges=_rail_edges_gdf([line])))
+    _connect_stations_along_lines(graph=graph, station_nodes=station_nodes, net=net)
     rail = {(u, v) for u, v, d in graph.edges(data=True) if d["mode"] == Mode.RAIL}
     assert rail == {(-1, -2), (-2, -1)}  # both directions
     assert graph.get_edge_data(-1, -2)[0]["length"] > 0  # real along-track length stored
@@ -225,14 +238,15 @@ def test_rail_edge_stores_length_not_time():
     graph.add_node(-1, x=8.0, y=48.0, elevation=100.0, node_type=NodeType.RAIL, station_name="A")
     graph.add_node(-2, x=8.1, y=48.0, elevation=400.0, node_type=NodeType.RAIL, station_name="B")
     line = [(48.0, 8.0), (48.0, 8.1)]
-    _connect_stations_along_lines(graph=graph, station_nodes=[(-1, "A", 48.0, 8.0), (-2, "B", 48.0, 8.1)], lines=[line])
+    net = _rail_network(osm=_FakeOSM(stations=None, rail_edges=_rail_edges_gdf([line])))
+    _connect_stations_along_lines(graph=graph, station_nodes=[(-1, "A", 48.0, 8.0), (-2, "B", 48.0, 8.1)], net=net)
     data = graph.get_edge_data(-1, -2)[0]
     assert "rail_seconds" not in data  # no time baked on the edge
     assert data["length"] > 0
 
 
 def test_station_points_none_when_empty():
-    assert _station_points(_FakeOSM(stations=None, rails=None)) == []
+    assert _station_points(_FakeOSM(stations=None, rail_edges=None)) == []
 
 
 def test_station_points_reads_names_and_centroids():
@@ -241,23 +255,33 @@ def test_station_points_reads_names_and_centroids():
         geometry=[Point(8.41, 48.46), Point(8.70, 48.89)],
         crs="EPSG:4326",
     )
-    pts = _station_points(_FakeOSM(stations=stations, rails=None))
+    pts = _station_points(_FakeOSM(stations=stations, rail_edges=None))
     assert len(pts) == 2
     assert pts[0][0] == "Freudenstadt" and pts[1][0] == "station"  # unnamed → "station"
     assert pts[0][1:] == (48.46, 8.41)
 
 
-def test_rail_lines_flattens_multilinestring():
-    rails = gpd.GeoDataFrame(
-        geometry=[
-            LineString([(8.0, 48.0), (8.1, 48.0)]),
-            MultiLineString([[(8.2, 48.0), (8.3, 48.0)], [(8.4, 48.0), (8.5, 48.0)]]),
-        ],
-        crs="EPSG:4326",
-    )
-    lines = _rail_lines(_FakeOSM(stations=None, rails=rails))
-    assert len(lines) == 3  # 1 single + 2 parts
-    assert lines[0][0] == (48.0, 8.0)  # (lat, lon) order
+def test_rail_network_stitches_getnetwork_edges():
+    # _rail_network builds the coordinate-keyed rail graph from pyrosm's get_network output
+    # (LineString edges), stitching shared vertices so a split line becomes one connected network.
+    # get_network excludes area/polygon rail for free — no hand-rolled geometry filtering needed.
+    edges = _rail_edges_gdf([[(48.0, 8.0), (48.0, 8.1)], [(48.0, 8.1), (48.0, 8.2)]])  # two segments, shared vertex
+    net = _rail_network(osm=_FakeOSM(stations=None, rail_edges=edges))
+    assert net.number_of_nodes() == 3  # (48,8.0)-(48,8.1)-(48,8.2), middle vertex shared
+    assert net.number_of_edges() == 2
+    assert (48.0, 8.1) in net  # vertices keyed on rounded (lat, lon)
+    assert all(d["length"] > 0 for _u, _v, d in net.edges(data=True))  # real great-circle lengths
+
+
+def test_rail_network_empty_when_no_rail():
+    # No rail network (get_network returns None) → empty graph, no crash.
+    assert _rail_network(osm=_FakeOSM(stations=None, rail_edges=None)).number_of_nodes() == 0
+    # The bike/road path can't hit the polygon crash: osmnx's to_graph emits LineString edge
+    # geometry only. This guards that invariant (no non-linear geometry to drop on the road side).
+    graph = _cycling_graph(osm=_open_osm(pbf_path=_TEST_PBF, bbox=None))
+    geoms = [d["geometry"] for _u, _v, _k, d in graph.edges(keys=True, data=True) if d.get("geometry") is not None]
+    assert geoms, "expected edge geometries on the bundled extract"
+    assert all(g.geom_type == "LineString" for g in geoms)  # never Polygon → road side is safe
 
 
 def test_add_railway_wires_station_edges_and_bidirectional_rail():
@@ -270,7 +294,7 @@ def test_add_railway_wires_station_edges_and_bidirectional_rail():
         crs="EPSG:4326",
     )
     rails = gpd.GeoDataFrame(geometry=[LineString([(8.00, 48.0), (8.025, 48.0), (8.05, 48.0)])], crs="EPSG:4326")
-    osm = _FakeOSM(stations=stations, rails=rails)
+    osm = _FakeOSM(stations=stations, rail_edges=rails)
     dem = MockDEMService(base_elevation=200.0, slope_ew_pct=-20.0)  # elevation rises with lon (east)
     n = _add_railway(graph=graph, osm=osm, dem=dem)
     assert n == 2  # two stations added
@@ -298,7 +322,9 @@ def test_add_railway_links_multiple_nearby_entrances():
     for node_id, lon in ((201, 8.0005), (202, 8.0010), (203, 8.0015)):  # ~37/74/111 m east
         graph.add_node(node_id, x=lon, y=48.0, elevation=100.0, node_type=NodeType.BIKE)
     stations = gpd.GeoDataFrame({"name": ["A"]}, geometry=[Point(8.0000, 48.0)], crs="EPSG:4326")
-    _add_railway(graph=graph, osm=_FakeOSM(stations=stations, rails=None), dem=MockDEMService(base_elevation=100.0))
+    _add_railway(
+        graph=graph, osm=_FakeOSM(stations=stations, rail_edges=None), dem=MockDEMService(base_elevation=100.0)
+    )
     linked = {u for u, v, d in graph.edges(data=True) if d["mode"] == Mode.STATION and v < 0}
     assert linked == {201, 202, 203}  # all three in-radius bike nodes, both directions
 
@@ -313,13 +339,15 @@ def test_add_railway_caps_entrances_and_respects_radius():
         graph.add_node(300 + i, x=8.0000 + i * 0.00005, y=48.0, elevation=100.0, node_type=NodeType.BIKE)  # ~3.7 m
     graph.add_node(999, x=8.02, y=48.0, elevation=100.0, node_type=NodeType.BIKE)  # ~1.5 km east — outside 200 m
     stations = gpd.GeoDataFrame({"name": ["A"]}, geometry=[Point(8.0000, 48.0)], crs="EPSG:4326")
-    _add_railway(graph=graph, osm=_FakeOSM(stations=stations, rails=None), dem=MockDEMService(base_elevation=100.0))
+    _add_railway(
+        graph=graph, osm=_FakeOSM(stations=stations, rail_edges=None), dem=MockDEMService(base_elevation=100.0)
+    )
     linked = {u for u, v, d in graph.edges(data=True) if d["mode"] == Mode.STATION and v < 0}
     assert len(linked) == RailConfig.STATION_MAX_ENTRANCES  # capped
     assert 999 not in linked  # out-of-radius node never linked
     graph = nx.MultiDiGraph(crs="EPSG:4326")
     graph.add_node(1, x=8.0, y=48.0, elevation=100.0, node_type=NodeType.BIKE)
-    assert _add_railway(graph=graph, osm=_FakeOSM(stations=None, rails=None), dem=MockDEMService()) == 0
+    assert _add_railway(graph=graph, osm=_FakeOSM(stations=None, rail_edges=None), dem=MockDEMService()) == 0
 
 
 def test_station_edges_touch_bike_nodes_not_each_other():
@@ -333,7 +361,7 @@ def test_station_edges_touch_bike_nodes_not_each_other():
         geometry=[Point(8.0000, 48.0), Point(8.0003, 48.0)],  # ~22 m apart, ~90-110 m from bike node
         crs="EPSG:4326",
     )
-    osm = _FakeOSM(stations=stations, rails=None)
+    osm = _FakeOSM(stations=stations, rail_edges=None)
     _add_railway(graph=graph, osm=osm, dem=MockDEMService(base_elevation=100.0))
     # every station edge must touch the bike node 500, never link two stations
     station_edges = [(u, v) for u, v, d in graph.edges(data=True) if d["mode"] == Mode.STATION]
