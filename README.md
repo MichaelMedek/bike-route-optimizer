@@ -40,6 +40,12 @@ Each preference is expressed in the same intuitive unit: **how many extra kilome
 | `--extra_km_per_rail_km` | Extra km you'd bike to avoid 1 km carried by train (0 = train distance is free; high = avoid long train legs). |
 | `--extra_km_per_boarding` | Extra km you'd bike to avoid boarding a train once (0 = board freely; high = avoid catching trains). |
 
+## Example: Freiburg → Feldberg
+
+![Freiburg to Feldberg route](docs/route_example_feldberg.png)
+
+Feldberg is a steep climb up the Black Forest. Told to avoid hills, the planner puts the rider on a **train** (purple) for the hard ascent — because a rail line already runs that way — and keeps them on the **bike** (green/red) for the flatter start and the final stretch the train doesn't reach. The short **red** bit near the top is unpaved: the only way up there, so it's ridden rather than taking a long detour to stay paved.
+
 ## The physics & mathematics
 
 Routing happens on a graph: junctions are nodes, the roads between them are edges. Every edge carries its true length in metres, the height difference between its ends, its surface, its road class, and — for train links — a rail marker. The planner turns each edge into a single "felt cost" in metres, then finds the path from start to finish with the least total felt cost. Because every part of the cost is a real distance plus non-negative penalties, the cheapest possible edge is just its raw length, which keeps the search provably optimal.
