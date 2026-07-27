@@ -80,7 +80,8 @@ def _synth_rail_graph(lines: list[list[tuple[float, float]]]) -> nx.MultiDiGraph
     """Synthetic rail track graph from (lat, lon) polylines: RAIL nodes, bidirectional RAIL edges.
 
     Stands in for what _rail_graph produces (a normalized MultiDiGraph), so _merge_bike_rail can be
-    tested deterministically without a pbf. Shared vertices are coalesced by rounded (lat, lon).
+    tested deterministically without a pbf. Track nodes carry NO elevation (like the real pyrosm
+    graph) — it is baked later by the single enrich pass. Shared vertices coalesce by rounded coord.
     """
     graph = nx.MultiDiGraph(crs="EPSG:4326")
     coord_id: dict[tuple[float, float], int] = {}
@@ -89,7 +90,7 @@ def _synth_rail_graph(lines: list[list[tuple[float, float]]]) -> nx.MultiDiGraph
         key = (round(lat, 6), round(lon, 6))
         if key not in coord_id:
             coord_id[key] = len(coord_id)
-            graph.add_node(coord_id[key], x=lon, y=lat, elevation=100.0, node_type=NodeType.RAIL, station_name=None)
+            graph.add_node(coord_id[key], x=lon, y=lat, node_type=NodeType.RAIL, station_name=None)
         return coord_id[key]
 
     for line in lines:
@@ -373,9 +374,7 @@ def test_merge_wires_station_edges_and_keeps_rail_bidirectional():
     bike = _bike_graph([(100, 48.0, 8.001)], [])  # one bike node ~74 m E of station A
     rail = _synth_rail_graph([[(48.0, 8.00), (48.0, 8.025), (48.0, 8.05)]])  # track through A..B
     stations = gpd.GeoDataFrame({"name": ["A", "B"]}, geometry=[Point(8.00, 48.0), Point(8.05, 48.0)], crs="EPSG:4326")
-    n = _merge_bike_rail(
-        bike_graph=bike, rail_graph=rail, osm=_FakeOSM(stations=stations), dem=MockDEMService(base_elevation=100.0)
-    )
+    n = _merge_bike_rail(bike_graph=bike, rail_graph=rail, osm=_FakeOSM(stations=stations))
     assert n == 2  # two stations
     modes = {d["mode"] for _u, _v, d in bike.edges(data=True)}
     assert Mode.STATION in modes and Mode.RAIL in modes
@@ -389,6 +388,28 @@ def test_merge_wires_station_edges_and_keeps_rail_bidirectional():
     assert _svg_invariant_holds(bike)  # the frozen SVG's footer contract holds
 
 
+def test_merge_leaves_track_and_station_nodes_for_later_elevation_bake():
+    # REGRESSION: _merge_bike_rail adds rail TRACK + STATION nodes with NO elevation (baked later by
+    # ONE enrich_elevations pass over the whole graph). Baking before the merge left the 4016 track
+    # nodes with no "elevation" → graph_to_tables raised KeyError. Here: after merge those nodes lack
+    # elevation; after enrich EVERY node has it (bike + track + station), so graph_to_tables succeeds.
+    from bike_router.graph_ops import enrich_elevations
+    from bike_router.graph_store import graph_to_tables
+
+    bike = _bike_graph([(100, 48.0, 8.001)], [])
+    rail = _synth_rail_graph([[(48.0, 8.00), (48.0, 8.025), (48.0, 8.05)]])
+    stations = gpd.GeoDataFrame({"name": ["A"]}, geometry=[Point(8.0, 48.0)], crs="EPSG:4326")
+    _tag_bike_defaults(graph=bike)  # bike nodes tagged BIKE (elevation still unbaked here)
+    _merge_bike_rail(bike_graph=bike, rail_graph=rail, osm=_FakeOSM(stations=stations))
+    track_and_station = [n for n, d in bike.nodes(data=True) if d["node_type"] == NodeType.RAIL]
+    assert track_and_station, "expected rail track + station nodes"
+    assert all("elevation" not in bike.nodes[n] for n in track_and_station)  # not baked yet
+    enrich_elevations(graph=bike, dem=MockDEMService(base_elevation=100.0))
+    assert all("elevation" in d for _n, d in bike.nodes(data=True))  # ALL nodes now have it
+    nodes_df, _edges_df = graph_to_tables(graph=bike)  # the call that KeyError'd before
+    assert len(nodes_df) == bike.number_of_nodes()
+
+
 def test_merge_links_multiple_nearby_entrances():
     # A station connects to the nearest N bike nodes INSIDE the radius (SVG: several entrances per node).
     bike = _bike_graph([(201, 48.0, 8.0005), (202, 48.0, 8.0010), (203, 48.0, 8.0015)], [])  # ~37/74/111 m E
@@ -397,7 +418,6 @@ def test_merge_links_multiple_nearby_entrances():
         bike_graph=bike,
         rail_graph=_empty_rail_graph(),
         osm=_FakeOSM(stations=stations),
-        dem=MockDEMService(base_elevation=100.0),
     )
     linked = {u for u, v, d in bike.edges(data=True) if d["mode"] == Mode.STATION and v < 0}
     assert linked == {201, 202, 203}  # all three in-radius bike nodes
@@ -413,7 +433,6 @@ def test_merge_caps_entrances_and_respects_radius():
         bike_graph=bike,
         rail_graph=_empty_rail_graph(),
         osm=_FakeOSM(stations=stations),
-        dem=MockDEMService(base_elevation=100.0),
     )
     linked = {u for u, v, d in bike.edges(data=True) if d["mode"] == Mode.STATION and v < 0}
     assert len(linked) == RailConfig.STATION_MAX_ENTRANCES  # capped
@@ -422,12 +441,7 @@ def test_merge_caps_entrances_and_respects_radius():
 
 def test_merge_no_stations_returns_zero():
     bike = _bike_graph([(1, 48.0, 8.0)], [])
-    assert (
-        _merge_bike_rail(
-            bike_graph=bike, rail_graph=_empty_rail_graph(), osm=_FakeOSM(stations=None), dem=MockDEMService()
-        )
-        == 0
-    )
+    assert _merge_bike_rail(bike_graph=bike, rail_graph=_empty_rail_graph(), osm=_FakeOSM(stations=None)) == 0
 
 
 def test_station_edges_touch_bike_nodes_not_each_other():
@@ -441,7 +455,6 @@ def test_station_edges_touch_bike_nodes_not_each_other():
         bike_graph=bike,
         rail_graph=_empty_rail_graph(),
         osm=_FakeOSM(stations=stations),
-        dem=MockDEMService(base_elevation=100.0),
     )
     station_edges = [(u, v) for u, v, d in bike.edges(data=True) if d["mode"] == Mode.STATION]
     assert station_edges, "expected station edges within radius"
@@ -465,7 +478,6 @@ def test_merge_orphaned_station_dropped_by_scc():
         bike_graph=bike,
         rail_graph=_empty_rail_graph(),
         osm=_FakeOSM(stations=stations),
-        dem=MockDEMService(base_elevation=100.0),
     )
     assert not [u for u, v, d in bike.edges(data=True) if d["mode"] == Mode.STATION]  # no access edges
     survivors = ox.truncate.largest_component(bike, strongly=True)
@@ -482,9 +494,7 @@ def test_merge_passthrough_station_without_road_access_is_kept():
     stations = gpd.GeoDataFrame(
         {"name": ["A", "B", "C"]}, geometry=[Point(8.0, 48.0), Point(8.05, 48.0), Point(8.10, 48.0)], crs="EPSG:4326"
     )
-    _merge_bike_rail(
-        bike_graph=bike, rail_graph=rail, osm=_FakeOSM(stations=stations), dem=MockDEMService(base_elevation=100.0)
-    )
+    _merge_bike_rail(bike_graph=bike, rail_graph=rail, osm=_FakeOSM(stations=stations))
     # Only A and C got bike access; B is a genuine no-road pass-through stop.
     access = {
         bike.nodes[u if u < 0 else v]["station_name"] for u, v, d in bike.edges(data=True) if d["mode"] == Mode.STATION

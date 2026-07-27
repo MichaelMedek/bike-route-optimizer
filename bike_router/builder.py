@@ -139,18 +139,18 @@ def _station_entrances(
     return [(int(node_ids[i]), float(dists[i])) for i in nearest]
 
 
-def _merge_bike_rail(bike_graph: nx.MultiDiGraph, rail_graph: nx.MultiDiGraph, osm: OSM, dem: DEMService) -> int:
+def _merge_bike_rail(bike_graph: nx.MultiDiGraph, rail_graph: nx.MultiDiGraph, osm: OSM) -> int:
     """Merge the independent bike + rail graphs at stations; returns #stations.
 
     Composes ``rail_graph`` (ids relabelled disjoint) into ``bike_graph``, then adds each station as
     a SEPARATE RAIL node joined to its nearest track node (RAIL edge) and up-to-N nearest bike nodes
     (STATION edges) — so a bike route reaches a station only across a station edge (graph_model.svg).
+    Node elevations (bike, track, station) are baked in ONE enrich_elevations pass AFTER this merge.
 
     Args:
         bike_graph: The tagged cycling graph; mutated in place into the merged graph.
         rail_graph: The tagged rail track graph (consumed, relabelled).
         osm: Open pbf, queried for station points.
-        dem: Elevation sampler for station nodes.
     """
     stations = _station_points(osm=osm)
     if not stations:
@@ -169,15 +169,12 @@ def _merge_bike_rail(bike_graph: nx.MultiDiGraph, rail_graph: nx.MultiDiGraph, o
     bike_graph.add_nodes_from(rail_graph.nodes(data=True))
     bike_graph.add_edges_from(rail_graph.edges(keys=True, data=True))
 
-    # Assign each station a synthetic node id below the OSM id range so it can't clash.
-    lats = np.array([lat for _n, lat, _lon in stations])
-    lons = np.array([lon for _n, _lat, lon in stations])
-    elevs = dem.get_elevations(lons=lons, lats=lats)
+    # Assign each station a synthetic node id below the OSM id range so it can't clash. Elevation is
+    # baked later by the single enrich_elevations pass (with the track nodes), not here.
     have_track = rail_graph.number_of_nodes() > 0
-    for station_id, ((name, lat, lon), elev) in enumerate(zip(stations, elevs, strict=True), start=1):
+    for station_id, (name, lat, lon) in enumerate(stations, start=1):
         node_id = -station_id
-        elevation = float(elev) if not np.isnan(elev) else 0.0
-        bike_graph.add_node(node_id, x=lon, y=lat, elevation=elevation, node_type=NodeType.RAIL, station_name=name)
+        bike_graph.add_node(node_id, x=lon, y=lat, node_type=NodeType.RAIL, station_name=name)
         # Snap the station onto the track: a RAIL edge to its nearest track node (library nearest_nodes).
         if have_track:
             track_node, snap_dist = ox.distance.nearest_nodes(rail_graph, X=lon, Y=lat, return_dist=True)
@@ -233,12 +230,13 @@ def build_region_graph(
     logger.info(f"{name}: [5/9] largest strongly-connected component → {graph.number_of_nodes()} nodes")
     check_simplify_shrunk(nodes_before=raw_count, nodes_after=graph.number_of_nodes())
     _tag_bike_defaults(graph=graph)
-    enrich_elevations(graph=graph, dem=dem)
-    logger.info(f"{name}: [6/9] baked node elevations")
     # Build the rail track graph INDEPENDENTLY (same builder, rail filter), then merge at stations.
     rail_graph = _rail_graph(osm=osm)
-    n_stations = _merge_bike_rail(bike_graph=graph, rail_graph=rail_graph, osm=osm, dem=dem)
-    logger.info(f"{name}: [7/9] merged {rail_graph.number_of_nodes()} rail track nodes + {n_stations} stations")
+    n_stations = _merge_bike_rail(bike_graph=graph, rail_graph=rail_graph, osm=osm)
+    logger.info(f"{name}: [6/9] merged {rail_graph.number_of_nodes()} rail track nodes + {n_stations} stations")
+    # Bake elevations over the WHOLE merged graph (bike + track + station nodes) in one pass.
+    enrich_elevations(graph=graph, dem=dem)
+    logger.info(f"{name}: [7/9] baked node elevations")
     bake_edge_geometry_elevations(graph=graph, dem=dem)  # 3D vertices → inference needs no DEM
     logger.info(f"{name}: [8/9] baked edge geometry elevations")
     # Re-run the strongly-connected filter AFTER railway wiring: guarantees ZERO dangling nodes.
