@@ -42,7 +42,7 @@ logger = logging.getLogger("build_dach")
 _GEOFABRIK = "https://download.geofabrik.de/europe"
 # Raw pbf downloads are cached beside the artifact (re-fetchable input, not build state).
 _PBF_DIR = GraphConfig.GRAPH_DIR.parent / "dach_build" / "pbf"
-_DOWNLOAD_RETRIES = 5  # transient network blips only; a final failure aborts the whole run
+_DOWNLOAD_RETRIES = 10  # transient network blips only; a final failure aborts the whole run
 # Per-socket-read timeout (s): a stalled transfer (0 bytes flowing) raises after this, turning
 # a silent hang into a retryable failure. Geofabrik redirects can pick a dead path — retry escapes it.
 _SOCKET_TIMEOUT_S = 60.0
