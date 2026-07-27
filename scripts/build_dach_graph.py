@@ -36,12 +36,17 @@ import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 
+import matplotlib
 import networkx as nx
 import pandas as pd
 from tqdm import tqdm
 
+matplotlib.use("Agg")  # headless — must precede pyplot import
+import matplotlib.pyplot as plt  # noqa: E402
+from shapely import from_wkt  # noqa: E402
+
 from bike_router.builder import build_region_graph, dedup_by_geometry, reindex_region, remap_contiguous
-from bike_router.constants import DEMConfig, GraphConfig, NodeType
+from bike_router.constants import DEMConfig, GraphConfig, Mode, NodeType, OutputConfig, Palette
 from bike_router.elevation import DEMService
 from bike_router.graph_store import (
     compute_bbox,
@@ -341,6 +346,27 @@ def _random_cross_tile_pair(*, graph: nx.MultiDiGraph, nodes: list[int], rng: ra
     raise ValueError("Validation: could not find a cross-tile node pair (graph too small?).")
 
 
+def _plot_overview(*, edges_df: pd.DataFrame, out_path: Path) -> None:
+    """Save a minimalist matplotlib overview of the final graph: bike edges thin blue, rail thick purple.
+
+    A quick visual sanity-check of the whole DACH result before deciding to upload. Station links
+    (short bike↔rail hops) are omitted — the two networks' shapes are what matters here.
+    """
+    fig, ax = plt.subplots(figsize=(16, 18))
+    # Draw bike first (thin blue), rail on top (thicker purple) so rail reads clearly over the mesh.
+    for mode, color, width in ((Mode.BIKE, Palette.START, 0.15), (Mode.RAIL, Palette.RAIL, 0.9)):
+        for wkt in edges_df.loc[edges_df["mode"] == mode, "geometry_wkt"]:
+            if isinstance(wkt, str):
+                coords = from_wkt(wkt).coords
+                ax.plot([c[0] for c in coords], [c[1] for c in coords], color=color, linewidth=width)
+    ax.set_aspect(1.4)  # rough lat/lon aspect at ~50°N
+    ax.set_title("DACH graph overview — bike (thin blue) · rail (thick purple)")
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(out_path, dpi=140, facecolor="white", bbox_inches="tight", pad_inches=0.2)
+    plt.close(fig)
+    logger.info(f"Overview plot written to {out_path}")
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Build the full DACH bike+rail graph (runs fully or not at all).")
     parser.add_argument("--only", nargs="+", help="Build only these region keys (test a subset).")
@@ -411,6 +437,7 @@ def main(argv: list[str] | None = None) -> int:
         "regions_built": built,
     }
     write_graph_parquet(nodes_df=nodes_df, edges_df=edges_df, meta=meta, out_dir=out_dir, compression="zstd")
+    _plot_overview(edges_df=edges_df, out_path=OutputConfig.OUTPUT_DIR / "dach_graph_overview.png")
     del nodes_df, edges_df
     gc.collect()
 
