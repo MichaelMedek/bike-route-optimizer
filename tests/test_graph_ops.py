@@ -58,10 +58,13 @@ def test_contract_interstitial_nodes_removes_passthrough_keeps_length():
     assert min(d["length"] for d in result.get_edge_data(1, 3).values()) == 250.0  # summed run
 
 
-def test_consolidate_graph_noop_at_zero_tolerance():
+def test_consolidate_graph_rejects_nonpositive_tolerance():
+    # Strict: tolerance is always a positive build constant; a 0/negative value is a bug, not a no-op.
+    import pytest
+
     graph = make_line_graph()
-    result = consolidate_graph(graph=graph, tolerance_m=0.0)
-    assert result is graph  # 0 → untouched
+    with pytest.raises(AssertionError, match="tolerance must be positive"):
+        consolidate_graph(graph=graph, tolerance_m=0.0)
 
 
 def test_consolidate_graph_merges_close_nodes():

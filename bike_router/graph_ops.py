@@ -161,10 +161,8 @@ def consolidate_graph(graph: nx.MultiDiGraph, tolerance_m: float) -> nx.MultiDiG
     Projects to an auto-selected UTM zone (consolidation needs metric units),
     merges nodes whose ``tolerance_m``-radius buffers overlap, rebuilds the topology
     with reconnected edges + updated lengths, then unprojects back to EPSG:4326.
-    tolerance_m == 0 is a no-op (returns the graph unchanged).
     """
-    if tolerance_m <= 0:
-        return graph
+    assert tolerance_m > 0, "consolidation tolerance must be positive"
     projected = ox.projection.project_graph(graph)
     consolidated = ox.simplification.consolidate_intersections(
         projected, tolerance=tolerance_m, rebuild_graph=True, dead_ends=False, reconnect_edges=True

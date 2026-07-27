@@ -7,6 +7,7 @@ Returns node/edge tables; the routing sliders decide if A* uses rail.
 """
 
 import logging
+from dataclasses import dataclass
 from pathlib import Path
 from typing import cast
 
@@ -34,38 +35,75 @@ from bike_router.graph_ops import (
     enrich_elevations,
     normalize_pyrosm_graph,
 )
-from bike_router.sanity import check_simplify_shrunk
 
 logger = logging.getLogger(__name__)
 
 
-def _network_graph(
-    osm: OSM, *, network_type: str, custom_filter: str | None, filter_type: str | None
-) -> nx.MultiDiGraph:
-    """The ONE routable-graph builder for BOTH the bike and rail layers (only the filter differs).
+@dataclass(frozen=True)
+class LayerSpec:
+    """All that differs between the bike and rail layers — everything else is the SAME pipeline.
 
-    Roads and rail take the exact same path — pyrosm ``get_network(nodes=True)`` → ``to_graph``.
+    ``build_layer_graph`` runs one identical sequence for both; only these fields vary. There is NO
+    per-mode code path — the surface/highway allowlist is a declared flag, not a branch.
+    """
+
+    custom_filter: str | None  # None → pyrosm's "cycling" road preset; bracket string → rail ways
+    filter_type: str | None  # "keep" for a bracket filter; None for the preset
+    mode: Mode  # tag stamped on every edge
+    node_type: NodeType  # tag stamped on every node
+    surface_allowlist: bool  # bike: drop non-rideable surfaces/highways; rail: no such tags → skip
+
+
+BIKE_LAYER = LayerSpec(
+    custom_filter=None, filter_type=None, mode=Mode.BIKE, node_type=NodeType.BIKE, surface_allowlist=True
+)
+RAIL_LAYER = LayerSpec(
+    custom_filter='["railway"~"rail"]',
+    filter_type="keep",
+    mode=Mode.RAIL,
+    node_type=NodeType.RAIL,
+    surface_allowlist=False,
+)
+
+
+def _network_graph(osm: OSM, *, custom_filter: str | None, filter_type: str | None) -> nx.MultiDiGraph:
+    """Fetch a routable graph from a pbf: pyrosm ``get_network(nodes=True)`` → ``to_graph``.
+
     ``custom_filter`` (a bracket string, e.g. ``'["railway"~"rail"]'``, with ``filter_type="keep"``)
     selects WHICH ways are kept (a plain-dict filter is NOT used — it defaults to exclude + highway-
-    only, silently returning the whole road net). ``force_bidirectional=True`` for BOTH layers: every
-    edge exists in both directions (same length, opposite elevation delta) — a bike may ride any road
-    up or down, and trains run both ways. pyrosm's ``network_type`` alone would honour ``oneway``.
+    only, silently returning the whole road net). ``force_bidirectional=True``: every edge exists in
+    both directions (same length, opposite elevation delta) — a bike may ride any road up or down,
+    and trains run both ways. ``network_type="cycling"`` only sets the (overridden) directionality.
     """
     res = cast(
         "tuple[gpd.GeoDataFrame, gpd.GeoDataFrame] | None",
-        osm.get_network(network_type=network_type, custom_filter=custom_filter, filter_type=filter_type, nodes=True),
+        osm.get_network(network_type="cycling", custom_filter=custom_filter, filter_type=filter_type, nodes=True),
     )
     assert res is not None, "pbf has no matching network"
     nodes, edges = res
     graph: nx.MultiDiGraph = osm.to_graph(
-        nodes,
-        edges,
-        graph_type="networkx",
-        osmnx_compatible=True,
-        retain_all=True,
-        force_bidirectional=True,
+        nodes, edges, graph_type="networkx", osmnx_compatible=True, retain_all=True, force_bidirectional=True
     )
     normalize_pyrosm_graph(graph=graph)
+    return graph
+
+
+def build_layer_graph(osm: OSM, *, layer: LayerSpec, tolerance_m: float) -> nx.MultiDiGraph:
+    """Build ONE fully-preprocessed, single-component layer graph for EITHER mode (bike or rail).
+
+    THE one shared pipeline — no per-mode branches, only ``layer`` config differs: fetch ways →
+    (bike only) drop non-rideable surfaces/highways → contract degree-2 nodes → consolidate junctions
+    (``tolerance_m``) → keep the largest weakly-connected component → tag mode/node_type.
+    """
+    graph = _network_graph(osm=osm, custom_filter=layer.custom_filter, filter_type=layer.filter_type)
+    if layer.surface_allowlist:
+        drop_disallowed_edges(graph=graph)  # bike: rail has no surface/highway tags, would drop all
+    graph = contract_interstitial_nodes(graph=graph)
+    graph = consolidate_graph(graph=graph, tolerance_m=tolerance_m)
+    assert graph.number_of_nodes() > 0
+    largest = max(nx.weakly_connected_components(graph), key=len)
+    graph = graph.subgraph(largest).copy()
+    _tag_layer(graph=graph, mode=layer.mode, node_type=layer.node_type)
     return graph
 
 
@@ -109,27 +147,12 @@ def _station_points(osm: OSM) -> list[tuple[str, float, float]]:
 def _tag_layer(graph: nx.MultiDiGraph, *, mode: Mode, node_type: NodeType) -> None:
     """Stamp every edge's ``mode`` and every node's ``node_type`` in place (single source of truth).
 
-    Used for both layers: the bike graph is tagged BIKE, the rail track graph RAIL. Station
-    nodes/edges are stamped individually in ``_merge_bike_rail``.
+    Used for both layers via build_layer_graph. Station nodes/edges are stamped in _merge_bike_rail.
     """
     for _u, _v, _k, data in graph.edges(keys=True, data=True):
         data["mode"] = mode
     for _node, data in graph.nodes(data=True):
         data["node_type"] = node_type
-
-
-def _rail_graph(osm: OSM) -> nx.MultiDiGraph:
-    """The rail track network as a normalized graph, via the shared ``_network_graph`` builder.
-
-    Uses the SAME builder as the bike graph — only the filter differs. The bracket-string
-    ``'["railway"~"rail"]'`` + ``filter_type="keep"`` selects rail ways only (a plain-dict railway
-    filter would silently return the whole road net). Degree-2 track vertices are contracted (reusing
-    ``contract_interstitial_nodes``) and every node/edge is tagged RAIL. Empty graph if no rail.
-    """
-    graph = _network_graph(osm=osm, network_type="cycling", custom_filter='["railway"~"rail"]', filter_type="keep")
-    graph = contract_interstitial_nodes(graph=graph)
-    _tag_layer(graph=graph, mode=Mode.RAIL, node_type=NodeType.RAIL)
-    return graph
 
 
 def _station_entrances(
@@ -199,13 +222,14 @@ def _merge_bike_rail(bike_graph: nx.MultiDiGraph, rail_graph: nx.MultiDiGraph, o
     return len(stations)
 
 
-def _tag_bike_defaults(graph: nx.MultiDiGraph) -> None:
-    """Tag the cycling graph as the BIKE layer (every node BIKE, every edge Mode.BIKE).
+def _assert_single_component(graph: nx.MultiDiGraph, *, label: str) -> None:
+    """Fail fast unless the layer graph is exactly ONE weakly-connected component.
 
-    Called on the bike graph before the rail merge, when it holds ONLY the cycling network.
-    Thin wrapper over the shared ``_tag_layer`` (single source of the tagging logic).
+    Rail must be one network (every train reaches every other); bike must be one (no stranded
+    islands). build_layer_graph already keeps the largest component, so >1 here means a real bug.
     """
-    _tag_layer(graph=graph, mode=Mode.BIKE, node_type=NodeType.BIKE)
+    n = nx.number_weakly_connected_components(graph) if graph.number_of_nodes() else 0
+    assert n == 1, f"{label} graph must be exactly 1 component, got {n} — build invariant violated"
 
 
 def build_region_graph(
@@ -217,6 +241,9 @@ def build_region_graph(
 ) -> nx.MultiDiGraph:
     """Build ONE region's consolidated bike+rail graph with baked elevation.
 
+    Bike and rail graphs are built by the SAME ``build_layer_graph`` (only ``LayerSpec`` differs),
+    each asserted to be exactly ONE component, and ONLY THEN merged by adding station link edges.
+
     Args:
         pbf_path: Geofabrik .osm.pbf extract for the region.
         dem: Loaded DEM sampler (node/station elevations are baked here).
@@ -225,32 +252,25 @@ def build_region_graph(
     """
     osm = _open_osm(pbf_path=pbf_path, bbox=bbox)
     name = pbf_path.name
-    graph = _network_graph(osm=osm, network_type="cycling", custom_filter=None, filter_type=None)
-    raw_count = graph.number_of_nodes()
-    logger.info(f"{name}: [1/9] parsed {raw_count} raw cycling nodes")
-    drop_disallowed_edges(graph=graph)
-    logger.info(f"{name}: [2/9] dropped disallowed edges → {graph.number_of_edges()} edges")
-    graph = contract_interstitial_nodes(graph=graph)
-    logger.info(f"{name}: [3/9] contracted degree-2 nodes → {graph.number_of_nodes()} nodes")
-    graph = consolidate_graph(graph=graph, tolerance_m=tolerance_m)
-    logger.info(f"{name}: [4/9] consolidated intersections → {graph.number_of_nodes()} nodes")
-    graph = ox.truncate.largest_component(graph, strongly=True)
-    logger.info(f"{name}: [5/9] largest strongly-connected component → {graph.number_of_nodes()} nodes")
-    check_simplify_shrunk(nodes_before=raw_count, nodes_after=graph.number_of_nodes())
-    _tag_bike_defaults(graph=graph)
-    # Build the rail track graph INDEPENDENTLY (same builder, rail filter), then merge at stations.
-    rail_graph = _rail_graph(osm=osm)
+    logger.info(f"{name}: [0/6] osm loaded from {pbf_path} with {bbox=}")
+    # [1] BIKE and [2] RAIL — the identical build_layer_graph pipeline, only LayerSpec differs.
+    graph = build_layer_graph(osm=osm, layer=BIKE_LAYER, tolerance_m=tolerance_m)
+    _assert_single_component(graph, label="bike")
+    logger.info(f"{name}: [1/6] bike layer → {graph.number_of_nodes()} nodes (1 component)")
+    rail_graph = build_layer_graph(osm=osm, layer=RAIL_LAYER, tolerance_m=tolerance_m)
+    _assert_single_component(rail_graph, label="rail")
+    logger.info(f"{name}: [2/6] rail layer → {rail_graph.number_of_nodes()} nodes (1 component)")
+    # [3] MERGE: only now are the two single-component graphs joined by station link edges.
     n_stations = _merge_bike_rail(bike_graph=graph, rail_graph=rail_graph, osm=osm)
-    logger.info(f"{name}: [6/9] merged {rail_graph.number_of_nodes()} rail track nodes + {n_stations} stations")
-    # Bake elevations over the WHOLE merged graph (bike + track + station nodes) in one pass.
+    logger.info(f"{name}: [3/6] merged {rail_graph.number_of_nodes()} rail nodes + {n_stations} stations")
     enrich_elevations(graph=graph, dem=dem)
-    logger.info(f"{name}: [7/9] baked node elevations")
+    logger.info(f"{name}: [4/6] baked node elevations")
     bake_edge_geometry_elevations(graph=graph, dem=dem)  # 3D vertices → inference needs no DEM
-    logger.info(f"{name}: [8/9] baked edge geometry elevations")
-    # Re-run the strongly-connected filter AFTER railway wiring: guarantees ZERO dangling nodes.
+    logger.info(f"{name}: [5/6] baked edge geometry elevations")
+    # SCC filter AFTER station wiring: guarantees ZERO dangling nodes in the written artifact.
     graph = ox.truncate.largest_component(graph, strongly=True)
     logger.info(
-        f"{name}: [9/9] done — {graph.number_of_nodes()} nodes, {graph.number_of_edges()} edges, {n_stations} stations"
+        f"{name}: [6/6] done — {graph.number_of_nodes()} nodes, {graph.number_of_edges()} edges, {n_stations} stations"
     )
     return graph
 
