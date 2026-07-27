@@ -24,6 +24,7 @@ scales with a region's node count; a regbez peaks ~20 GB, whole-Germany would OO
 import argparse
 import json
 import logging
+import socket
 import time
 import urllib.error
 import urllib.request
@@ -42,6 +43,9 @@ _GEOFABRIK = "https://download.geofabrik.de/europe"
 # Raw pbf downloads are cached beside the artifact (re-fetchable input, not build state).
 _PBF_DIR = GraphConfig.GRAPH_DIR.parent / "dach_build" / "pbf"
 _DOWNLOAD_RETRIES = 5  # transient network blips only; a final failure aborts the whole run
+# Per-socket-read timeout (s): a stalled transfer (0 bytes flowing) raises after this, turning
+# a silent hang into a retryable failure. Geofabrik redirects can pick a dead path — retry escapes it.
+_SOCKET_TIMEOUT_S = 60.0
 
 # DACH at Geofabrik sub-region granularity. Big Flächenländer are split into their
 # Regierungsbezirke (bounded per-region memory); smaller states + AT + CH stay whole.
@@ -99,11 +103,16 @@ def _download_pbf(*, region_key: str, geofabrik_path: str) -> Path:
     tmp = dest.with_suffix(".pbf.tmp")
     logger.info("Downloading %s …", url)
     try:
+        # urlretrieve honours the global default socket timeout; a stalled read then raises
+        # socket.timeout (a TimeoutError subclass) instead of hanging forever.
+        socket.setdefaulttimeout(_SOCKET_TIMEOUT_S)
         urllib.request.urlretrieve(url, tmp)  # noqa: S310 — trusted Geofabrik host
         tmp.replace(dest)
     except BaseException:
         tmp.unlink(missing_ok=True)  # never leave a partial behind
         raise
+    finally:
+        socket.setdefaulttimeout(None)  # restore (don't leak the timeout to other sockets)
     logger.info("  %.0f MB → %s", dest.stat().st_size / 1024 / 1024, dest.name)
     return dest
 
