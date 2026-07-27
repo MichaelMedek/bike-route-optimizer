@@ -42,7 +42,7 @@ _EDGE_COLS = [
 ]
 
 
-def _tile_index(lat: float, lon: float, tile_deg: float = GraphConfig.TILE_DEG) -> tuple[int, int]:
+def tile_index(lat: float, lon: float, tile_deg: float = GraphConfig.TILE_DEG) -> tuple[int, int]:
     """(row, col) tile index for a coordinate on the coarse lat/lon grid."""
     return math.floor(lat / tile_deg), math.floor(lon / tile_deg)
 
@@ -58,8 +58,8 @@ def _covering_tiles(bounds: tuple[float, float, float, float], tile_deg: float, 
     The margin catches edges that cross a tile boundary into a neighbour tile.
     """
     min_lon, min_lat, max_lon, max_lat = bounds
-    row_lo, col_lo = _tile_index(lat=min_lat, lon=min_lon, tile_deg=tile_deg)
-    row_hi, col_hi = _tile_index(lat=max_lat, lon=max_lon, tile_deg=tile_deg)
+    row_lo, col_lo = tile_index(lat=min_lat, lon=min_lon, tile_deg=tile_deg)
+    row_hi, col_hi = tile_index(lat=max_lat, lon=max_lon, tile_deg=tile_deg)
     return [
         (row, col)
         for row in range(row_lo - margin, row_hi + margin + 1)
@@ -93,7 +93,7 @@ def write_graph_parquet(nodes_df: pd.DataFrame, edges_df: pd.DataFrame, meta: di
     edges_dir.mkdir(parents=True, exist_ok=True)
 
     node_tiles = [
-        _tile_index(lat=lat, lon=lon, tile_deg=tile_deg)
+        tile_index(lat=lat, lon=lon, tile_deg=tile_deg)
         for lat, lon in zip(nodes_df["lat"], nodes_df["lon"], strict=True)
     ]
     nodes_df = nodes_df.assign(_tile=node_tiles)
@@ -101,7 +101,7 @@ def write_graph_parquet(nodes_df: pd.DataFrame, edges_df: pd.DataFrame, meta: di
         osmid: (lat, lon) for osmid, lat, lon in zip(nodes_df["osmid"], nodes_df["lat"], nodes_df["lon"], strict=True)
     }
     edge_tiles = [
-        _tile_index(lat=coord[node][0], lon=coord[node][1], tile_deg=tile_deg) for node in edges_df["from_node"]
+        tile_index(lat=coord[node][0], lon=coord[node][1], tile_deg=tile_deg) for node in edges_df["from_node"]
     ]
     edges_df = edges_df.assign(_tile=edge_tiles)
 
@@ -144,16 +144,41 @@ def load_meta(graph_dir: Path = GraphConfig.GRAPH_DIR) -> dict[str, Any]:
     return meta
 
 
-def _read_tiles(directory: Path, tiles: list[tuple[int, int]], columns: list[str]) -> pd.DataFrame:
-    """Concatenate the existing per-tile Parquet files among ``tiles`` (missing = skip)."""
-    frames = [
-        pd.read_parquet(directory / f"{_tile_name(row=row, col=col)}.parquet")
-        for row, col in tiles
-        if (directory / f"{_tile_name(row=row, col=col)}.parquet").exists()
-    ]
+def _read_tiles(directory: Path, columns: list[str], tiles: list[tuple[int, int]] | None = None) -> pd.DataFrame:
+    """Concatenate per-tile Parquet files in ``directory`` into one DataFrame.
+
+    ``tiles`` = the specific (row, col) tiles to read (missing skipped) for a corridor window;
+    ``tiles=None`` reads EVERY ``tile_*.parquet`` (a whole region/artifact). Empty → empty frame.
+    """
+    if tiles is None:
+        paths = sorted(directory.glob("tile_*.parquet"))
+    else:
+        paths = [p for row, col in tiles if (p := directory / f"{_tile_name(row=row, col=col)}.parquet").exists()]
+    frames = [pd.read_parquet(path) for path in paths]
     if not frames:
         return pd.DataFrame(columns=columns)
     return pd.concat(frames, ignore_index=True)
+
+
+def read_region_tables(region_dir: Path) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Read one region artifact's full node + edge tables back (all its tiles).
+
+    Used by the Phase-3 combine step to re-load each per-region artifact written by
+    write_graph_parquet. Returns (nodes_df, edges_df) with the standard schemas.
+    """
+    nodes_df = _read_tiles(region_dir / GraphConfig.NODES_SUBDIR, columns=_NODE_COLS)
+    edges_df = _read_tiles(region_dir / GraphConfig.EDGES_SUBDIR, columns=_EDGE_COLS)
+    return nodes_df, edges_df
+
+
+def read_full_graph(graph_dir: Path = GraphConfig.GRAPH_DIR) -> nx.MultiDiGraph:
+    """Reconstruct the WHOLE graph from every tile of an artifact (Phase-4 validation).
+
+    Unlike load_corridor_graph (which reads only a corridor's covering tiles), this loads
+    all tiles so a connectivity probe tests the entire merged network exactly as saved.
+    """
+    nodes_df, edges_df = read_region_tables(region_dir=graph_dir)
+    return graph_from_tables(nodes_df=nodes_df, edges_df=edges_df)
 
 
 def graph_from_tables(nodes_df: pd.DataFrame, edges_df: pd.DataFrame) -> nx.MultiDiGraph:

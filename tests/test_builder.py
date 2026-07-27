@@ -19,7 +19,9 @@ from bike_router.builder import (
     _station_points,
     _tag_bike_defaults,
     build_region_graph,
-    merge_region_tables,
+    dedup_by_geometry,
+    reindex_region,
+    remap_contiguous,
 )
 from bike_router.constants import Mode, NodeType
 from bike_router.graph_store import graph_to_tables
@@ -51,14 +53,26 @@ def test_build_region_graph_shim_and_modes():
     assert Mode.BIKE in modes  # the bundled extract has cycling ways
 
 
-def test_merge_region_tables_returns_schema_tables():
-    # One region built + merged → the exact node/edge schema graph_store persists (the shim
-    # from build_region_graph → graph_to_tables → merge_region_tables the build script uses).
+def test_build_region_graph_no_dangling_nodes():
+    # Requirement: the per-region artifact has ZERO dangling nodes — every node is in the single
+    # strongly-connected component, even after railway wiring (the filter runs AFTER _add_railway).
+    dem = MockDEMService(base_elevation=300.0, slope_ns_pct=5.0)
+    graph = build_region_graph(pbf_path=_TEST_PBF, dem=dem, tolerance_m=25.0)
+    assert nx.is_strongly_connected(graph)  # no node unreachable to/from the rest
+
+
+def test_remap_contiguous_then_reindex_two_regions_disjoint():
+    # Regression for the node-id COLLISION bug: two regions each remapped to 0..N-1 (which would
+    # collide), then reindexed with a running offset → globally disjoint, collision-free ids.
     dem = MockDEMService(base_elevation=300.0)
     tables = graph_to_tables(graph=build_region_graph(pbf_path=_TEST_PBF, dem=dem, tolerance_m=25.0))
-    nodes_df, edges_df = merge_region_tables(regions=[tables])
-    assert len(nodes_df) > 0 and len(edges_df) > 0
-    assert {"osmid", "lat", "lon", "elevation_m", "node_type", "station_name"} == set(nodes_df.columns)
+    a_nodes, a_edges = remap_contiguous(nodes_df=tables[0], edges_df=tables[1])
+    b_nodes, b_edges = remap_contiguous(nodes_df=tables[0], edges_df=tables[1])  # same region twice = worst case
+    assert set(a_nodes["osmid"]) == set(b_nodes["osmid"])  # both start 0..N-1 → would collide
+    b_nodes, b_edges = reindex_region(nodes_df=b_nodes, edges_df=b_edges, offset=len(a_nodes))
+    assert set(a_nodes["osmid"]).isdisjoint(set(b_nodes["osmid"]))  # after offset: no overlap
+    # schema preserved end-to-end
+    assert {"osmid", "lat", "lon", "elevation_m", "node_type", "station_name"} == set(a_nodes.columns)
     assert {
         "from_node",
         "to_node",
@@ -69,7 +83,116 @@ def test_merge_region_tables_returns_schema_tables():
         "highway",
         "mode",
         "geometry_wkt",
-    } == set(edges_df.columns)
+    } == set(a_edges.columns)
+
+
+_NODE_COLS = ["osmid", "lat", "lon", "elevation_m", "node_type", "station_name"]
+_EDGE_COLS = ["from_node", "to_node", "key", "length_m", "height_diff_m", "surface", "highway", "mode", "geometry_wkt"]
+
+
+def _nodes(rows: list[tuple]) -> gpd.GeoDataFrame:  # noqa: ANN001
+    """(osmid, lat, lon) rows → a node frame with the standard schema."""
+    return gpd.GeoDataFrame([(i, lat, lon, 0.0, "bike", None) for i, lat, lon in rows], columns=_NODE_COLS)
+
+
+def _edges(rows: list[tuple]) -> gpd.GeoDataFrame:  # noqa: ANN001
+    """(from, to, key, mode, geometry_wkt) rows → an edge frame with the standard schema."""
+    return gpd.GeoDataFrame(
+        [(f, t, k, 1.0, 0.0, "asphalt", "residential", m, g) for f, t, k, m, g in rows], columns=_EDGE_COLS
+    )
+
+
+def test_dedup_no_duplicates_is_identity():
+    # Distinct nodes + distinct edges → nothing dropped, ids unchanged.
+    nodes = _nodes([(0, 48.0, 8.0), (1, 48.1, 8.1), (2, 48.2, 8.2)])
+    edges = _edges([(0, 1, 0, "bike", None), (1, 2, 0, "bike", None)])
+    kn, ke = dedup_by_geometry(nodes_df=nodes, edges_df=edges)
+    assert sorted(kn["osmid"]) == [0, 1, 2]
+    assert len(ke) == 2
+    assert set(zip(ke["from_node"], ke["to_node"], strict=True)) == {(0, 1), (1, 2)}
+
+
+def test_dedup_node_tiebreak_keeps_lowest_id_and_repoints():
+    # Three coincident nodes (5, 2, 9) at the same lat/lon collapse to the LOWEST id (2);
+    # an edge from the duplicate 9 is repointed onto 2.
+    nodes = _nodes([(5, 48.0, 8.0), (2, 48.0, 8.0), (9, 48.0, 8.0), (1, 48.5, 8.5)])
+    edges = _edges([(9, 1, 0, "bike", None)])
+    kn, ke = dedup_by_geometry(nodes_df=nodes, edges_df=edges)
+    assert sorted(kn["osmid"]) == [1, 2]  # the coincident trio → just node 2 survives
+    assert list(ke["from_node"]) == [2] and list(ke["to_node"]) == [1]  # 9 repointed to 2
+
+
+def test_dedup_parallel_edges_both_survive():
+    # Two edges between the SAME nodes with DIFFERENT geometry are genuinely parallel roads.
+    g1 = "LINESTRING (8.0 48.0, 8.05 48.05, 8.1 48.1)"
+    g2 = "LINESTRING (8.0 48.0, 8.05 48.02, 8.1 48.1)"
+    nodes = _nodes([(0, 48.0, 8.0), (1, 48.1, 8.1)])
+    edges = _edges([(0, 1, 0, "bike", g1), (0, 1, 1, "bike", g2)])
+    _, ke = dedup_by_geometry(nodes_df=nodes, edges_df=edges)
+    assert len(ke) == 2  # distinct geometry → both kept
+
+
+def test_dedup_true_duplicate_edge_dropped_after_repoint():
+    # Edge 2→3 duplicates 0→1 (nodes 2,3 coincide with 0,1 AND geometry matches) → collapses.
+    g = "LINESTRING (8.0 48.0, 8.1 48.1)"
+    nodes = _nodes([(0, 48.0, 8.0), (1, 48.1, 8.1), (2, 48.0, 8.0), (3, 48.1, 8.1)])
+    edges = _edges([(0, 1, 0, "bike", g), (2, 3, 0, "bike", g)])
+    kn, ke = dedup_by_geometry(nodes_df=nodes, edges_df=edges)
+    assert sorted(kn["osmid"]) == [0, 1]
+    assert len(ke) == 1 and list(ke["from_node"]) == [0] and list(ke["to_node"]) == [1]
+
+
+def test_dedup_null_geometry_edges_dedup_on_endpoints_and_mode():
+    # Null-geometry hops (rail/station) with the SAME endpoints+mode collapse; a DIFFERENT mode
+    # between the same nodes is kept (station vs rail are distinct edges).
+    nodes = _nodes([(0, 48.0, 8.0), (1, 48.1, 8.1), (2, 48.0, 8.0), (3, 48.1, 8.1)])
+    edges = _edges(
+        [
+            (0, 1, 0, "rail", None),
+            (2, 3, 0, "rail", None),  # duplicate of the rail edge (endpoints coincide) → dropped
+            (0, 1, 0, "station", None),  # same endpoints, different mode → kept
+        ]
+    )
+    _, ke = dedup_by_geometry(nodes_df=nodes, edges_df=edges)
+    assert len(ke) == 2
+    assert set(ke["mode"]) == {"rail", "station"}
+
+
+def test_dedup_beyond_precision_not_merged():
+    # Coords differing beyond COORD_PRECISION (6 dp ≈ 0.1 m) are DISTINCT nodes, not merged.
+    nodes = _nodes([(0, 48.0, 8.0), (1, 48.001, 8.0)])  # ~111 m apart
+    edges = _edges([(0, 1, 0, "bike", None)])
+    kn, ke = dedup_by_geometry(nodes_df=nodes, edges_df=edges)
+    assert sorted(kn["osmid"]) == [0, 1] and len(ke) == 1
+
+
+def test_dedup_preserves_rail_station_types_through_graph_rebuild():
+    # A realistic mixed-mode region (bike node + rail station + station/rail edges) must survive
+    # dedup AND graph_from_tables' node/edge-type consistency assertions — the rail path the
+    # bike-only dedup tests don't exercise. node_type is kept, edges stay type-consistent.
+    from bike_router.graph_store import graph_from_tables
+
+    nodes = gpd.GeoDataFrame(
+        [
+            (0, 48.0, 8.0, 0.0, "bike", None),
+            (1, 48.0, 8.0009, 0.0, "rail", "Stn"),  # ~70 m E — a station node
+            (2, 48.1, 8.1, 0.0, "rail", "Stn2"),
+        ],
+        columns=_NODE_COLS,
+    )
+    edges = _edges(
+        [
+            (0, 1, 0, "station", None),  # bike↔station access (null geometry)
+            (1, 0, 0, "station", None),
+            (1, 2, 0, "rail", "LINESTRING (8.0009 48.0, 8.1 48.1)"),  # rail↔rail with geometry
+            (2, 1, 0, "rail", "LINESTRING (8.1 48.1, 8.0009 48.0)"),
+        ]
+    )
+    kn, ke = dedup_by_geometry(nodes_df=nodes, edges_df=edges)
+    assert sorted(kn["node_type"]) == ["bike", "rail", "rail"]  # types preserved, nothing merged
+    assert sorted(ke["mode"]) == ["rail", "rail", "station", "station"]
+    graph = graph_from_tables(nodes_df=kn, edges_df=ke)  # asserts node/edge-type consistency internally
+    assert graph.number_of_nodes() == 3 and graph.number_of_edges() == 4
 
 
 def test_tag_bike_defaults_sets_mode_and_node_type():

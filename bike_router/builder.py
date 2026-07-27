@@ -13,6 +13,7 @@ import numpy as np
 import osmnx as ox
 import pandas as pd
 from pyrosm import OSM
+from shapely import from_wkt, to_wkt
 from shapely.geometry import LineString
 
 from bike_router.constants import (
@@ -268,24 +269,27 @@ def build_region_graph(
     graph = _cycling_graph(osm=osm)
     raw_count = graph.number_of_nodes()
     name = pbf_path.name
-    logger.info("%s: [1/8] parsed %d raw cycling nodes", name, raw_count)
+    logger.info("%s: [1/9] parsed %d raw cycling nodes", name, raw_count)
     drop_disallowed_edges(graph=graph)
-    logger.info("%s: [2/8] dropped disallowed edges → %d edges", name, graph.number_of_edges())
+    logger.info("%s: [2/9] dropped disallowed edges → %d edges", name, graph.number_of_edges())
     graph = contract_interstitial_nodes(graph=graph)
-    logger.info("%s: [3/8] contracted degree-2 nodes → %d nodes", name, graph.number_of_nodes())
+    logger.info("%s: [3/9] contracted degree-2 nodes → %d nodes", name, graph.number_of_nodes())
     graph = consolidate_graph(graph=graph, tolerance_m=tolerance_m)
-    logger.info("%s: [4/8] consolidated intersections → %d nodes", name, graph.number_of_nodes())
+    logger.info("%s: [4/9] consolidated intersections → %d nodes", name, graph.number_of_nodes())
     graph = ox.truncate.largest_component(graph, strongly=True)
-    logger.info("%s: [5/8] largest strongly-connected component → %d nodes", name, graph.number_of_nodes())
+    logger.info("%s: [5/9] largest strongly-connected component → %d nodes", name, graph.number_of_nodes())
     check_simplify_shrunk(nodes_before=raw_count, nodes_after=graph.number_of_nodes())
     _tag_bike_defaults(graph=graph)
     enrich_elevations(graph=graph, dem=dem)
-    logger.info("%s: [6/8] baked node elevations", name)
+    logger.info("%s: [6/9] baked node elevations", name)
     n_stations = _add_railway(graph=graph, osm=osm, dem=dem)
-    logger.info("%s: [7/8] wired %d railway stations", name, n_stations)
+    logger.info("%s: [7/9] wired %d railway stations", name, n_stations)
     bake_edge_geometry_elevations(graph=graph, dem=dem)  # 3D vertices → inference needs no DEM
+    logger.info("%s: [8/9] baked edge geometry elevations", name)
+    # Re-run the strongly-connected filter AFTER railway wiring: guarantees ZERO dangling nodes.
+    graph = ox.truncate.largest_component(graph, strongly=True)
     logger.info(
-        "%s: [8/8] done — %d nodes, %d edges, %d stations",
+        "%s: [9/9] done — %d nodes, %d edges, %d stations",
         name,
         graph.number_of_nodes(),
         graph.number_of_edges(),
@@ -294,39 +298,78 @@ def build_region_graph(
     return graph
 
 
-def merge_region_tables(regions: list[tuple[pd.DataFrame, pd.DataFrame]]) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """Union per-region (nodes, edges) tables into one deduplicated pair.
+def remap_contiguous(nodes_df: pd.DataFrame, edges_df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Renumber a region's node ids to contiguous ``0..N-1`` (Phase 2).
 
-    Region ``i`` has its negative (station) ids shifted by ``i * STATION_ID_BLOCK``
-    so stations from different regions never clash; positive OSM ids are globally
-    unique already and dedup keeps the first copy of shared boundary nodes/edges.
+    osmnx consolidation leaves gapped 0-based bike ids and our station code adds negative
+    ids, so a region spans e.g. ``[-3 .. 103561]`` with holes. Map every id to its rank in
+    sorted order and rewrite ``osmid`` + both edge endpoints, so afterwards
+    ``n_nodes == max_id + 1`` (no gaps, no negatives). Station-ness lives in ``node_type``.
     """
-    assert regions, "need at least one region to merge"
-    shifted_nodes: list[pd.DataFrame] = []
-    shifted_edges: list[pd.DataFrame] = []
-    for index, (nodes_df, edges_df) in enumerate(regions):
-        nodes_df, edges_df = _shift_station_ids(
-            nodes_df=nodes_df, edges_df=edges_df, offset=index * GraphConfig.STATION_ID_BLOCK
-        )
-        shifted_nodes.append(nodes_df)
-        shifted_edges.append(edges_df)
-    nodes = pd.concat(shifted_nodes, ignore_index=True).drop_duplicates(subset="osmid", keep="first")
-    edges = pd.concat(shifted_edges, ignore_index=True).drop_duplicates(
-        subset=["from_node", "to_node", "key"], keep="first"
-    )
-    return nodes, edges
+    ordered = sorted(nodes_df["osmid"].tolist())
+    remap = {old: new for new, old in enumerate(ordered)}
+    nodes_df = nodes_df.copy()
+    edges_df = edges_df.copy()
+    nodes_df["osmid"] = nodes_df["osmid"].map(remap)
+    edges_df["from_node"] = edges_df["from_node"].map(remap)
+    edges_df["to_node"] = edges_df["to_node"].map(remap)
+    return nodes_df, edges_df
 
 
-def _shift_station_ids(
-    nodes_df: pd.DataFrame, edges_df: pd.DataFrame, offset: int
-) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """Shift negative (station) node ids down by ``offset`` so regions don't collide."""
+def reindex_region(nodes_df: pd.DataFrame, edges_df: pd.DataFrame, offset: int) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Shift a region's already-contiguous ``0..N-1`` ids by ``offset`` (Phase 3).
+
+    Inputs come from remap_contiguous, so ids are dense ``0..N-1``; adding a running total
+    (``ΣN`` of earlier regions) yields a globally contiguous, collision-free id space.
+    """
     if offset == 0:
         return nodes_df, edges_df
     nodes_df = nodes_df.copy()
     edges_df = edges_df.copy()
-    mask = nodes_df["osmid"] < 0
-    nodes_df.loc[mask, "osmid"] = nodes_df.loc[mask, "osmid"] - offset
-    edges_df.loc[edges_df["from_node"] < 0, "from_node"] = edges_df.loc[edges_df["from_node"] < 0, "from_node"] - offset
-    edges_df.loc[edges_df["to_node"] < 0, "to_node"] = edges_df.loc[edges_df["to_node"] < 0, "to_node"] - offset
+    nodes_df["osmid"] = nodes_df["osmid"] + offset
+    edges_df["from_node"] = edges_df["from_node"] + offset
+    edges_df["to_node"] = edges_df["to_node"] + offset
     return nodes_df, edges_df
+
+
+def dedup_by_geometry(nodes_df: pd.DataFrame, edges_df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Collapse border duplicates that appear in two regions' reference-complete extracts.
+
+    Nodes are the same physical node if their (lat, lon) coincide to COORD_PRECISION; the
+    lower-(lat, lon) copy is kept and the others' ids are repointed onto it. Edges are the
+    same only if BOTH endpoints AND the 3D geometry (rounded WKT, or endpoints+mode for a
+    null-geometry rail/station hop) coincide — so genuinely parallel distinct roads survive.
+    """
+    prec = GraphConfig.COORD_PRECISION
+    nodes_df = nodes_df.copy()
+    # Canonical node per rounded (lat, lon): the row with the lowest (lat, lon), then id.
+    nodes_df = nodes_df.sort_values(["lat", "lon", "osmid"], kind="stable")
+    key_lat = nodes_df["lat"].round(prec)
+    key_lon = nodes_df["lon"].round(prec)
+    nodes_df["_key"] = list(zip(key_lat, key_lon, strict=True))
+    canonical = nodes_df.groupby("_key")["osmid"].transform("first")
+    repoint = dict(zip(nodes_df["osmid"], canonical, strict=True))  # every id → its kept id
+    kept_nodes = nodes_df.drop_duplicates(subset="_key", keep="first").drop(columns="_key")
+
+    edges_df = edges_df.copy()
+    edges_df["from_node"] = edges_df["from_node"].map(repoint)
+    edges_df["to_node"] = edges_df["to_node"].map(repoint)
+
+    # Edge identity = endpoints + geometry (rounded) + mode; parallel distinct roads differ
+    # in geometry and are both kept. Null geometry (rail/station hop) dedups on endpoints+mode.
+    def _geom_key(wkt: object) -> str:
+        if not isinstance(wkt, str):
+            return ""
+        return str(to_wkt(from_wkt(wkt), rounding_precision=prec))
+
+    edges_df["_ekey"] = list(
+        zip(
+            edges_df["from_node"],
+            edges_df["to_node"],
+            edges_df["mode"],
+            [_geom_key(w) for w in edges_df["geometry_wkt"]],
+            strict=True,
+        )
+    )
+    kept_edges = edges_df.drop_duplicates(subset="_ekey", keep="first").drop(columns="_ekey")
+    return kept_nodes, kept_edges
