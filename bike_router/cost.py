@@ -31,6 +31,8 @@ Because the graph is directed, only the uphill direction of a street is penalise
 (the downhill direction has climb_m = 0), so uphill costs more (flat-preferring).
 """
 
+import math
+
 import networkx as nx
 
 from bike_router.constants import (
@@ -45,12 +47,23 @@ from bike_router.constants import (
 
 
 def _as_values(tag: object) -> list[str]:
-    """Normalize an OSM tag (str | list | None) to a list of lowercased strings."""
-    if tag is None:
+    """Normalize an OSM tag (str | list | None | float nan) to a list of lowercased strings.
+
+    A MISSING tag is skipped, not stringified: pyrosm/pandas represent absent values as float ``nan``
+    (not ``None``), and ``to_graph(simplify=True)`` yields ``nan`` INSIDE merged lists (e.g. an asphalt
+    run spliced with an untagged segment → ``['asphalt', nan]``). Treating ``nan`` as the literal string
+    "nan" would reject every untagged/mixed road — dropping the majority of the network. So drop nans.
+    """
+    if _is_missing(tag):
         return []
     if isinstance(tag, list | tuple | set):
-        return [str(value).lower() for value in tag]
+        return [str(value).lower() for value in tag if not _is_missing(value)]
     return [str(tag).lower()]
+
+
+def _is_missing(value: object) -> bool:
+    """True for an absent OSM tag value: ``None`` or float ``nan`` (how pandas encodes a missing tag)."""
+    return value is None or (isinstance(value, float) and math.isnan(value))
 
 
 def tag_tier(tag: object, tier_map: dict[str, int], default_tier: int) -> int:
