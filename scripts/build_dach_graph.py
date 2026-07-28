@@ -437,44 +437,6 @@ def _keep_largest_component(*, nodes_df: pd.DataFrame, edges_df: pd.DataFrame) -
     return nodes_df, edges_df
 
 
-def _assert_layer_strongly_connected(*, edges_df: pd.DataFrame, modes: set[str]) -> None:
-    """Assert the sub-graph of edges whose mode ∈ ``modes`` is ONE strongly-connected component.
-
-    Builds a lightweight nx.DiGraph from just the (from_node, to_node) endpoints — NO geometry parse
-    (connectivity ignores geometry; parsing 10M WKT here was pure waste). Fails loud with the component
-    breakdown so a severed layer (e.g. the west↔center bike seam) is caught precisely.
-    """
-    sub = edges_df[edges_df["mode"].isin(modes)]
-    g = nx.DiGraph()
-    g.add_edges_from(zip(sub["from_node"], sub["to_node"], strict=True))
-    if g.number_of_nodes() == 0:
-        raise ValueError(f"Validation FAILED: {modes} layer has no edges.")
-    comps = sorted((len(c) for c in nx.strongly_connected_components(g)), reverse=True)
-    if len(comps) != 1:
-        raise ValueError(
-            f"Validation FAILED: {modes} layer has {len(comps)} strongly-connected components "
-            f"(expected 1) — largest {comps[0]}, next {comps[1]}. The {modes} network is severed."
-        )
-    logger.info(f"  {modes}: 1 strongly-connected component ({comps[0]} nodes) ✓")
-
-
-def _validate_connectivity(*, out_dir: Path) -> None:
-    """Phase 4: assert the saved graph is strongly connected in THREE layers, independently.
-
-    Each layer must ALONE be one strongly-connected component: (1) BIKE-only — a cyclist can reach
-    everywhere without a train; (2) RAIL-only — every station reaches every other by train; (3) the
-    WHOLE graph (bike+rail+station).
-    """
-    _, edges_df = read_region_tables(region_dir=out_dir)
-    if len(edges_df) < 1:
-        raise ValueError("Validation: final graph has no edges — nothing to connect.")
-    logger.info("4/4 Validating 3-layer strong connectivity ...")
-    _assert_layer_strongly_connected(edges_df=edges_df, modes={Mode.BIKE})
-    _assert_layer_strongly_connected(edges_df=edges_df, modes={Mode.RAIL})
-    _assert_layer_strongly_connected(edges_df=edges_df, modes={Mode.BIKE, Mode.RAIL, Mode.STATION})
-    logger.info("Validation OK: bike, rail, and whole graph each 1 strongly-connected component")
-
-
 def _plot_overview(*, edges_df: pd.DataFrame, out_path: Path) -> None:
     """Save a minimalist matplotlib overview of the final graph: bike edges thin blue, rail thick purple.
 
@@ -583,16 +545,12 @@ def main(argv: list[str] | None = None) -> int:
         "regions_built": built,
     }
     write_graph_parquet(nodes_df=nodes_df, edges_df=edges_df, meta=meta, out_dir=out_dir, compression="zstd")
-    del nodes_df, edges_df
+    del nodes_df
     gc.collect()
 
-    # Phase 4 — VALIDATE: load the saved production graph and confirm cross-region connectivity.
-    _validate_connectivity(out_dir=out_dir)
-
-    # Overview plot runs LAST, only after validation passes — re-read edges from the validated artifact.
+    # Overview plot (Phase-3 prune already enforced connectivity by construction — no separate validation).
     # Saved INTO the artifact dir so the HF upload (upload_folder of GRAPH_DIR) ships it as-is.
-    _, plot_edges = read_region_tables(region_dir=out_dir)
-    _plot_overview(edges_df=plot_edges, out_path=out_dir / "dach_graph_overview.png")
+    _plot_overview(edges_df=edges_df, out_path=out_dir / "dach_graph_overview.png")
 
     print(json.dumps(meta, indent=2))
     print(

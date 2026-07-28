@@ -14,6 +14,35 @@ def test_as_values_normalizes_types():
     assert _as_values(tag=42) == ["42"]
 
 
+def test_as_values_treats_nan_as_missing_not_string():
+    # REGRESSION: pandas/pyrosm encode a missing OSM tag as float nan (NOT None), and
+    # to_graph(simplify=True) puts nan INSIDE merged lists (['asphalt', nan]). Stringifying nan to
+    # "nan" made tag_included reject every untagged/mixed road → 54% of austria's network dropped.
+    # nan (scalar or in a list) must be skipped exactly like None.
+    nan = float("nan")
+    assert _as_values(tag=nan) == []  # scalar nan → missing, not ["nan"]
+    assert _as_values(tag=[nan, "Asphalt"]) == ["asphalt"]  # nan dropped, asphalt kept
+    assert _as_values(tag=[nan, nan]) == []  # all-nan → missing
+
+
+def test_nan_and_none_kept_for_both_surface_and_highway():
+    # REGRESSION: the missing-tag keeper must apply to BOTH surface and highway. A road with an
+    # untagged (nan/None) value — alone or merged with an allowlisted value — stays in the graph;
+    # a nan merged with a DISALLOWED value is still correctly excluded.
+    nan = float("nan")
+    for val in (None, nan):
+        assert surface_included(surface=val) is True
+        assert road_included(highway=val) is True
+        assert surface_tier(surface=val) == 1  # untagged → DEFAULT_TIER
+        assert road_tier(highway=val) == 1
+    # nan merged with an ALLOWED value → kept
+    assert surface_included(surface=[nan, "asphalt"]) is True
+    assert road_included(highway=[nan, "residential"]) is True
+    # nan merged with a DISALLOWED value → still excluded (nan doesn't rescue it)
+    assert surface_included(surface=[nan, "sand"]) is False
+    assert road_included(highway=[nan, "motorway"]) is False
+
+
 def test_surface_tier_mapping_and_worst_wins():
     assert surface_tier(surface="asphalt") == 0
     assert surface_tier(surface="concrete:plates") == 0  # paved variant → good
