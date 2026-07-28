@@ -410,30 +410,60 @@ def _combine_regions(*, regions: list[str]) -> tuple[pd.DataFrame, pd.DataFrame]
     nodes_df = pd.concat(node_frames, ignore_index=True)
     edges_df = pd.concat(edge_frames, ignore_index=True)
     nodes_df, edges_df = dedup_by_geometry(nodes_df=nodes_df, edges_df=edges_df)
-    # ONE global connectivity truncation, AFTER dedup has stitched the region seams:
-    # keep the largest weakly-connected component of the WHOLE merged graph (dead-ends preserved).
-    nodes_df, edges_df = _keep_largest_component(nodes_df=nodes_df, edges_df=edges_df)
-    # Dedup + SCC removed nodes, leaving id holes → renumber to dense 0..N-1 (n_nodes==max_id+1).
+    # ONE global component prune, AFTER dedup has stitched the region seams: rail → single component,
+    # bike → keep every island ≥ MIN_BIKE_COMPONENT_KM. This is the sole connectivity gate (there is no
+    # separate validation pass — the prune enforces the invariant by construction).
+    nodes_df, edges_df = _prune_components(nodes_df=nodes_df, edges_df=edges_df)
+    # Dedup + prune removed nodes, leaving id holes → renumber to dense 0..N-1 (n_nodes==max_id+1).
     return remap_contiguous(nodes_df=nodes_df, edges_df=edges_df)
 
 
-def _keep_largest_component(*, nodes_df: pd.DataFrame, edges_df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """Keep only the largest WEAKLY-connected component of the merged graph (endpoint-only, no geometry).
+def _prune_components(*, nodes_df: pd.DataFrame, edges_df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Drop stray components, per your policy: RAIL strict, BIKE keep-if-big. Endpoint-only, no geometry.
 
-    Builds a lightweight nx.DiGraph from edge endpoints (geometry is irrelevant to connectivity and
-    parsing 10M WKT would be pure waste), keeps its largest weakly-connected component, and filters both
-    tables to it. WEAKLY, not strongly: bike edges are ~all bidirectional, so weak keeps every dead-end
-    physically attached to the network (valid route start/end points) that strong would wrongly drop.
-    This is the SINGLE global truncation that replaces the removed per-region largest_component calls.
+    A region is a CLIP, so its bike roads legitimately split into pieces that connect only through
+    neighbours — we do NOT force one bike component. Policy:
+      • RAIL: keep ONLY the largest weakly-connected rail component (every train must reach every other).
+      • BIKE: keep EVERY weakly-connected bike component whose total edge length ≥ MIN_BIKE_COMPONENT_KM
+        (a big island is locally routable; tiny strays are noise).
+      • Nodes/edges surviving = kept bike nodes ∪ kept rail nodes; any edge with both endpoints kept.
+        (Station edges thus survive iff both their rail node and a bike entrance survived.)
     """
-    g = nx.DiGraph()
-    g.add_nodes_from(nodes_df["osmid"])
-    g.add_edges_from(zip(edges_df["from_node"], edges_df["to_node"], strict=True))
-    largest = max(nx.weakly_connected_components(g), key=len)
-    n_before = len(nodes_df)
-    nodes_df = nodes_df[nodes_df["osmid"].isin(largest)]
-    edges_df = edges_df[edges_df["from_node"].isin(largest) & edges_df["to_node"].isin(largest)]
-    logger.info(f"largest-component filter: kept {len(nodes_df)}/{n_before} nodes ({len(edges_df)} edges)")
+    bike_e = edges_df[edges_df["mode"] == Mode.BIKE]
+    rail_e = edges_df[edges_df["mode"] == Mode.RAIL]
+    # Bike AND rail are both mandatory networks.
+    if bike_e.empty:
+        raise ValueError("prune: no bike edges in the merged graph — corrupt build (bike network missing).")
+    if rail_e.empty:
+        raise ValueError("prune: no rail edges in the merged graph — corrupt build (rail network missing).")
+
+    # RAIL: largest weakly-connected component only.
+    gr = nx.Graph()
+    gr.add_edges_from(zip(rail_e["from_node"], rail_e["to_node"], strict=True))
+    keep_rail = max(nx.connected_components(gr), key=len) if gr.number_of_nodes() else set()
+
+    # BIKE: every weakly-connected component with total length ≥ threshold.
+    gb = nx.Graph()
+    gb.add_weighted_edges_from(zip(bike_e["from_node"], bike_e["to_node"], bike_e["length_m"], strict=True))
+    keep_bike: set[int] = set()
+    kept_comps = dropped_comps = 0
+    for comp in nx.connected_components(gb):
+        sub = gb.subgraph(comp)
+        km = sub.size(weight="weight") / 1000.0
+        if km >= GraphConfig.MIN_BIKE_COMPONENT_KM:
+            keep_bike |= comp
+            kept_comps += 1
+        else:
+            dropped_comps += 1
+
+    keep = keep_bike | keep_rail
+    n_before, e_before = len(nodes_df), len(edges_df)
+    nodes_df = nodes_df[nodes_df["osmid"].isin(keep)]
+    edges_df = edges_df[edges_df["from_node"].isin(keep) & edges_df["to_node"].isin(keep)]
+    logger.info(
+        f"prune: bike kept {kept_comps} comps (dropped {dropped_comps} <{GraphConfig.MIN_BIKE_COMPONENT_KM:.0f}km), "
+        f"rail 1 comp → {len(nodes_df)}/{n_before} nodes, {len(edges_df)}/{e_before} edges"
+    )
     return nodes_df, edges_df
 
 

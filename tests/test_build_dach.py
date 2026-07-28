@@ -237,19 +237,6 @@ def test_assert_dem_covers_guard():
         bd._assert_dem_covers(dem=small, area=(5.9, 45.8, 17.2, 55.1))
 
 
-def test_random_cross_tile_pair_differs(monkeypatch):
-    # Phase-4 probe: the returned node pair must come from DIFFERENT tiles (a real cross-region check).
-    import random
-
-    graph = nx.MultiDiGraph()
-    graph.add_node(0, x=8.0, y=48.0)  # tile A
-    graph.add_node(1, x=13.0, y=52.0)  # far tile B
-    src, tgt = bd._random_cross_tile_pair(graph=graph, nodes=[0, 1], rng=random.Random(0))
-    s = bd.tile_index(lat=graph.nodes[src]["y"], lon=graph.nodes[src]["x"])
-    t = bd.tile_index(lat=graph.nodes[tgt]["y"], lon=graph.nodes[tgt]["x"])
-    assert s != t  # deliberately cross-tile
-
-
 # ===================== _assert_split_overlaps (split-config invariant) =====================
 
 

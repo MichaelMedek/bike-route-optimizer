@@ -94,6 +94,11 @@ class GraphConfig:
     TILE_DEG = 0.5
     # Lat/lon decimal places kept when serializing geometry (6 dp ≈ 0.1 m).
     COORD_PRECISION = 6
+    # Min total bike-edge length (km) for an isolated bike component to be KEPT. A region is a clip:
+    # bike roads legitimately split into pieces that connect only through neighbours, so we do NOT force
+    # one component. Small strays (<this) are dropped as noise; a large island (e.g. lake/ocean island
+    # roads, usable once you're there) is kept. Rail is exempt — it must always be ONE component.
+    MIN_BIKE_COMPONENT_KM = 50.0
     # Reader tolerance: stored height_diff_m must match to_elev − from_elev within this
     # (metres), else the artifact is corrupt/stale and the load hard-fails.
     HEIGHT_DIFF_TOLERANCE_M = 0.5
