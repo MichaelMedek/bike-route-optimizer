@@ -28,7 +28,6 @@ import gc
 import json
 import logging
 import multiprocessing
-import random
 import resource
 import socket
 import tempfile
@@ -62,9 +61,7 @@ from bike_router.elevation import DEMService
 from bike_router.graph_store import (
     compute_bbox,
     graph_to_tables,
-    read_full_graph,
     read_region_tables,
-    tile_index,
     write_graph_parquet,
 )
 
@@ -94,7 +91,6 @@ _DOWNLOAD_RETRIES = 10  # transient network blips only; a final failure aborts t
 # Per-socket-read timeout (s): a stalled transfer (0 bytes flowing) raises after this, turning
 # a silent hang into a retryable failure. Geofabrik redirects can pick a dead path — retry escapes it.
 _SOCKET_TIMEOUT_S = 60.0
-_VALIDATION_PROBES = 10  # Phase 4: random cross-region node pairs checked for connectivity
 # Sanity ceiling on the merged node count (DACH is ~3–5M); a larger total means a logic error
 # upstream, so Phase 3 fails fast rather than writing a suspect artifact.
 _MAX_TOTAL_NODES = 100_000_000_000
@@ -414,46 +410,67 @@ def _combine_regions(*, regions: list[str]) -> tuple[pd.DataFrame, pd.DataFrame]
     nodes_df = pd.concat(node_frames, ignore_index=True)
     edges_df = pd.concat(edge_frames, ignore_index=True)
     nodes_df, edges_df = dedup_by_geometry(nodes_df=nodes_df, edges_df=edges_df)
-    # Dedup removed border duplicates, leaving id holes → renumber to dense 0..N-1 (n_nodes==max_id+1).
+    # ONE global connectivity truncation, AFTER dedup has stitched the region seams:
+    # keep the largest strongly-connected component of the WHOLE merged graph.
+    nodes_df, edges_df = _keep_largest_scc(nodes_df=nodes_df, edges_df=edges_df)
+    # Dedup + SCC removed nodes, leaving id holes → renumber to dense 0..N-1 (n_nodes==max_id+1).
     return remap_contiguous(nodes_df=nodes_df, edges_df=edges_df)
 
 
-def _validate_connectivity(*, out_dir: Path) -> None:
-    """Phase 4: load the saved production graph and assert it is ONE connected network.
+def _keep_largest_scc(*, nodes_df: pd.DataFrame, edges_df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Keep only the largest strongly-connected component of the merged graph (endpoint-only, no geometry).
 
-    Exhaustively asserts a single strongly-connected component (the routable invariant), then
-    spot-checks _VALIDATION_PROBES random cross-tile pairs with has_path. Fails loud on any break.
+    Builds a lightweight nx.DiGraph from edge endpoints (geometry is irrelevant to connectivity and
+    parsing 10M WKT would be pure waste), finds the largest SCC, and filters both tables to it. This is
+    the SINGLE global truncation that replaces the removed per-region largest_component calls.
     """
-    graph = read_full_graph(graph_dir=out_dir)
-    nodes = list(graph.nodes)
-    if len(nodes) < 2:
-        raise ValueError("Validation: final graph has <2 nodes — nothing to connect.")
-    n_components = nx.number_strongly_connected_components(graph)
-    if n_components != 1:
+    g = nx.DiGraph()
+    g.add_nodes_from(nodes_df["osmid"])
+    g.add_edges_from(zip(edges_df["from_node"], edges_df["to_node"], strict=True))
+    largest = max(nx.strongly_connected_components(g), key=len)
+    n_before = len(nodes_df)
+    nodes_df = nodes_df[nodes_df["osmid"].isin(largest)]
+    edges_df = edges_df[edges_df["from_node"].isin(largest) & edges_df["to_node"].isin(largest)]
+    logger.info(f"largest-SCC filter: kept {len(nodes_df)}/{n_before} nodes ({len(edges_df)} edges)")
+    return nodes_df, edges_df
+
+
+def _assert_layer_strongly_connected(*, edges_df: pd.DataFrame, modes: set[str]) -> None:
+    """Assert the sub-graph of edges whose mode ∈ ``modes`` is ONE strongly-connected component.
+
+    Builds a lightweight nx.DiGraph from just the (from_node, to_node) endpoints — NO geometry parse
+    (connectivity ignores geometry; parsing 10M WKT here was pure waste). Fails loud with the component
+    breakdown so a severed layer (e.g. the west↔center bike seam) is caught precisely.
+    """
+    sub = edges_df[edges_df["mode"].isin(modes)]
+    g = nx.DiGraph()
+    g.add_edges_from(zip(sub["from_node"], sub["to_node"], strict=True))
+    if g.number_of_nodes() == 0:
+        raise ValueError(f"Validation FAILED: {modes} layer has no edges.")
+    comps = sorted((len(c) for c in nx.strongly_connected_components(g)), reverse=True)
+    if len(comps) != 1:
         raise ValueError(
-            f"Validation FAILED: merged graph has {n_components} strongly-connected components "
-            "(expected 1) — the network is fragmented across regions."
+            f"Validation FAILED: {modes} layer has {len(comps)} strongly-connected components "
+            f"(expected 1) — largest {comps[0]}, next {comps[1]}. The {modes} network is severed."
         )
-    rng = random.Random(0)  # deterministic probe selection (reproducible pass/fail)
-    for _ in tqdm(range(_VALIDATION_PROBES), desc="4/4 Validating connectivity", unit="probe"):
-        source, target = _random_cross_tile_pair(graph=graph, nodes=nodes, rng=rng)
-        if not nx.has_path(graph, source, target):
-            raise ValueError(
-                f"Validation FAILED: no path between cross-region nodes {source} and {target} — "
-                "the merged network is fragmented."
-            )
-    logger.info(f"Validation OK: 1 strongly-connected component; {_VALIDATION_PROBES} cross-region pairs all connected")
+    logger.info(f"  {modes}: 1 strongly-connected component ({comps[0]} nodes) ✓")
 
 
-def _random_cross_tile_pair(*, graph: nx.MultiDiGraph, nodes: list[int], rng: random.Random) -> tuple[int, int]:
-    """Two random node ids whose tiles differ (deliberately cross-border), for a connectivity probe."""
-    for _ in range(1000):  # bounded retries; distinct tiles are overwhelmingly common
-        source, target = rng.choice(nodes), rng.choice(nodes)
-        s_tile = tile_index(lat=graph.nodes[source]["y"], lon=graph.nodes[source]["x"])
-        t_tile = tile_index(lat=graph.nodes[target]["y"], lon=graph.nodes[target]["x"])
-        if s_tile != t_tile:
-            return source, target
-    raise ValueError("Validation: could not find a cross-tile node pair (graph too small?).")
+def _validate_connectivity(*, out_dir: Path) -> None:
+    """Phase 4: assert the saved graph is strongly connected in THREE layers, independently.
+
+    Each layer must ALONE be one strongly-connected component: (1) BIKE-only — a cyclist can reach
+    everywhere without a train; (2) RAIL-only — every station reaches every other by train; (3) the
+    WHOLE graph (bike+rail+station).
+    """
+    _, edges_df = read_region_tables(region_dir=out_dir)
+    if len(edges_df) < 1:
+        raise ValueError("Validation: final graph has no edges — nothing to connect.")
+    logger.info("4/4 Validating 3-layer strong connectivity ...")
+    _assert_layer_strongly_connected(edges_df=edges_df, modes={Mode.BIKE})
+    _assert_layer_strongly_connected(edges_df=edges_df, modes={Mode.RAIL})
+    _assert_layer_strongly_connected(edges_df=edges_df, modes={Mode.BIKE, Mode.RAIL, Mode.STATION})
+    logger.info("Validation OK: bike, rail, and whole graph each 1 strongly-connected component")
 
 
 def _plot_overview(*, edges_df: pd.DataFrame, out_path: Path) -> None:
