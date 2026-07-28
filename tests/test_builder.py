@@ -6,6 +6,7 @@ graphs for the station-merge logic so the bidirectional rail and station-access 
 are checked deterministically.
 """
 
+import shutil
 from pathlib import Path
 
 import geopandas as gpd
@@ -622,6 +623,16 @@ def test_stage_pbf_bbox_invokes_osmium_extract(monkeypatch, tmp_path):
     assert cmd[:3] == ["osmium", "extract", "-b"] and cmd[3] == "9.4,46.3,13.85,49.1"
     assert "complete_ways" in cmd and check is True  # reference-complete + fail-fast
     assert str(staged) in cmd  # osmium writes to exactly the returned path
+
+
+def test_stage_pbf_bbox_really_restricts_output_end_to_end(tmp_path):
+    # END-TO-END with REAL osmium: clipping the bundled pbf to a sub-bbox yields a physically smaller
+    # pbf (fewer bytes on disk) than the whole — proof the bbox selection actually reaches disk.
+    if shutil.which("osmium") is None:
+        pytest.skip("osmium CLI not installed")
+    # the bundled pbf spans 26.93–26.97 E, 60.52–60.54 N; clip to its western ~half
+    staged = stage_pbf(raw_pbf=_TEST_PBF, bbox=(26.93, 60.52, 26.95, 60.54), staging_dir=tmp_path)
+    assert 0 < staged.stat().st_size < _TEST_PBF.stat().st_size  # osmium clip really shrank the file
 
 
 def test_build_region_graph_clipped_stages_then_builds(monkeypatch, tmp_path):
