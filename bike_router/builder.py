@@ -96,13 +96,18 @@ def build_layer_graph(osm: OSM, *, layer: LayerSpec, tolerance_m: float) -> nx.M
 
     THE one shared pipeline — no per-mode branches, only ``layer`` config differs: fetch ways →
     (bike only) drop non-rideable surfaces/highways → contract degree-2 nodes → consolidate junctions
-    (``tolerance_m``) → keep the largest weakly-connected component → tag mode/node_type.
+    (``tolerance_m``) → keep the largest weakly-connected component → tag mode/node_type. Per-step logs
+    (prefixed by the layer's mode) show which sub-step runs during the long fetch/consolidate gap.
     """
     graph = _network_graph(osm=osm, custom_filter=layer.custom_filter, filter_type=layer.filter_type)
+    logger.info(f"  {layer.mode}: fetched {graph.number_of_nodes()} raw nodes")
     if layer.surface_allowlist:
         drop_disallowed_edges(graph=graph)  # bike: rail has no surface/highway tags, would drop all
+        logger.info(f"  {layer.mode}: dropped disallowed → {graph.number_of_edges()} edges")
     graph = contract_interstitial_nodes(graph=graph)
+    logger.info(f"  {layer.mode}: contracted degree-2 → {graph.number_of_nodes()} nodes")
     graph = consolidate_graph(graph=graph, tolerance_m=tolerance_m)
+    logger.info(f"  {layer.mode}: consolidated → {graph.number_of_nodes()} nodes")
     assert graph.number_of_nodes() > 0
     largest = max(nx.weakly_connected_components(graph), key=len)
     graph = graph.subgraph(largest).copy()
@@ -216,14 +221,14 @@ def _merge_bike_rail(bike_graph: nx.MultiDiGraph, rail_graph: nx.MultiDiGraph, o
     return len(stations)
 
 
-def _assert_single_component(*, graph: nx.MultiDiGraph, label: str) -> None:
+def _assert_single_component(*, graph: nx.MultiDiGraph) -> None:
     """Fail fast unless the layer graph is exactly ONE weakly-connected component.
 
     Rail must be one network (every train reaches every other); bike must be one (no stranded
     islands). build_layer_graph already keeps the largest component, so >1 here means a real bug.
     """
     n = nx.number_weakly_connected_components(graph) if graph.number_of_nodes() else 0
-    assert n == 1, f"{label} graph must be exactly 1 component, got {n} — build invariant violated"
+    assert n == 1, f"graph must be exactly 1 component, got {n} — build invariant violated"
 
 
 def build_region_graph(
@@ -248,10 +253,10 @@ def build_region_graph(
     logger.info(f"{name}: [0/6] osm loaded from {pbf_path}")
     # [1] BIKE and [2] RAIL — the identical build_layer_graph pipeline, only LayerSpec differs.
     graph = build_layer_graph(osm=osm, layer=BIKE_LAYER, tolerance_m=tolerance_m)
-    _assert_single_component(graph=graph, label="bike")
+    _assert_single_component(graph=graph)
     logger.info(f"{name}: [1/6] bike layer → {graph.number_of_nodes()} nodes (1 component)")
     rail_graph = build_layer_graph(osm=osm, layer=RAIL_LAYER, tolerance_m=tolerance_m)
-    _assert_single_component(graph=rail_graph, label="rail")
+    _assert_single_component(graph=rail_graph)
     logger.info(f"{name}: [2/6] rail layer → {rail_graph.number_of_nodes()} nodes (1 component)")
     # [3] MERGE: only now are the two single-component graphs joined by station link edges.
     n_stations = _merge_bike_rail(bike_graph=graph, rail_graph=rail_graph, osm=osm)
