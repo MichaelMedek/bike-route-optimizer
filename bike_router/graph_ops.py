@@ -3,12 +3,12 @@
 These operate on an OSMnx-shaped ``nx.MultiDiGraph`` (node attrs ``x``/``y``, edge
 attrs ``length``/``surface``/``highway``/``geometry``) regardless of whether the graph
 came from a pyrosm ``.osm.pbf`` read or a reconstructed corridor subset — so the same
-code path enforces surface filtering, degree-2 contraction, intersection
-consolidation, and elevation baking everywhere (no duplicated logic).
+code path enforces surface filtering, intersection consolidation, and elevation baking
+everywhere (no duplicated logic). Degree-2 contraction happens upstream in pyrosm's
+``to_graph(simplify=True)``.
 """
 
 import logging
-from typing import Any
 
 import networkx as nx
 import numpy as np
@@ -19,28 +19,6 @@ from bike_router.cost import road_included, surface_included
 from bike_router.elevation import DEMService
 
 logger = logging.getLogger(__name__)
-
-
-def oriented_edge_coords(
-    graph: nx.MultiDiGraph, node_a: int, node_b: int, data: dict[str, Any]
-) -> list[tuple[float, float]]:
-    """(lon, lat) vertices of edge ``node_a``→``node_b``, oriented to start at node_a.
-
-    pyrosm edge geometries are not consistently u→v oriented; we flip by matching the
-    first vertex to node_a's coords (falling back to the straight segment if a real
-    geometry is absent). Endpoints are snapped to the exact node coords so contracted
-    runs join seamlessly.
-    """
-    ax, ay = graph.nodes[node_a]["x"], graph.nodes[node_a]["y"]
-    bx, by = graph.nodes[node_b]["x"], graph.nodes[node_b]["y"]
-    geom = data.get("geometry")
-    if geom is None:
-        return [(ax, ay), (bx, by)]
-    coords = list(geom.coords)
-    if abs(coords[0][0] - ax) + abs(coords[0][1] - ay) > abs(coords[-1][0] - ax) + abs(coords[-1][1] - ay):
-        coords = coords[::-1]  # geometry ran b→a; flip to a→b
-    coords[0], coords[-1] = (ax, ay), (bx, by)  # snap endpoints to exact node coords
-    return coords
 
 
 # Node/edge attributes pyrosm attaches that COLLIDE with the (osmid) node index or
@@ -83,76 +61,6 @@ def drop_disallowed_edges(graph: nx.MultiDiGraph) -> None:
     ]
     graph.remove_edges_from(doomed)
     graph.remove_nodes_from([node for node in list(graph.nodes) if graph.degree(node) == 0])
-
-
-def cheapest_edge_by_length(edges: dict[int, dict[str, Any]]) -> dict[str, Any]:
-    """Shortest parallel edge between two nodes (used during contraction).
-
-    Build-time twin of track.cheapest_edge: there edges are ranked by stored routing
-    cost; here (pre-cost) they are ranked by raw length.
-    """
-    return min(edges.values(), key=lambda data: data["length"])
-
-
-def contract_interstitial_nodes(graph: nx.MultiDiGraph) -> nx.MultiDiGraph:
-    """Contract degree-2 pass-through nodes in place, preserving real edge geometry.
-
-    Removes non-intersection/dead-end nodes, summing run length AND concatenating the
-    two sub-edge polylines so the merged edge still traces the true road — shortest
-    paths and drawn geometry are unchanged.
-    """
-    worklist = list(graph.nodes)
-    while worklist:
-        node = worklist.pop()
-        if node not in graph:
-            continue
-        preds, succs = set(graph.predecessors(node)), set(graph.successors(node))
-        neighbours = (preds | succs) - {node}
-        is_passthrough = (
-            len(neighbours) == 2 and preds == succs and graph.in_degree(node) == 2 and graph.out_degree(node) == 2
-        )
-        if not is_passthrough:
-            continue
-        node_a, node_b = tuple(neighbours)
-        if graph.has_edge(node_a, node_b) or graph.has_edge(node_b, node_a):
-            continue  # contracting would collide with an existing edge → keep node
-
-        seg_a = cheapest_edge_by_length(edges=graph.get_edge_data(node_a, node))
-        seg_mid_fwd = cheapest_edge_by_length(edges=graph.get_edge_data(node, node_b))
-        seg_b = cheapest_edge_by_length(edges=graph.get_edge_data(node_b, node))
-        seg_mid_rev = cheapest_edge_by_length(edges=graph.get_edge_data(node, node_a))
-        sample = seg_a
-        length_fwd = seg_a["length"] + seg_mid_fwd["length"]
-        length_rev = seg_b["length"] + seg_mid_rev["length"]
-        # Concatenate oriented polylines a→node + node→b (drop the duplicated node vertex).
-        coords_fwd = (
-            oriented_edge_coords(graph=graph, node_a=node_a, node_b=node, data=seg_a)
-            + oriented_edge_coords(graph=graph, node_a=node, node_b=node_b, data=seg_mid_fwd)[1:]
-        )
-        coords_rev = (
-            oriented_edge_coords(graph=graph, node_a=node_b, node_b=node, data=seg_b)
-            + oriented_edge_coords(graph=graph, node_a=node, node_b=node_a, data=seg_mid_rev)[1:]
-        )
-        graph.add_edge(
-            node_a,
-            node_b,
-            length=length_fwd,
-            surface=sample.get("surface"),
-            highway=sample.get("highway"),
-            geometry=LineString(coords_fwd),
-        )
-        graph.add_edge(
-            node_b,
-            node_a,
-            length=length_rev,
-            surface=sample.get("surface"),
-            highway=sample.get("highway"),
-            geometry=LineString(coords_rev),
-        )
-        graph.remove_node(node)
-        worklist.append(node_a)  # neighbours may now be degree-2 → collapse the chain
-        worklist.append(node_b)
-    return graph
 
 
 def consolidate_graph(graph: nx.MultiDiGraph, tolerance_m: float) -> nx.MultiDiGraph:

@@ -33,7 +33,6 @@ from bike_router.geo import haversine_vec
 from bike_router.graph_ops import (
     bake_edge_geometry_elevations,
     consolidate_graph,
-    contract_interstitial_nodes,
     drop_disallowed_edges,
     enrich_elevations,
     normalize_pyrosm_graph,
@@ -87,7 +86,14 @@ def _network_graph(osm: OSM, *, custom_filter: str | None, filter_type: str | No
     nodes, edges = res
     logger.info(f"    get_network → {len(nodes)} nodes / {len(edges)} edges; building networkx graph ...")
     graph: nx.MultiDiGraph = osm.to_graph(
-        nodes, edges, graph_type="networkx", osmnx_compatible=True, retain_all=True, force_bidirectional=True
+        nodes,
+        edges,
+        graph_type="networkx",
+        osmnx_compatible=True,
+        retain_all=True,
+        force_bidirectional=True,
+        network_type="cycling",  # explicit: keep_metadata=False strips the columns to_graph auto-detects from
+        simplify=True,  # contract degree-2 chains DURING build — never materialize the 13.7M raw-node graph
     )
     normalize_pyrosm_graph(graph=graph)
     return graph
@@ -96,18 +102,16 @@ def _network_graph(osm: OSM, *, custom_filter: str | None, filter_type: str | No
 def build_layer_graph(osm: OSM, *, layer: LayerSpec, tolerance_m: float) -> nx.MultiDiGraph:
     """Build ONE fully-preprocessed, single-component layer graph for EITHER mode (bike or rail).
 
-    THE one shared pipeline — no per-mode branches, only ``layer`` config differs: fetch ways →
-    (bike only) drop non-rideable surfaces/highways → contract degree-2 nodes → consolidate junctions
-    (``tolerance_m``) → keep the largest weakly-connected component → tag mode/node_type. Per-step logs
-    (prefixed by the layer's mode) show which sub-step runs during the long fetch/consolidate gap.
+    THE one shared pipeline — no per-mode branches, only ``layer`` config differs: fetch ways (already
+    degree-2 contracted by ``to_graph(simplify=True)``) → (bike only) drop non-rideable surfaces/
+    highways → consolidate junctions (``tolerance_m``) → keep the largest weakly-connected component →
+    tag mode/node_type. Per-step logs (prefixed by the layer's mode) trace the long fetch/consolidate gap.
     """
     graph = _network_graph(osm=osm, custom_filter=layer.custom_filter, filter_type=layer.filter_type)
-    logger.info(f"  {layer.mode}: fetched {graph.number_of_nodes()} raw nodes")
+    logger.info(f"  {layer.mode}: fetched {graph.number_of_nodes()} simplified nodes")
     if layer.surface_allowlist:
         drop_disallowed_edges(graph=graph)  # bike: rail has no surface/highway tags, would drop all
         logger.info(f"  {layer.mode}: dropped disallowed → {graph.number_of_edges()} edges")
-    graph = contract_interstitial_nodes(graph=graph)
-    logger.info(f"  {layer.mode}: contracted degree-2 → {graph.number_of_nodes()} nodes")
     graph = consolidate_graph(graph=graph, tolerance_m=tolerance_m)
     logger.info(f"  {layer.mode}: consolidated → {graph.number_of_nodes()} nodes")
     assert graph.number_of_nodes() > 0
@@ -118,8 +122,14 @@ def build_layer_graph(osm: OSM, *, layer: LayerSpec, tolerance_m: float) -> nx.M
 
 
 def _open_osm(pbf_path: Path) -> OSM:
-    """Open a pbf for parsing. Bbox clipping (if any) happens upstream via osmium (see stage_pbf)."""
-    return OSM(str(pbf_path))
+    """Open a pbf for parsing, dropping unused metadata to speed the parse. Bbox clip is upstream.
+
+    ``keep_metadata=False`` drops version/timestamp/changeset (never used) — routing tags (highway/
+    surface/bicycle) are kept. The in-memory engine is used deliberately: the out-of-core engine spills
+    to disk and measured SLOWER on dense slices. The node-count explosion is handled at ``to_graph``
+    (``simplify=True``), not here.
+    """
+    return OSM(str(pbf_path), keep_metadata=False)
 
 
 def _station_points(osm: OSM) -> list[tuple[str, float, float]]:
