@@ -226,9 +226,14 @@ def _merge_bike_rail(bike_graph: nx.MultiDiGraph, rail_graph: nx.MultiDiGraph, o
                 bike_graph.add_edge(int(track_node), node_id, length=float(snap_dist), mode=Mode.RAIL)
         # Declare the nearest N bike nodes its entrances; each STATION edge costs straight-line length
         # + half the boarding charge (cost.py), so board + alight sum to a full boarding.
-        for bike_node, dist in _station_entrances(
-            node_ids=bike_ids, node_lats=bike_lats, node_lons=bike_lons, lat=lat, lon=lon
-        ):
+        entrances = _station_entrances(node_ids=bike_ids, node_lats=bike_lats, node_lons=bike_lons, lat=lat, lon=lon)
+        # FAIL FAST: a station with NO bike node in range is unreachable by bike — a build bug (bad
+        # clip/consolidation), never tolerable. Every station MUST produce ≥1 connector edge.
+        assert entrances, (
+            f"station {name!r} at ({lat:.5f}, {lon:.5f}) has no bike node within "
+            f"{RailConfig.STATION_RADIUS_M:.0f} m — corrupt build, cannot reach the station by bike"
+        )
+        for bike_node, dist in entrances:
             bike_graph.add_edge(bike_node, node_id, length=dist, mode=Mode.STATION)
             bike_graph.add_edge(node_id, bike_node, length=dist, mode=Mode.STATION)
     return len(stations)
