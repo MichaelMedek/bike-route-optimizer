@@ -41,12 +41,14 @@ from pathlib import Path
 
 import matplotlib
 import networkx as nx
+import numpy as np
 import pandas as pd
 from tqdm import tqdm
 
 matplotlib.use("Agg")  # headless — must precede pyplot import
 import matplotlib.pyplot as plt  # noqa: E402
-from shapely import from_wkt  # noqa: E402
+from matplotlib.collections import LineCollection  # noqa: E402
+from shapely import from_wkt, get_coordinates  # noqa: E402
 
 from bike_router.builder import (
     build_region_graph_clipped,
@@ -457,16 +459,22 @@ def _random_cross_tile_pair(*, graph: nx.MultiDiGraph, nodes: list[int], rng: ra
 def _plot_overview(*, edges_df: pd.DataFrame, out_path: Path) -> None:
     """Save a minimalist matplotlib overview of the final graph: bike edges thin blue, rail thick purple.
 
-    A quick visual sanity-check of the whole DACH result before deciding to upload. Station links
-    (short bike↔rail hops) are omitted — the two networks' shapes are what matters here.
+    FULLY VECTORIZED — no Python loop over the 10M+ edges: ``from_wkt`` parses the whole WKT column in
+    one C call, ``get_coordinates`` extracts every vertex at once (this is what geopandas does), and
+    ``np.split`` on the geometry-index change points slices per-edge segments. One LineCollection per
+    mode draws them. Station links (short bike↔rail hops) are omitted.
     """
     fig, ax = plt.subplots(figsize=(16, 18))
     # Draw bike first (thin blue), rail on top (thicker purple) so rail reads clearly over the mesh.
     for mode, color, width in ((Mode.BIKE, Palette.START, 0.15), (Mode.RAIL, Palette.RAIL, 0.9)):
-        for wkt in edges_df.loc[edges_df["mode"] == mode, "geometry_wkt"]:
-            if isinstance(wkt, str):
-                coords = from_wkt(wkt).coords
-                ax.plot([c[0] for c in coords], [c[1] for c in coords], color=color, linewidth=width)
+        wkts = edges_df.loc[edges_df["mode"] == mode, "geometry_wkt"].dropna()
+        geoms = from_wkt(np.asarray(wkts, dtype=object))  # vectorized: whole column in one call
+        coords, index = get_coordinates(geoms, return_index=True)  # all vertices at once, (N,2) + source id
+        segments = np.split(coords, np.flatnonzero(np.diff(index)) + 1)  # slice per-edge, pure numpy
+        # rasterized=True: flatten the millions of segments to a pixel layer in the file (small size, fast).
+        ax.add_collection(LineCollection(segments, colors=color, linewidths=width, rasterized=True))
+        logger.info(f"  plotted {mode}: {len(segments)} edges ({len(coords)} vertices)")
+    ax.autoscale_view()  # LineCollection does not autoscale the axes; do it explicitly
     ax.set_aspect(1.4)  # rough lat/lon aspect at ~50°N
     ax.set_title("DACH graph overview — bike (thin blue) · rail (thick purple)")
     out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -556,12 +564,15 @@ def main(argv: list[str] | None = None) -> int:
         "regions_built": built,
     }
     write_graph_parquet(nodes_df=nodes_df, edges_df=edges_df, meta=meta, out_dir=out_dir, compression="zstd")
-    _plot_overview(edges_df=edges_df, out_path=OutputConfig.OUTPUT_DIR / "dach_graph_overview.png")
     del nodes_df, edges_df
     gc.collect()
 
     # Phase 4 — VALIDATE: load the saved production graph and confirm cross-region connectivity.
     _validate_connectivity(out_dir=out_dir)
+
+    # Overview plot runs LAST, only after validation passes — re-read edges from the validated artifact.
+    _, plot_edges = read_region_tables(region_dir=out_dir)
+    _plot_overview(edges_df=plot_edges, out_path=OutputConfig.OUTPUT_DIR / "dach_graph_overview.png")
 
     print(json.dumps(meta, indent=2))
     print(
