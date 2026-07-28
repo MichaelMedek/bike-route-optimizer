@@ -41,7 +41,6 @@ from pathlib import Path
 
 import matplotlib
 import networkx as nx
-import osmnx as ox
 import pandas as pd
 from tqdm import tqdm
 
@@ -77,11 +76,10 @@ _LOG_DATEFMT = "%H:%M:%S"
 def _configure_logging() -> None:
     """Set up INFO logging — called in main() AND as each worker's initializer (spawn needs both).
 
-    Also routes osmnx's own logs through Python logging.
+    osmnx's own console logging is left OFF: it emits a line per internal call (hundreds of "Created
+    nodes GeoDataFrame from graph"), drowning our own [n/6] stage breadcrumbs. Our logs are enough.
     """
     logging.basicConfig(level=logging.INFO, format=_LOG_FORMAT, datefmt=_LOG_DATEFMT)
-    ox.settings.log_console = True
-    ox.settings.log_level = logging.INFO
 
 
 _GEOFABRIK = "https://download.geofabrik.de/europe"
