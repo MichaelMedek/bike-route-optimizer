@@ -13,7 +13,7 @@ from bike_router.constants import WebMapConfig
 from bike_router.webmap import RibbonSegment, ViewState
 
 
-def create_terrain_layer(mesh_max_error: float = 1.0) -> pdk.Layer:
+def create_terrain_layer(mesh_max_error: float) -> pdk.Layer:
     """3D TerrainLayer: AWS Terrarium elevation meshed, OpenTopoMap texture draped."""
     return pdk.Layer(
         "TerrainLayer",
@@ -134,7 +134,7 @@ def build_deck(
     One deck-level tooltip (``{tooltip}``) serves every pickable layer — each ribbon segment,
     endpoint, and station datum carries its own ``tooltip`` string (the proven pydeck idiom).
     """
-    layers = [create_terrain_layer()]
+    layers = [create_terrain_layer(mesh_max_error=1.0)]
     if stations:
         layers.append(create_station_layer(stations=stations))
     if endpoints is not None:

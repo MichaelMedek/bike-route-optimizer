@@ -156,7 +156,7 @@ def _seg(color: list[int], width: float, points: list[list[float]], tooltip: str
 
 
 def test_layer_builders_return_expected_pydeck_layers():
-    terrain = create_terrain_layer()
+    terrain = create_terrain_layer(mesh_max_error=1.0)
     assert isinstance(terrain, pdk.Layer)
     assert terrain.type == "TerrainLayer" and terrain.id == "terrain_3d"
 
