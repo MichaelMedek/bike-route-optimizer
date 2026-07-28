@@ -411,27 +411,29 @@ def _combine_regions(*, regions: list[str]) -> tuple[pd.DataFrame, pd.DataFrame]
     edges_df = pd.concat(edge_frames, ignore_index=True)
     nodes_df, edges_df = dedup_by_geometry(nodes_df=nodes_df, edges_df=edges_df)
     # ONE global connectivity truncation, AFTER dedup has stitched the region seams:
-    # keep the largest strongly-connected component of the WHOLE merged graph.
-    nodes_df, edges_df = _keep_largest_scc(nodes_df=nodes_df, edges_df=edges_df)
+    # keep the largest weakly-connected component of the WHOLE merged graph (dead-ends preserved).
+    nodes_df, edges_df = _keep_largest_component(nodes_df=nodes_df, edges_df=edges_df)
     # Dedup + SCC removed nodes, leaving id holes → renumber to dense 0..N-1 (n_nodes==max_id+1).
     return remap_contiguous(nodes_df=nodes_df, edges_df=edges_df)
 
 
-def _keep_largest_scc(*, nodes_df: pd.DataFrame, edges_df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """Keep only the largest strongly-connected component of the merged graph (endpoint-only, no geometry).
+def _keep_largest_component(*, nodes_df: pd.DataFrame, edges_df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Keep only the largest WEAKLY-connected component of the merged graph (endpoint-only, no geometry).
 
     Builds a lightweight nx.DiGraph from edge endpoints (geometry is irrelevant to connectivity and
-    parsing 10M WKT would be pure waste), finds the largest SCC, and filters both tables to it. This is
-    the SINGLE global truncation that replaces the removed per-region largest_component calls.
+    parsing 10M WKT would be pure waste), keeps its largest weakly-connected component, and filters both
+    tables to it. WEAKLY, not strongly: bike edges are ~all bidirectional, so weak keeps every dead-end
+    physically attached to the network (valid route start/end points) that strong would wrongly drop.
+    This is the SINGLE global truncation that replaces the removed per-region largest_component calls.
     """
     g = nx.DiGraph()
     g.add_nodes_from(nodes_df["osmid"])
     g.add_edges_from(zip(edges_df["from_node"], edges_df["to_node"], strict=True))
-    largest = max(nx.strongly_connected_components(g), key=len)
+    largest = max(nx.weakly_connected_components(g), key=len)
     n_before = len(nodes_df)
     nodes_df = nodes_df[nodes_df["osmid"].isin(largest)]
     edges_df = edges_df[edges_df["from_node"].isin(largest) & edges_df["to_node"].isin(largest)]
-    logger.info(f"largest-SCC filter: kept {len(nodes_df)}/{n_before} nodes ({len(edges_df)} edges)")
+    logger.info(f"largest-component filter: kept {len(nodes_df)}/{n_before} nodes ({len(edges_df)} edges)")
     return nodes_df, edges_df
 
 
