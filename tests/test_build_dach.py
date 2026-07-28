@@ -166,18 +166,21 @@ def test_read_full_graph_roundtrip(tmp_path):
 
 
 def test_region_split_config_shares_pbf_and_overlaps():
-    # Austria/Switzerland are bbox-split east/west: the two halves must share ONE pbf download
-    # (dedup by geofabrik_path) and their boxes must OVERLAP at the seam (> the ~29 km longest
-    # rail edge) so Phase-3 dedup can stitch them. Every region key is unique.
+    # Bbox-split siblings (austria 3-way, switzerland 2-way) must share ONE pbf download
+    # (grouped by geofabrik_path) so Phase 1 fetches each country once. Every region key is unique.
+    # The seam-overlap geometry itself is owned by _assert_split_overlaps (asserted below) — not
+    # re-derived here, to avoid a second, drift-prone copy of the overlap math.
     regions = bd.DACH_REGIONS
     assert len({r.key for r in regions}) == len(regions)  # unique keys
-    for country in ("austria", "switzerland"):
-        west = next(r for r in regions if r.key == f"{country}-west")
-        east = next(r for r in regions if r.key == f"{country}-east")
-        assert west.pbf_name == east.pbf_name == country  # ONE shared pbf download
-        assert west.bbox is not None and east.bbox is not None
-        overlap_deg = west.bbox[2] - east.bbox[0]  # west's east-edge minus east's west-edge
-        assert overlap_deg >= 0.5, f"{country} seam overlap {overlap_deg}° too small for a 29 km edge"
+    by_pbf: dict[str, list[bd.Region]] = {}
+    for r in regions:
+        if r.bbox is not None:
+            by_pbf.setdefault(r.geofabrik_path, []).append(r)
+    assert {p.rsplit("/", 1)[-1] for p in by_pbf} == {"austria", "switzerland"}
+    assert sorted(len(v) for v in by_pbf.values()) == [2, 3]  # switzerland 2-way, austria 3-way
+    for slices in by_pbf.values():
+        assert len({r.pbf_name for r in slices}) == 1  # each split group shares ONE pbf download
+    bd._assert_split_overlaps(regions)  # single source of truth for the seam-overlap invariant
 
 
 def test_split_halves_download_once(monkeypatch, tmp_path):
@@ -245,3 +248,119 @@ def test_random_cross_tile_pair_differs(monkeypatch):
     s = bd.tile_index(lat=graph.nodes[src]["y"], lon=graph.nodes[src]["x"])
     t = bd.tile_index(lat=graph.nodes[tgt]["y"], lon=graph.nodes[tgt]["x"])
     assert s != t  # deliberately cross-tile
+
+
+# ===================== _assert_split_overlaps (split-config invariant) =====================
+
+
+def _R(key, bbox):  # noqa: ANN001, ANN202
+    """A split Region sharing one pbf with the given bbox (None → a whole, non-split region)."""
+    return bd.Region(key=key, geofabrik_path="country/shared", bbox=bbox)
+
+
+class TestRectangularTilingAxisAlignment:
+    """FIRST gate: tiles must be an aligned band — exactly ONE axis may differ between two siblings.
+
+    If BOTH lat and lon ranges differ the pair is ragged/diagonal (not a rectangular tiling) and is
+    rejected BEFORE any overlap is measured. Verified from both the lon-split and lat-split framing,
+    then the two clean single-axis splits that must pass.
+    """
+
+    def test_rejects_lon_split_when_lat_also_differs(self):
+        # Meant as an E/W (lon) split, but the lat ranges ALSO differ → >1 axis differs → reject.
+        with pytest.raises(AssertionError, match="not a rectangular tiling"):
+            bd._assert_split_overlaps([_R("w", (5.0, 45.0, 8.5, 48.0)), _R("e", (8.0, 45.5, 11.0, 48.0))])
+
+    def test_rejects_lat_split_when_lon_also_differs(self):
+        # Meant as an N/S (lat) split, but the lon ranges ALSO differ → >1 axis differs → reject.
+        with pytest.raises(AssertionError, match="not a rectangular tiling"):
+            bd._assert_split_overlaps([_R("s", (5.0, 45.0, 8.0, 47.5)), _R("n", (5.5, 47.0, 8.5, 49.0))])
+
+    def test_rejects_diagonal_both_axes_offset(self):
+        # Both lon AND lat shifted (diagonal tiles) → neither axis aligned → reject.
+        with pytest.raises(AssertionError, match="not a rectangular tiling"):
+            bd._assert_split_overlaps([_R("a", (5.0, 45.0, 8.5, 47.5)), _R("b", (8.0, 47.0, 11.0, 49.0))])
+
+    def test_passes_clean_lon_band_split(self):
+        # Only lon differs; lat range identical → clean E/W band → accepted.
+        bd._assert_split_overlaps([_R("w", (5.0, 45.0, 8.5, 48.0)), _R("e", (8.0, 45.0, 11.0, 48.0))])
+
+    def test_passes_clean_lat_band_split(self):
+        # Only lat differs; lon range identical → clean N/S band → accepted.
+        bd._assert_split_overlaps([_R("s", (5.0, 45.0, 8.0, 47.5)), _R("n", (5.0, 47.0, 8.0, 49.0))])
+
+
+class TestSplitOverlap:
+    """SECOND gate (once alignment holds): the split axis must overlap ≥0.5° — no gap, touch, or sliver.
+
+    The FULL set of overlap cases exists SYMMETRICALLY for BOTH axes — lon (E/W bands) and lat (N/S
+    bands): a gap fails, an exact touch (zero) fails, a too-small sliver fails, the exact 0.5° minimum
+    passes, and a generous overlap passes. Plus the unordered 3-way, whole-region/singleton no-ops,
+    and the real shipped DACH config.
+    """
+
+    # ---- longitude (E/W band) split: identical lat range, lon offset ----
+
+    def test_lon_fails_on_gap(self):
+        # A GAP (west ends 8.0, east starts 8.3) → negative overlap → fail loud.
+        with pytest.raises(AssertionError, match="lon overlap"):
+            bd._assert_split_overlaps([_R("w", (5.0, 45.0, 8.0, 48.0)), _R("e", (8.3, 45.0, 11.0, 48.0))])
+
+    def test_lon_fails_on_exact_touch(self):
+        # Slices that merely TOUCH (edges equal at 8.0) → 0 overlap → fail.
+        with pytest.raises(AssertionError, match="lon overlap"):
+            bd._assert_split_overlaps([_R("w", (5.0, 45.0, 8.0, 48.0)), _R("e", (8.0, 45.0, 11.0, 48.0))])
+
+    def test_lon_fails_on_insufficient_overlap(self):
+        # Overlap of only 0.3 deg (< 0.5 min) → fail; message reports the actual overlap.
+        with pytest.raises(AssertionError, match="lon overlap 0.30"):
+            bd._assert_split_overlaps([_R("w", (5.0, 45.0, 8.3, 48.0)), _R("e", (8.0, 45.0, 11.0, 48.0))])
+
+    def test_lon_passes_exact_minimum_overlap(self):
+        # Overlap of EXACTLY 0.5 deg (west ends 8.5, east starts 8.0) → boundary → passes.
+        bd._assert_split_overlaps([_R("w", (5.0, 45.0, 8.5, 48.0)), _R("e", (8.0, 45.0, 11.0, 48.0))])
+
+    def test_lon_passes_generous_overlap(self):
+        # Overlap of 2.0 deg (west ends 10.0, east starts 8.0) → comfortably ≥0.5 → passes.
+        bd._assert_split_overlaps([_R("w", (5.0, 45.0, 10.0, 48.0)), _R("e", (8.0, 45.0, 13.0, 48.0))])
+
+    # ---- latitude (N/S band) split: identical lon range, lat offset (SYMMETRIC to the above) ----
+
+    def test_lat_fails_on_gap(self):
+        # A GAP (south ends 47.0, north starts 47.3) → negative overlap → fail loud.
+        with pytest.raises(AssertionError, match="lat overlap"):
+            bd._assert_split_overlaps([_R("s", (5.0, 45.0, 8.0, 47.0)), _R("n", (5.0, 47.3, 8.0, 49.0))])
+
+    def test_lat_fails_on_exact_touch(self):
+        # Bands that merely TOUCH (edges equal at 47.0) → 0 overlap → fail.
+        with pytest.raises(AssertionError, match="lat overlap"):
+            bd._assert_split_overlaps([_R("s", (5.0, 45.0, 8.0, 47.0)), _R("n", (5.0, 47.0, 8.0, 49.0))])
+
+    def test_lat_fails_on_insufficient_overlap(self):
+        # Overlap of only 0.3 deg (< 0.5 min) → fail; message reports the actual overlap.
+        with pytest.raises(AssertionError, match="lat overlap 0.30"):
+            bd._assert_split_overlaps([_R("s", (5.0, 45.0, 8.0, 47.3)), _R("n", (5.0, 47.0, 8.0, 49.0))])
+
+    def test_lat_passes_exact_minimum_overlap(self):
+        # Overlap of EXACTLY 0.5 deg (south ends 47.5, north starts 47.0) → boundary → passes.
+        bd._assert_split_overlaps([_R("s", (5.0, 45.0, 8.0, 47.5)), _R("n", (5.0, 47.0, 8.0, 49.0))])
+
+    def test_lat_passes_generous_overlap(self):
+        # Overlap of 2.0 deg (south ends 49.0, north starts 47.0) → comfortably ≥0.5 → passes.
+        bd._assert_split_overlaps([_R("s", (5.0, 45.0, 8.0, 49.0)), _R("n", (5.0, 47.0, 8.0, 51.0))])
+
+    # ---- axis-agnostic: multi-slice ordering, no-ops, and the shipped config ----
+
+    def test_passes_three_way_unordered(self):
+        # Three slices passed OUT of west→east order → sorted internally; each seam overlaps ≥0.5.
+        bd._assert_split_overlaps(
+            [_R("e", (13.0, 46.0, 17.0, 49.0)), _R("w", (9.0, 46.0, 13.5, 49.0)), _R("c", (13.0, 46.0, 15.5, 49.0))]
+        )
+
+    def test_ignores_whole_regions_and_singletons(self):
+        # bbox=None regions skipped; a lone split slice has no seam → nothing to assert (no raise).
+        bd._assert_split_overlaps([_R("whole", None), _R("only", (5.0, 45.0, 8.0, 48.0))])
+
+    def test_real_dach_config_is_valid(self):
+        # The shipped DACH_REGIONS must satisfy the invariant (this is what runs at import time).
+        bd._assert_split_overlaps(bd.DACH_REGIONS)
