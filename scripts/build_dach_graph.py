@@ -57,7 +57,7 @@ from bike_router.builder import (
     remap_contiguous,
     stage_pbf,
 )
-from bike_router.constants import DEMConfig, GraphConfig, Mode, NodeType, OutputConfig, Palette
+from bike_router.constants import DEMConfig, GraphConfig, Mode, NodeType, Palette
 from bike_router.elevation import DEMService
 from bike_router.graph_store import (
     compute_bbox,
@@ -571,8 +571,9 @@ def main(argv: list[str] | None = None) -> int:
     _validate_connectivity(out_dir=out_dir)
 
     # Overview plot runs LAST, only after validation passes — re-read edges from the validated artifact.
+    # Saved INTO the artifact dir so the HF upload (upload_folder of GRAPH_DIR) ships it as-is.
     _, plot_edges = read_region_tables(region_dir=out_dir)
-    _plot_overview(edges_df=plot_edges, out_path=OutputConfig.OUTPUT_DIR / "dach_graph_overview.png")
+    _plot_overview(edges_df=plot_edges, out_path=out_dir / "dach_graph_overview.png")
 
     print(json.dumps(meta, indent=2))
     print(

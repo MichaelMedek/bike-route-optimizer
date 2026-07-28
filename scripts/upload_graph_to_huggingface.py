@@ -1,7 +1,8 @@
 """Upload the prebuilt DACH bike+rail graph artifact to Hugging Face Hub.
 
-Uploads the final tiled artifact dir (nodes/, edges/, meta.json) built by
-scripts/build_dach_graph.py — as-is. Phase 3 of the build already writes it zstd-compressed.
+Uploads the final tiled artifact dir (nodes/, edges/, meta.json, dach_graph_overview.png) built by
+scripts/build_dach_graph.py — as-is. Phase 3 writes the graph zstd-compressed; Phase 4 saves the
+overview plot into the same dir so it ships alongside the data.
 
 Usage:
     1. pip install huggingface_hub
