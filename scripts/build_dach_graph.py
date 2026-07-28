@@ -31,6 +31,7 @@ import multiprocessing
 import random
 import resource
 import socket
+import tempfile
 import time
 import urllib.error
 import urllib.request
@@ -40,6 +41,7 @@ from pathlib import Path
 
 import matplotlib
 import networkx as nx
+import osmnx as ox
 import pandas as pd
 from tqdm import tqdm
 
@@ -47,7 +49,13 @@ matplotlib.use("Agg")  # headless — must precede pyplot import
 import matplotlib.pyplot as plt  # noqa: E402
 from shapely import from_wkt  # noqa: E402
 
-from bike_router.builder import build_region_graph_clipped, dedup_by_geometry, reindex_region, remap_contiguous
+from bike_router.builder import (
+    build_region_graph_clipped,
+    dedup_by_geometry,
+    reindex_region,
+    remap_contiguous,
+    stage_pbf,
+)
 from bike_router.constants import DEMConfig, GraphConfig, Mode, NodeType, OutputConfig, Palette
 from bike_router.elevation import DEMService
 from bike_router.graph_store import (
@@ -67,8 +75,13 @@ _LOG_DATEFMT = "%H:%M:%S"
 
 
 def _configure_logging() -> None:
-    """Set up INFO logging — called in main() AND as each worker's initializer (spawn needs both)."""
+    """Set up INFO logging — called in main() AND as each worker's initializer (spawn needs both).
+
+    Also routes osmnx's own logs through Python logging.
+    """
     logging.basicConfig(level=logging.INFO, format=_LOG_FORMAT, datefmt=_LOG_DATEFMT)
+    ox.settings.log_console = True
+    ox.settings.log_level = logging.INFO
 
 
 _GEOFABRIK = "https://download.geofabrik.de/europe"
@@ -85,6 +98,10 @@ _VALIDATION_PROBES = 10  # Phase 4: random cross-region node pairs checked for c
 # Sanity ceiling on the merged node count (DACH is ~3–5M); a larger total means a logic error
 # upstream, so Phase 3 fails fast rather than writing a suspect artifact.
 _MAX_TOTAL_NODES = 100_000_000_000
+# Per-region staged-pbf ceiling: a region whose osmium clip exceeds this parses into too big a graph
+# for one worker's RAM (niedersachsen at 478 MB is the proven-OK high-water mark). Preflight fails
+# BEFORE the build loop so an oversized split is caught in seconds, not mid-build.
+_MAX_STAGED_PBF_MB = 500.0
 
 Bbox = tuple[float, float, float, float]  # (west, south, east, north) in WGS84 degrees
 
@@ -117,8 +134,8 @@ class Region:
 # DACH at Geofabrik sub-region granularity. Big Flächenländer are split into their
 # Regierungsbezirke (bounded per-region memory); smaller states stay whole.
 # Austria and Switzerland have NO Geofabrik sub-extracts, so they are bbox-split east/west here.
-_AUSTRIA = "austria"  # extent ~9.53–17.16 E; split meridian 13.35, ±0.5° overlap
-_SWITZERLAND = "switzerland"  # extent ~5.96–10.49 E; split meridian 8.22, ±0.5° overlap
+_AUSTRIA = "austria"  # extent ~9.53–17.16 E; dense in the east → split into 3 overlapping slices
+_SWITZERLAND = "switzerland"  # extent ~5.96–10.49 E; split east/west at 8.22, ±0.5° overlap
 DACH_REGIONS: list[Region] = [
     # Baden-Württemberg
     Region("freiburg-regbez", "germany/baden-wuerttemberg/freiburg-regbez"),
@@ -153,13 +170,63 @@ DACH_REGIONS: list[Region] = [
     Region("sachsen-anhalt", "germany/sachsen-anhalt"),
     Region("schleswig-holstein", "germany/schleswig-holstein"),
     Region("thueringen", "germany/thueringen"),
-    # Austria — one pbf, split east/west at 13.35° E with ±0.5° (~75 km) overlap.
-    Region("austria-west", _AUSTRIA, bbox=(9.4, 46.3, 13.85, 49.1)),
-    Region("austria-east", _AUSTRIA, bbox=(12.85, 46.3, 17.25, 49.1)),
+    # Austria — one pbf, split into THREE overlapping W/Center/E slices (±0.5° overlap).
+    Region("austria-west", _AUSTRIA, bbox=(9.4, 46.3, 13.5, 49.1)),
+    Region("austria-center", _AUSTRIA, bbox=(13.0, 46.3, 15.8, 49.1)),
+    Region("austria-east", _AUSTRIA, bbox=(15.3, 46.3, 17.25, 49.1)),
     # Switzerland — one pbf, split east/west at 8.22° E with ±0.5° (~75 km) overlap.
     Region("switzerland-west", _SWITZERLAND, bbox=(5.85, 45.7, 8.72, 47.9)),
     Region("switzerland-east", _SWITZERLAND, bbox=(7.72, 45.7, 10.55, 47.9)),
 ]
+
+_MIN_SPLIT_OVERLAP_DEG = 0.5  # adjacent tiles must overlap ≥ this on the split axis (> longest edge)
+
+
+def _assert_rectangular_tiling(*, pbf: str, a_key: str, a: Bbox, b_key: str, b: Bbox) -> None:
+    """Assert two sibling tiles form a clean rectangular grid pair: aligned on one axis, overlapping
+    on the other by ≥ the minimum. Split-axis = the offset axis; perpendicular axis MUST match exactly
+    (no ragged tiles). Rejects diagonal/gapped/ragged configs. Symmetric — works for lon OR lat splits.
+    """
+    aw, as_, ae, an = a
+    bw, bs, be, bn = b
+    lon_aligned = abs(aw - bw) < 1e-9 and abs(ae - be) < 1e-9  # identical lon range → split is by lat
+    lat_aligned = abs(as_ - bs) < 1e-9 and abs(an - bn) < 1e-9  # identical lat range → split is by lon
+    if lat_aligned:  # longitudinal bands: perpendicular (lat) matches; require lon overlap
+        overlap = min(ae, be) - max(aw, bw)
+        axis = "lon"
+    elif lon_aligned:  # latitudinal bands: perpendicular (lon) matches; require lat overlap
+        overlap = min(an, bn) - max(as_, bs)
+        axis = "lat"
+    else:
+        raise AssertionError(
+            f"{pbf}: {a_key}/{b_key} are not a rectangular tiling — neither lon nor lat range is shared "
+            "(tiles must be aligned bands; ragged/diagonal splits are forbidden)."
+        )
+    assert overlap >= _MIN_SPLIT_OVERLAP_DEG, (
+        f"{pbf}: {a_key}∩{b_key} {axis} overlap {overlap:.2f}° < {_MIN_SPLIT_OVERLAP_DEG}° — seam won't stitch"
+    )
+
+
+def _assert_split_overlaps(regions: list[Region]) -> None:
+    """Import-time invariant: slices sharing one pbf must be a valid OVERLAPPING RECTANGULAR TILING.
+
+    Consecutive tiles (sorted along the split axis) must be aligned on the perpendicular axis and
+    overlap ≥0.5° on the split axis, else Phase-3 dedup can't stitch the seam. Fails loud on any
+    ragged/gapped/diagonal split. Supports lon-band and lat-band splits (auto-detected per pair).
+    """
+    by_pbf: dict[str, list[tuple[str, Bbox]]] = {}
+    for r in regions:
+        if r.bbox is not None:
+            by_pbf.setdefault(r.geofabrik_path, []).append((r.key, r.bbox))
+    for pbf, slices in by_pbf.items():
+        # Sort along whichever axis varies (west edge if lon-split, south edge if lat-split).
+        lon_varies = len({round(b[0], 6) for _k, b in slices}) > 1
+        ordered = sorted(slices, key=lambda kb: kb[1][0] if lon_varies else kb[1][1])
+        for (a_key, a), (b_key, b) in zip(ordered[:-1], ordered[1:], strict=True):
+            _assert_rectangular_tiling(pbf=pbf, a_key=a_key, a=a, b_key=b_key, b=b)
+
+
+_assert_split_overlaps(DACH_REGIONS)  # validate the split config at import — a bad split never runs
 
 
 def _download_pbf(*, geofabrik_path: str) -> Path:
@@ -252,6 +319,28 @@ def _region_complete(region_key: str) -> bool:
     if not meta_path.exists():
         return False
     return bool(json.loads(meta_path.read_text()).get("confirmed_complete", False))
+
+
+def _assert_staged_sizes_ok(*, regions: list[Region], pbfs: dict[str, Path], cli_bbox: Bbox | None) -> None:
+    """Preflight: osmium-clip EVERY region to a temp file and fail loud if any exceeds the per-region
+    MB ceiling — BEFORE the build loop, so an oversized split is caught in ~seconds (native C++ clip).
+    ALL regions are checked (not just to-build ones): the ceiling is a structural invariant of the
+    split config. niedersachsen (478 MB) is the proven-OK high-water mark.
+    """
+    oversized: list[str] = []
+    with tempfile.TemporaryDirectory() as tmp:
+        for region in tqdm(regions, desc="2/4 Preflight: staged sizes", unit="region"):
+            staged = stage_pbf(raw_pbf=pbfs[region.geofabrik_path], bbox=cli_bbox or region.bbox, staging_dir=Path(tmp))
+            size_mb = staged.stat().st_size / 1024 / 1024
+            logger.info(f"{region.key}: staged {size_mb:.0f} MB")
+            if size_mb > _MAX_STAGED_PBF_MB:
+                oversized.append(f"{region.key} ({size_mb:.0f} MB)")
+            staged.unlink()  # free the temp clip before staging the next (peak temp ≈ one clip)
+    if oversized:
+        raise ValueError(
+            f"Staged pbf exceeds {_MAX_STAGED_PBF_MB:.0f} MB ceiling for: {', '.join(oversized)}. "
+            "Split the region into smaller bbox pieces in DACH_REGIONS."
+        )
 
 
 def _process_region(
@@ -414,6 +503,10 @@ def main(argv: list[str] | None = None) -> int:
         gp: _download_region(geofabrik_path=gp)
         for gp in tqdm(sorted({r.geofabrik_path for r in regions}), desc="1/4 Downloading pbfs", unit="pbf")
     }
+
+    # Phase 2 preflight — osmium-clip every to-build region to a temp file and HARD-FAIL if any
+    # exceeds the MB ceiling, BEFORE the slow build loop (an oversized split is caught in seconds).
+    _assert_staged_sizes_ok(regions=regions, pbfs=pbfs, cli_bbox=cli_bbox)
 
     # Phase 2 — build each region in a FRESH child (max_tasks_per_child=1) so the OS reclaims all its
     # memory on exit; peak RSS never accumulates (gc can't return RSS to the OS). spawn = macOS default,
