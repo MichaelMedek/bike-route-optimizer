@@ -27,12 +27,14 @@ import argparse
 import gc
 import json
 import logging
+import multiprocessing
 import random
 import resource
 import socket
 import time
 import urllib.error
 import urllib.request
+from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -246,16 +248,15 @@ def _process_region(
     *,
     region_key: str,
     pbf: Path,
-    dem: DEMService,
     bbox: tuple[float, float, float, float] | None,
     tolerance_m: float,
-) -> None:
-    """Phase 2: build ONE region, remap ids contiguous, write its app-loadable artifact.
+) -> float:
+    """Phase 2 worker: build ONE region, remap ids contiguous, write its artifact; return peak RSS (GB).
 
-    Writes to _REGIONS_DIR/<region>/ (standard nodes/+edges/+meta.json), stamping
-    confirmed_complete=true LAST so a crash never leaves a half-region mistaken for done.
-    Frees the ~20 GB graph before returning so the next region reuses the heap.
+    Runs in a FRESH child (max_tasks_per_child=1) so the OS reclaims ALL its memory on exit — RSS
+    never accumulates across regions. Loads the DEM itself; only picklable args cross the boundary.
     """
+    dem = DEMService(dem_path=DEMConfig.EURODEM_PATH)
     graph = build_region_graph(pbf_path=pbf, dem=dem, tolerance_m=tolerance_m, bbox=bbox)
     nodes_df, edges_df = graph_to_tables(graph=graph)
     nodes_df, edges_df = remap_contiguous(nodes_df=nodes_df, edges_df=edges_df)
@@ -270,8 +271,7 @@ def _process_region(
         "confirmed_complete": True,  # written LAST via write_graph_parquet → the atomic "done" flag
     }
     write_graph_parquet(nodes_df=nodes_df, edges_df=edges_df, meta=meta, out_dir=region_dir)
-    del graph, nodes_df, edges_df
-    gc.collect()
+    return _peak_rss_gb()  # this child's peak; the process then exits and the OS reclaims everything
 
 
 def _assert_all_regions_complete(*, regions: list[str]) -> None:
@@ -406,21 +406,27 @@ def main(argv: list[str] | None = None) -> int:
         for gp in tqdm(sorted({r.geofabrik_path for r in regions}), desc="1/4 Downloading pbfs", unit="pbf")
     }
 
-    # Phase 2 — PROCESS each region in isolation: build (clipped to the region's bbox if any), remap
-    # to contiguous ids, write its own artifact, then free the ~20 GB graph before the next (peak RSS
-    # ≈ one region). Skip regions already flagged confirmed_complete; a build failure aborts (real bug).
-    for region in tqdm(regions, desc="2/4 Building regions", unit="region"):
-        if _region_complete(region_key=region.key):
-            logger.info(f"{region.key}: skipped, already complete")
-            continue
-        _process_region(
-            region_key=region.key,
-            pbf=pbfs[region.geofabrik_path],
-            dem=dem,
-            bbox=cli_bbox or region.bbox,
-            tolerance_m=tolerance_m,
-        )
-        logger.info(f"{region.key}: peak RSS {_peak_rss_gb():.1f} GB")
+    # Phase 2 — build each region in a FRESH child (max_tasks_per_child=1) so the OS reclaims all its
+    # memory on exit; peak RSS never accumulates (gc can't return RSS to the OS). spawn = macOS default,
+    # fork-safe. Skip confirmed_complete regions; a killed worker (OOM) fails loud.
+    ctx = multiprocessing.get_context("spawn")
+    max_child_rss = 0.0  # largest single-region child peak — the real memory watermark of the build
+    with ProcessPoolExecutor(max_workers=1, max_tasks_per_child=1, mp_context=ctx) as pool:
+        for region in tqdm(regions, desc="2/4 Building regions", unit="region"):
+            if _region_complete(region_key=region.key):
+                logger.info(f"{region.key}: skipped, already complete")
+                continue
+            future = pool.submit(
+                _process_region,
+                region_key=region.key,
+                pbf=pbfs[region.geofabrik_path],
+                bbox=cli_bbox or region.bbox,
+                tolerance_m=tolerance_m,
+            )
+            # .result() re-raises any worker failure here (BrokenProcessPool if OOM-killed) → fail loud.
+            peak = future.result()
+            max_child_rss = max(max_child_rss, peak)
+            logger.info(f"{region.key}: done, child peak RSS {peak:.1f} GB")
 
     # Phase 3 — COMBINE per-region artifacts into globally-consistent tiled shards (zstd — the final
     # artifact uploaded to HF, ~35% smaller than snappy; readers auto-detect the codec).
@@ -445,7 +451,10 @@ def main(argv: list[str] | None = None) -> int:
     _validate_connectivity(out_dir=out_dir)
 
     print(json.dumps(meta, indent=2))
-    print(f"\nBuilt {len(built)} regions in {(time.time() - started) / 60:.1f} min | peak RSS {_peak_rss_gb():.1f} GB")
+    print(
+        f"\nBuilt {len(built)} regions in {(time.time() - started) / 60:.1f} min | "
+        f"max per-region child peak RSS {max_child_rss:.1f} GB"
+    )
     print(f"Artifact: {out_dir}")
     return 0
 
