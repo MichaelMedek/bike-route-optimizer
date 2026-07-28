@@ -30,69 +30,153 @@ def _line(lat1, lon1, lat2, lon2) -> str:  # noqa: ANN001
 
 
 def test_combine_regions_reindexes_and_dedups(monkeypatch, tmp_path):
-    # Two regions each with contiguous ids 0,1 that would COLLIDE; region B's node 0 is a seam
+    # Two regions each with contiguous ids that would COLLIDE; region B's node 0 is a seam
     # duplicate of region A's node 1 (same lat/lon). Combine must offset then collapse the dup.
+    # Edges are 30 km each so the combined bike chain (60 km) clears the MIN_BIKE_COMPONENT_KM prune;
+    # region A also carries a rail pair (rail is a mandatory layer).
     regions_dir = tmp_path / "per_region"
     monkeypatch.setattr(bd, "_REGIONS_DIR", regions_dir)
+    long_m = 30_000.0
     _region_artifact(
         regions_dir / "a",
-        nodes=[(0, 48.0, 8.0, 0.0, "bike", None), (1, 48.2, 8.2, 0.0, "bike", None)],
-        edges=[(0, 1, 0, 100.0, 0.0, "asphalt", "residential", "bike", _line(48.0, 8.0, 48.2, 8.2))],
+        nodes=[
+            (0, 48.0, 8.0, 0.0, "bike", None),
+            (1, 48.2, 8.2, 0.0, "bike", None),
+            (2, 47.0, 7.0, 0.0, "rail", None),
+            (3, 47.1, 7.1, 0.0, "rail", None),  # rail pair (mandatory layer)
+        ],
+        edges=[
+            (0, 1, 0, long_m, 0.0, "asphalt", "residential", "bike", _line(48.0, 8.0, 48.2, 8.2)),
+            (1, 0, 0, long_m, 0.0, "asphalt", "residential", "bike", _line(48.2, 8.2, 48.0, 8.0)),
+            (2, 3, 0, 40_000.0, 0.0, None, None, "rail", _line(47.0, 7.0, 47.1, 7.1)),
+            (3, 2, 0, 40_000.0, 0.0, None, None, "rail", _line(47.1, 7.1, 47.0, 7.0)),
+        ],
     )
     _region_artifact(
         regions_dir / "b",
         nodes=[(0, 48.2, 8.2, 0.0, "bike", None), (1, 48.4, 8.4, 0.0, "bike", None)],  # node 0 == A's node 1
-        edges=[(0, 1, 0, 100.0, 0.0, "asphalt", "residential", "bike", _line(48.2, 8.2, 48.4, 8.4))],
+        edges=[
+            (0, 1, 0, long_m, 0.0, "asphalt", "residential", "bike", _line(48.2, 8.2, 48.4, 8.4)),
+            (1, 0, 0, long_m, 0.0, "asphalt", "residential", "bike", _line(48.4, 8.4, 48.2, 8.2)),
+        ],
     )
     nodes_df, edges_df = bd._combine_regions(regions=["a", "b"])
-    # 4 raw nodes → 3 after the seam duplicate collapses; ids globally unique AND contiguous 0..N-1
-    # (the final remap closes the hole dedup left).
-    assert len(nodes_df) == 3
-    assert sorted(nodes_df["osmid"]) == [0, 1, 2]
-    # both distinct edges survive (no false dedup — different geometry); endpoints valid ids
-    assert len(edges_df) == 2
+    # A has 4 nodes (2 bike + 2 rail), B has 2 bike; B's node 0 duplicates A's bike node 1 → 6-1 = 5
+    # surviving nodes, renumbered dense 0..4.
+    assert len(nodes_df) == 5
+    assert sorted(nodes_df["osmid"]) == [0, 1, 2, 3, 4]
+    # bike: 4 directed edges (A's 2 + B's 2, no false dedup) + rail: 2 directed = 6 total.
+    assert len(edges_df) == 6
+    assert set(edges_df["from_node"]) | set(edges_df["to_node"]) <= set(nodes_df["osmid"])
     assert set(edges_df["from_node"]) | set(edges_df["to_node"]) <= set(nodes_df["osmid"])
 
 
-def test_validate_connectivity_passes_and_fails(monkeypatch, tmp_path):
-    # A fully-connected 2-tile line passes; an artifact split into two disconnected tiles fails.
-    def _write(out_dir, nodes, edges):  # noqa: ANN001, ANN202
-        write_graph_parquet(
-            nodes_df=pd.DataFrame(nodes, columns=_NODE_COLS),
-            edges_df=pd.DataFrame(edges, columns=_EDGE_COLS),
-            meta={"tile_deg": GraphConfig.TILE_DEG},
-            out_dir=out_dir,
-        )
+def _pe(u, v, m, km):  # noqa: ANN001, ANN202
+    """One directed prune-test edge; km → length_m. surface/highway None (irrelevant to the prune)."""
+    return (u, v, 0, km * 1000.0, 0.0, None, None, m, None)
 
-    monkeypatch.setattr(bd, "_VALIDATION_PROBES", 5)
-    # Connected: two nodes in different tiles joined both ways.
-    ok_dir = tmp_path / "ok"
-    _write(
-        ok_dir,
-        nodes=[(0, 48.0, 8.0, 0.0, "bike", None), (1, 48.6, 8.6, 0.0, "bike", None)],
-        edges=[
-            (0, 1, 0, 1.0, 0.0, "asphalt", "residential", "bike", None),
-            (1, 0, 0, 1.0, 0.0, "asphalt", "residential", "bike", None),
+
+def _bidir(u, v, m, km):  # noqa: ANN001, ANN202
+    """A bidirectional road/track as the builder emits it — both directions of one physical edge."""
+    return [_pe(u, v, m, km), _pe(v, u, m, km)]
+
+
+def _mk_nodes(bike, rail, stations):  # noqa: ANN001, ANN202
+    """Node frame from id-lists: bike (node_type bike), rail track (rail), stations (rail + a name)."""
+    rows = (
+        [(i, 48.0, 8.0 + i * 0.01, 0.0, "bike", None) for i in bike]
+        + [(i, 47.0, 7.0 + i * 0.01, 0.0, "rail", None) for i in rail]
+        + [(i, 46.0, 6.0, 0.0, "rail", f"St{i}") for i in stations]
+    )
+    return pd.DataFrame(rows, columns=_NODE_COLS)
+
+
+class TestPruneComponents:
+    """_prune_components policy: RAIL keeps ONLY its largest weakly-connected component; BIKE keeps every
+    component with total (undirected) length ≥ MIN_BIKE_COMPONENT_KM; a node/edge survives iff on a kept
+    component. Stations (rail nodes wired by a RAIL link) follow their rail component. Both layers are
+    MANDATORY. Tests assert only real behaviour — not the tautological edges⊆nodes filter identity.
+    """
+
+    _OVER = GraphConfig.MIN_BIKE_COMPONENT_KM + 5  # comfortably above threshold
+    _UNDER = 1.0  # comfortably below
+
+    @pytest.mark.parametrize(
+        ("bike_km", "kept"),
+        [
+            (GraphConfig.MIN_BIKE_COMPONENT_KM - 1, False),  # below → dropped
+            (GraphConfig.MIN_BIKE_COMPONENT_KM, True),  # exactly at → kept (>=)
+            (GraphConfig.MIN_BIKE_COMPONENT_KM + 1, True),  # above → kept
         ],
     )
-    bd._validate_connectivity(out_dir=ok_dir)  # no raise
+    def test_bike_component_threshold_boundary(self, bike_km, kept):  # noqa: ANN001
+        # BIKE keep-iff-big at the exact boundary. Undirected: one bidirectional edge counts ONCE.
+        nodes = _mk_nodes(bike=[0, 1], rail=[2, 3], stations=[])
+        edges = pd.DataFrame(_bidir(0, 1, "bike", bike_km) + _bidir(2, 3, "rail", 40.0), columns=_EDGE_COLS)
+        surviving = set(bd._prune_components(nodes_df=nodes, edges_df=edges)[0]["osmid"])
+        assert ({0, 1} <= surviving) is kept
 
-    # Disconnected: same two cross-tile nodes, NO edge between them (fresh dir → no stale tiles).
-    bad_dir = tmp_path / "bad"
-    _write(bad_dir, nodes=[(0, 48.0, 8.0, 0.0, "bike", None), (1, 48.6, 8.6, 0.0, "bike", None)], edges=[])
-    with pytest.raises(ValueError, match="fragmented|<2 nodes|path|components"):
-        bd._validate_connectivity(out_dir=bad_dir)
+    def test_bike_keeps_big_island_drops_small_stray(self):
+        # Two bike components: a big island (kept) and a tiny stray (dropped) — the core policy.
+        nodes = _mk_nodes(bike=[0, 1, 2, 3], rail=[4, 5], stations=[])
+        edges = pd.DataFrame(
+            _bidir(0, 1, "bike", self._OVER)  # big island
+            + _bidir(2, 3, "bike", self._UNDER)  # tiny stray
+            + _bidir(4, 5, "rail", 40.0),
+            columns=_EDGE_COLS,
+        )
+        surviving = set(bd._prune_components(nodes_df=nodes, edges_df=edges)[0]["osmid"])
+        assert {0, 1} <= surviving and {2, 3}.isdisjoint(surviving)
 
-    # One-way only (0→1 but not back): weakly connected but NOT strongly → the SCC gate must fail,
-    # since a routable graph needs mutual reachability.
-    oneway_dir = tmp_path / "oneway"
-    _write(
-        oneway_dir,
-        nodes=[(0, 48.0, 8.0, 0.0, "bike", None), (1, 48.6, 8.6, 0.0, "bike", None)],
-        edges=[(0, 1, 0, 1.0, 0.0, "asphalt", "residential", "bike", None)],
+    def test_rail_keeps_only_largest_component(self):
+        # RAIL is strict: a smaller rail component is dropped even though it is a valid local network.
+        nodes = _mk_nodes(bike=[0, 1], rail=[2, 3, 4, 5, 6], stations=[])
+        edges = pd.DataFrame(
+            _bidir(0, 1, "bike", self._OVER)
+            + _bidir(2, 3, "rail", 40.0)
+            + _bidir(3, 4, "rail", 40.0)  # big rail comp {2,3,4}
+            + _bidir(5, 6, "rail", 5.0),  # small rail comp {5,6} → dropped
+            columns=_EDGE_COLS,
+        )
+        surviving = set(bd._prune_components(nodes_df=nodes, edges_df=edges)[0]["osmid"])
+        assert {2, 3, 4} <= surviving and {5, 6}.isdisjoint(surviving)
+
+    @pytest.mark.parametrize("station_on_big_rail", [True, False])
+    def test_station_follows_its_rail_component(self, station_on_big_rail):  # noqa: ANN001
+        # A station (rail node -1, wired by a RAIL link) survives IFF its rail component survives —
+        # regardless of its bike entrance. Big rail comp {2,3,6,7} is kept, small comp {4,5} is dropped.
+        # station_on_big_rail=True → station links to 2 (kept); False → links to 4 (dropped).
+        nodes = _mk_nodes(bike=[0, 1], rail=[2, 3, 4, 5, 6, 7], stations=[-1])
+        link_target = 2 if station_on_big_rail else 4
+        edges = pd.DataFrame(
+            _bidir(0, 1, "bike", self._OVER)  # big bike comp (kept)
+            + _bidir(2, 3, "rail", 40.0)
+            + _bidir(3, 6, "rail", 40.0)
+            + _bidir(6, 7, "rail", 40.0)  # big rail comp {2,3,6,7} → kept
+            + _bidir(4, 5, "rail", 5.0)  # small rail comp {4,5} → dropped (even with station it's 3<4)
+            + _bidir(-1, link_target, "rail", 0.05)  # station's RAIL link to one comp
+            + _bidir(0, -1, "station", 0.1),  # entrance (kept bike node 0) ↔ station
+            columns=_EDGE_COLS,
+        )
+        kept_nodes, kept_edges = bd._prune_components(nodes_df=nodes, edges_df=edges)
+        surviving = set(kept_nodes["osmid"])
+        n_station_edges = int((kept_edges["mode"] == "station").sum())
+        if station_on_big_rail:
+            assert -1 in surviving and n_station_edges == 2  # station + both station-edge dirs kept
+        else:
+            assert -1 not in surviving and n_station_edges == 0  # dropped with its small rail comp
+
+    @pytest.mark.parametrize(
+        ("nodes", "edges", "match"),
+        [
+            (_mk_nodes(bike=[0, 1], rail=[], stations=[]), _bidir(0, 1, "bike", _OVER), "no rail edges"),
+            (_mk_nodes(bike=[], rail=[0, 1], stations=[]), _bidir(0, 1, "rail", 40.0), "no bike edges"),
+        ],
     )
-    with pytest.raises(ValueError, match="components"):
-        bd._validate_connectivity(out_dir=oneway_dir)
+    def test_empty_layer_raises(self, nodes, edges, match):  # noqa: ANN001
+        # Both bike AND rail are mandatory — an empty layer is a corrupt build → fail loud.
+        with pytest.raises(ValueError, match=match):
+            bd._prune_components(nodes_df=nodes, edges_df=pd.DataFrame(edges, columns=_EDGE_COLS))
 
 
 def test_assert_all_regions_complete_fails_loud(monkeypatch, tmp_path):
