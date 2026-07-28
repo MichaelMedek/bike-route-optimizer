@@ -20,7 +20,7 @@ from bike_router.builder import (
     BIKE_LAYER,
     RAIL_LAYER,
     _merge_bike_rail,
-    _nearest_track,
+    _nearest_tracks,
     _network_graph,
     _open_osm,
     _station_entrances,
@@ -631,38 +631,59 @@ def test_merge_drops_station_off_rail_and_counts_only_kept():
     assert names == {"OnRail"} and "OffRail" not in names  # OffRail dropped entirely
 
 
-class TestNearestTrack:
-    """_nearest_track snaps a point to the nearest track EDGE, returning (endpoint_node, node_dist_m,
-    line_dist_m). line_dist is the TRUE perpendicular distance to the rail LINE (the on-network gate);
-    node_dist is to the edge's nearer endpoint (the wired RAIL-edge length). Exercised on straight
-    segments, offsets, endpoints, and the no-geometry fallback with reproduced real distances.
+class TestNearestTracks:
+    """_nearest_tracks snaps MANY points to their nearest track EDGE in ONE vectorized nearest_edges
+    call, returning per point (endpoint_node, node_dist_m, line_dist_m). line_dist is the TRUE
+    perpendicular distance to the rail LINE (on-network gate); node_dist is to the edge's nearer endpoint
+    (wired RAIL-edge length). The query runs on a PROJECTED graph (Euclidean nearest_edges mis-picks on
+    lat/lon at ~48°N). Exercised on straight segments, offsets, endpoints, and endpoint selection.
     """
+
+    @staticmethod
+    def _snap(rail, lat, lon):  # noqa: ANN001, ANN205
+        import osmnx as ox
+
+        proj = ox.projection.project_graph(rail)
+        return _nearest_tracks(rail_graph=rail, rail_proj=proj, lats=np.array([lat]), lons=np.array([lon]))[0]
 
     def test_midpoint_of_long_segment_line_dist_near_zero(self):
         # Station on the line midway between two far-apart nodes: on the LINE (line_dist≈0) but ~half the
         # segment from either node (node_dist large) — the exact consolidation-thinning case.
         rail = _synth_rail_graph([[(48.0, 8.00), (48.0, 8.02)]])  # ~1.5 km segment, two nodes
-        node, node_dist, line_dist = _nearest_track(rail_graph=rail, lat=48.0, lon=8.01)  # midpoint
+        node, node_dist, line_dist = self._snap(rail, 48.0, 8.01)  # midpoint
         assert line_dist < 5.0  # on the line
         assert 600 < node_dist < 900  # ~half of ~1.5 km to the nearer endpoint
         assert node in rail.nodes
 
     def test_at_endpoint_both_distances_near_zero(self):
         rail = _synth_rail_graph([[(48.0, 8.00), (48.0, 8.02)]])
-        _node, node_dist, line_dist = _nearest_track(rail_graph=rail, lat=48.0, lon=8.00)  # on node
+        _node, node_dist, line_dist = self._snap(rail, 48.0, 8.00)  # on node
         assert node_dist < 5.0 and line_dist < 5.0
 
     def test_perpendicular_offset_sets_line_dist(self):
         # A point offset NORTH of the line: line_dist = the perpendicular offset (~111 m per 0.001° lat).
         rail = _synth_rail_graph([[(48.0, 8.00), (48.0, 8.02)]])
-        _node, _node_dist, line_dist = _nearest_track(rail_graph=rail, lat=48.001, lon=8.01)  # 0.001° N
+        _node, _node_dist, line_dist = self._snap(rail, 48.001, 8.01)  # 0.001° N
         assert 100 < line_dist < 125  # ~111 m
 
     def test_picks_nearer_endpoint(self):
         # Station near the 8.00 end → returns that endpoint (smaller node_dist), not the far one.
         rail = _synth_rail_graph([[(48.0, 8.00), (48.0, 8.02)]])
-        node, _node_dist, _line_dist = _nearest_track(rail_graph=rail, lat=48.0, lon=8.002)
+        node, _node_dist, _line_dist = self._snap(rail, 48.0, 8.002)
         assert abs(rail.nodes[node]["x"] - 8.00) < abs(rail.nodes[node]["x"] - 8.02)
+
+    def test_vectorized_matches_per_point(self):
+        # One call for MANY points returns the SAME result as snapping each individually (correctness of
+        # the vectorized path, which is ~500× faster than a per-point loop).
+        import osmnx as ox
+
+        rail = _synth_rail_graph([[(48.0, 8.00), (48.0, 8.02), (48.0, 8.04)]])
+        proj = ox.projection.project_graph(rail)
+        lats = np.array([48.0, 48.0, 48.001])
+        lons = np.array([8.005, 8.03, 8.01])
+        batch = _nearest_tracks(rail_graph=rail, rail_proj=proj, lats=lats, lons=lons)
+        each = [self._snap(rail, la, lo) for la, lo in zip(lats, lons, strict=True)]
+        assert [b[0] for b in batch] == [e[0] for e in each]  # same endpoint nodes
 
 
 def test_stage_pbf_no_bbox_copies_verbatim(tmp_path):

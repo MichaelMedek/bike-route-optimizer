@@ -19,6 +19,7 @@ import networkx as nx
 import numpy as np
 import osmnx as ox
 import pandas as pd
+import pyproj
 from pyrosm import OSM
 from shapely import from_wkt, to_wkt
 from shapely.geometry import LineString, Point
@@ -186,34 +187,46 @@ def _station_entrances(
     return [(int(node_ids[i]), float(dists[i])) for i in nearest]
 
 
-def _nearest_track(*, rail_graph: nx.MultiDiGraph, lat: float, lon: float) -> tuple[int, float, float]:
-    """Snap (lat, lon) to the nearest track EDGE. Returns (endpoint_node, node_dist_m, line_dist_m).
+def _nearest_tracks(
+    *, rail_graph: nx.MultiDiGraph, rail_proj: nx.MultiDiGraph, lats: "np.ndarray", lons: "np.ndarray"
+) -> list[tuple[int, float, float]]:
+    """Snap MANY (lat, lon) points to their nearest track EDGE. Per point: (endpoint_node, node_dist_m,
+    line_dist_m). ONE vectorized ``nearest_edges`` call — a per-point loop rebuilds the R-tree each time
+    (~500× slower, minutes per region).
 
-    ``line_dist_m`` = TRUE perpendicular distance to the rail LINE (used to gate on-network membership —
-    consolidation thins nodes, so a node-distance gate would falsely orphan a station the line passes
-    within metres of). ``endpoint_node`` = the edge's nearer endpoint, with ``node_dist_m`` = the RAIL
-    edge length used to wire the station to it (station is kept at its raw position, never moved).
+    The query runs on the PROJECTED graph (Euclidean ``nearest_edges`` mis-picks on lat/lon at ~48°N, 1°
+    lon ≈ 0.67° lat). Returned (u, v, key) index the SAME node ids in the lat/lon ``rail_graph``, where
+    distances use haversine. ``line_dist_m`` = perpendicular distance to the rail LINE (on-network gate);
+    ``node_dist_m`` = to the nearer endpoint (wired RAIL-edge length). Stations keep their raw position.
     """
-    u, v, key = ox.distance.nearest_edges(rail_graph, X=lon, Y=lat)
-    node = min(
-        (u, v),
-        key=lambda t: haversine_distance_m(
-            lat_a=lat, lon_a=lon, lat_b=rail_graph.nodes[t]["y"], lon_b=rail_graph.nodes[t]["x"]
-        ),
-    )
-    node_dist = haversine_distance_m(
-        lat_a=lat, lon_a=lon, lat_b=rail_graph.nodes[node]["y"], lon_b=rail_graph.nodes[node]["x"]
-    )
-    # Perpendicular distance to the edge's polyline (or its straight u–v segment if no geometry).
-    data = rail_graph.get_edge_data(u, v)[key]
-    geom = data.get("geometry")
-    if geom is None:
-        geom = LineString(
-            [(rail_graph.nodes[u]["x"], rail_graph.nodes[u]["y"]), (rail_graph.nodes[v]["x"], rail_graph.nodes[v]["y"])]
+    tr = pyproj.Transformer.from_crs("EPSG:4326", rail_proj.graph["crs"], always_xy=True)
+    px, py = tr.transform(lons, lats)  # vectorized reprojection
+    edges = ox.distance.nearest_edges(
+        rail_proj, X=np.asarray(px), Y=np.asarray(py)
+    )  # ONE R-tree query → array of (u,v,k)
+    results: list[tuple[int, float, float]] = []
+    for (u, v, key), lat, lon in zip(edges, lats, lons, strict=True):
+        node = min(
+            (u, v),
+            key=lambda t: haversine_distance_m(
+                lat_a=lat, lon_a=lon, lat_b=rail_graph.nodes[t]["y"], lon_b=rail_graph.nodes[t]["x"]
+            ),
         )
-    proj, _pt = nearest_points(geom, Point(lon, lat))
-    line_dist = haversine_distance_m(lat_a=lat, lon_a=lon, lat_b=proj.y, lon_b=proj.x)
-    return int(node), node_dist, line_dist
+        node_dist = haversine_distance_m(
+            lat_a=lat, lon_a=lon, lat_b=rail_graph.nodes[node]["y"], lon_b=rail_graph.nodes[node]["x"]
+        )
+        geom = rail_graph.get_edge_data(u, v)[key].get("geometry")
+        if geom is None:
+            geom = LineString(
+                [
+                    (rail_graph.nodes[u]["x"], rail_graph.nodes[u]["y"]),
+                    (rail_graph.nodes[v]["x"], rail_graph.nodes[v]["y"]),
+                ]
+            )
+        proj, _pt = nearest_points(geom, Point(lon, lat))
+        line_dist = haversine_distance_m(lat_a=lat, lon_a=lon, lat_b=proj.y, lon_b=proj.x)
+        results.append((int(node), node_dist, line_dist))
+    return results
 
 
 def _merge_bike_rail(bike_graph: nx.MultiDiGraph, rail_graph: nx.MultiDiGraph, osm: OSM) -> int:
@@ -246,15 +259,24 @@ def _merge_bike_rail(bike_graph: nx.MultiDiGraph, rail_graph: nx.MultiDiGraph, o
     bike_graph.add_nodes_from(rail_graph.nodes(data=True))
     bike_graph.add_edges_from(rail_graph.edges(keys=True, data=True))
 
-    # Assign each station a synthetic node id below the OSM id range so it can't clash. Elevation is
-    # baked later by the single enrich_elevations pass (with the track nodes), not here.
-    have_track = rail_graph.number_of_nodes() > 0
+    # Project the (relabelled) rail graph ONCE and snap ALL stations to their nearest track edge in ONE
+    # vectorized nearest_edges call (a per-station loop rebuilds the R-tree each time — minutes/region).
+    rail_proj = ox.projection.project_graph(rail_graph) if rail_graph.number_of_nodes() else None
+    if rail_proj is not None:
+        st_lats = np.array([lat for _n, lat, _lon in stations])
+        st_lons = np.array([lon for _n, _lat, lon in stations])
+        snaps: list[tuple[int, float, float] | None] = list(
+            _nearest_tracks(rail_graph=rail_graph, rail_proj=rail_proj, lats=st_lats, lons=st_lons)
+        )
+    else:
+        snaps = [None] * len(stations)  # station-only region (no track): wire bike entrances only
+
     n_wired = 0
-    for station_id, (name, lat, lon) in enumerate(stations, start=1):
+    for station_id, ((name, lat, lon), snap) in enumerate(zip(stations, snaps, strict=True), start=1):
         # A station|halt point off the routable-rail network (>STATION_RADIUS_M by TRUE point-to-line
         # distance) is a tram/funicular/park stop we don't route on — DROP it (logged), don't orphan.
-        if have_track:
-            track_node, node_dist, line_dist = _nearest_track(rail_graph=rail_graph, lat=lat, lon=lon)
+        if snap is not None:
+            track_node, node_dist, line_dist = snap
             if line_dist > RailConfig.STATION_RADIUS_M:
                 logger.info(f"  station dropped (off rail): {name!r} — {line_dist:.0f} m to nearest rail line")
                 continue
@@ -262,7 +284,7 @@ def _merge_bike_rail(bike_graph: nx.MultiDiGraph, rail_graph: nx.MultiDiGraph, o
         bike_graph.add_node(node_id, x=lon, y=lat, node_type=NodeType.RAIL, station_name=name)
         # Wire the station (kept at its RAW position) onto the rail graph via the nearer endpoint of its
         # nearest track EDGE — gated on point-to-LINE distance, not node distance (consolidation thins nodes).
-        if have_track:
+        if snap is not None:
             bike_graph.add_edge(node_id, int(track_node), length=node_dist, mode=Mode.RAIL)
             bike_graph.add_edge(int(track_node), node_id, length=node_dist, mode=Mode.RAIL)
         # Declare the nearest N bike nodes its entrances; each STATION edge costs straight-line length
