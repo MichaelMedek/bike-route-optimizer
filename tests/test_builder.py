@@ -342,7 +342,7 @@ def _bike_graph(nodes: list[tuple[int, float, float]], edges: list[tuple[int, in
     """A tagged bike graph from (id, lat, lon) nodes and bidirectional (a, b) edges."""
     graph = nx.MultiDiGraph(crs="EPSG:4326")
     for node_id, lat, lon in nodes:
-        graph.add_node(node_id, x=lon, y=lat, elevation=100.0, node_type=NodeType.BIKE)
+        graph.add_node(node_id, x=lon, y=lat, elevation=100.0, node_type=NodeType.BIKE, station_name=None)
     for a, b in edges:
         graph.add_edge(a, b, length=40.0, mode=Mode.BIKE)
         graph.add_edge(b, a, length=40.0, mode=Mode.BIKE)

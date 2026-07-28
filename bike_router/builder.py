@@ -155,14 +155,16 @@ def _station_points(osm: OSM) -> list[tuple[str, float, float]]:
 
 
 def _tag_layer(graph: nx.MultiDiGraph, *, mode: Mode, node_type: NodeType) -> None:
-    """Stamp every edge's ``mode`` and every node's ``node_type`` in place (single source of truth).
+    """Stamp every edge's ``mode`` and every node's ``node_type`` + ``station_name`` (single source of truth).
 
-    Used for both layers via build_layer_graph. Station nodes/edges are stamped in _merge_bike_rail.
+    ``station_name=None`` on ALL layer nodes keeps the attribute present on every node (real station
+    names are stamped later in _merge_bike_rail) so graph_to_tables can read it strictly.
     """
     for _u, _v, _k, data in graph.edges(keys=True, data=True):
         data["mode"] = mode
     for _node, data in graph.nodes(data=True):
         data["node_type"] = node_type
+        data["station_name"] = None
 
 
 def _station_entrances(

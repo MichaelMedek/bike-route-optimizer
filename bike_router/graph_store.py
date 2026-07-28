@@ -341,7 +341,7 @@ def graph_to_tables(graph: nx.MultiDiGraph) -> tuple[pd.DataFrame, pd.DataFrame]
             "lon": float(d["x"]),  # x = longitude
             "elevation_m": float(d["elevation"]),
             "node_type": str(d["node_type"]),  # internal invariant: builder types every node
-            "station_name": d.get("station_name") if isinstance(d.get("station_name"), str) else None,
+            "station_name": d["station_name"],  # internal invariant: str for stations, None otherwise
         }
         for n, d in graph.nodes(data=True)
     ]
