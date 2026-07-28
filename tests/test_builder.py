@@ -12,7 +12,6 @@ from pathlib import Path
 import geopandas as gpd
 import networkx as nx
 import numpy as np
-import osmnx as ox
 import pyrosm
 import pytest
 from shapely.geometry import Point
@@ -21,6 +20,7 @@ from bike_router.builder import (
     BIKE_LAYER,
     RAIL_LAYER,
     _merge_bike_rail,
+    _nearest_track,
     _network_graph,
     _open_osm,
     _station_entrances,
@@ -355,20 +355,23 @@ def _bike_graph(nodes: list[tuple[int, float, float]], edges: list[tuple[int, in
 def test_layer_specs_differ_only_in_declared_config():
     # The whole point of the refactor: bike and rail are ONE pipeline; only LayerSpec fields differ.
     assert BIKE_LAYER.custom_filter is None and BIKE_LAYER.surface_allowlist is True
-    assert RAIL_LAYER.custom_filter == '["railway"~"rail"]' and RAIL_LAYER.surface_allowlist is False
+    assert (
+        RAIL_LAYER.custom_filter == '["railway"~"^(rail|light_rail|narrow_gauge)$"]'
+        and RAIL_LAYER.surface_allowlist is False
+    )
     assert BIKE_LAYER.mode == Mode.BIKE and BIKE_LAYER.node_type == NodeType.BIKE
     assert RAIL_LAYER.mode == Mode.RAIL and RAIL_LAYER.node_type == NodeType.RAIL
 
 
-def test_build_layer_graph_bike_is_roads_only_one_component():
-    # BIKE via the shared build_layer_graph: only highway edges (zero railway), tagged BIKE, and the
-    # output is exactly ONE weakly-connected component (consolidate + largest-component guarantee it).
+def test_build_layer_graph_bike_is_roads_only_all_components_kept():
+    # BIKE via the shared build_layer_graph: only highway edges (zero railway), tagged BIKE. It keeps
+    # ALL components (a region is a clip — connectivity truncation is global, in Phase 3), so >1 is fine.
     g = build_layer_graph(osm=_open_osm(pbf_path=_TEST_PBF), layer=BIKE_LAYER, tolerance_m=25.0)
     assert g.number_of_edges() > 0
     assert all(d["mode"] == Mode.BIKE for _u, _v, _k, d in g.edges(keys=True, data=True))
     assert all(d["node_type"] == NodeType.BIKE for _n, d in g.nodes(data=True))
     assert all(d.get("railway") is None for _u, _v, _k, d in g.edges(keys=True, data=True))  # no rail leaked
-    assert nx.number_weakly_connected_components(g) == 1
+    assert nx.number_weakly_connected_components(g) >= 1  # NOT truncated per-region anymore
 
 
 def test_rail_layer_forms_one_connected_network_on_real_fixture():
@@ -389,7 +392,9 @@ def test_filter_proof_rail_only_rail_bike_only_roads_on_raw_tags():
     # railway=rail ways (never a highway road — the OOM regression); the bike preset yields ONLY
     # highway roads (never a railway). Symmetric, and inspects the actual OSM tags the query returned.
     osm = _open_osm(pbf_path=_TEST_PBF)
-    rail_raw = _network_graph(osm=osm, custom_filter='["railway"~"rail"]', filter_type="keep")
+    rail_raw = _network_graph(
+        osm=osm, custom_filter='["railway"~"^(rail|light_rail|narrow_gauge)$"]', filter_type="keep"
+    )
     rail_vals = {d.get("railway") for _u, _v, _k, d in rail_raw.edges(keys=True, data=True)}
     assert rail_vals == {"rail"}, f"rail filter must return ONLY railway=rail, got {rail_vals}"
     assert all(d.get("highway") is None for _u, _v, _k, d in rail_raw.edges(keys=True, data=True))  # no roads
@@ -405,11 +410,10 @@ def test_build_layer_graph_scopes_via_spy_one_shared_path():
     # differing only by the filter the LayerSpec carries.
     spy = _SpyOSM()
     build_layer_graph(osm=spy, layer=BIKE_LAYER, tolerance_m=25.0)
-    with pytest.raises(ValueError, match="no nodes"):  # toy-pbf rail collapses at consolidation (expected)
-        build_layer_graph(osm=spy, layer=RAIL_LAYER, tolerance_m=25.0)
+    build_layer_graph(osm=spy, layer=RAIL_LAYER, tolerance_m=25.0)
     assert spy.network_calls == [
         ("cycling", None, None),  # bike: preset selects ways
-        ("cycling", '["railway"~"rail"]', "keep"),  # rail: bracket filter selects ways
+        ("cycling", '["railway"~"^(rail|light_rail|narrow_gauge)$"]', "keep"),  # rail: bracket filter selects ways
     ]
     assert spy.to_graph_bidirectional == [True, True]  # both forced bidirectional
 
@@ -464,11 +468,11 @@ def _svg_invariant_holds(graph: nx.MultiDiGraph) -> bool:
 def test_merge_wires_station_edges_and_keeps_rail_bidirectional():
     # SVG contract: independent bike graph + rail track graph merged only at stations. Station is a
     # SEPARATE rail node; bike entrance ↔ station is a STATION edge; track stays RAIL↔RAIL bidirectional.
-    bike = _bike_graph([(100, 48.0, 8.001)], [])  # one bike node ~74 m E of station A
+    bike = _bike_graph([(100, 48.0, 8.001), (101, 48.0, 8.051)], [])  # a bike node near EACH station A, B
     rail = _synth_rail_graph([[(48.0, 8.00), (48.0, 8.025), (48.0, 8.05)]])  # track through A..B
     stations = gpd.GeoDataFrame({"name": ["A", "B"]}, geometry=[Point(8.00, 48.0), Point(8.05, 48.0)], crs="EPSG:4326")
     n = _merge_bike_rail(bike_graph=bike, rail_graph=rail, osm=_FakeOSM(stations=stations))
-    assert n == 2  # two stations
+    assert n == 2  # two stations, both kept (on rail + each has a bike entrance)
     modes = {d["mode"] for _u, _v, d in bike.edges(data=True)}
     assert Mode.STATION in modes and Mode.RAIL in modes
     # each station is a SEPARATE rail node (negative id, RAIL type)
@@ -499,6 +503,34 @@ def test_merge_leaves_track_and_station_nodes_for_later_elevation_bake():
     assert all("elevation" in d for _n, d in bike.nodes(data=True))  # ALL nodes now have it
     nodes_df, _edges_df = graph_to_tables(graph=bike)  # the call that KeyError'd before
     assert len(nodes_df) == bike.number_of_nodes()
+
+
+def test_merge_wires_station_when_track_nodes_far_but_line_near():
+    # REGRESSION (63% of stations orphaned): the rail LINE passes right by the station, but its nearest
+    # track NODE is >200 m away (consolidation thins track vertices). Snapping to the nearest NODE with a
+    # 200 m gate wrongly leaves the station with NO rail edge → unreachable by train. Snapping to the
+    # nearest EDGE (the line) must always wire it. Here track nodes are ~1.6 km apart; station sits on
+    # the line ~800 m from either node — a node-snap fails, an edge-snap succeeds.
+    bike = _bike_graph([(100, 48.0, 8.0)], [])  # a bike node AT the station (entrance in range)
+    rail = _synth_rail_graph([[(48.0, 7.99), (48.0, 8.01)]])  # ONE straight segment, nodes ~1.6 km apart
+    stations = gpd.GeoDataFrame({"name": ["Mid"]}, geometry=[Point(8.0, 48.0)], crs="EPSG:4326")  # midpoint
+    _merge_bike_rail(bike_graph=bike, rail_graph=rail, osm=_FakeOSM(stations=stations))
+    station_id = next(n for n, d in bike.nodes(data=True) if d.get("station_name") == "Mid")
+    rail_edges_at_station = [
+        (u, v) for u, v, d in bike.edges(data=True) if d["mode"] == Mode.RAIL and station_id in (u, v)
+    ]
+    assert rail_edges_at_station, "station on the rail line MUST get a RAIL edge even if nearest node >200 m"
+
+
+def test_merge_hard_fails_when_station_has_no_bike_entrance_in_range():
+    # FAIL FAST: a station with NO bike node within STATION_RADIUS_M is unreachable by bike — a corrupt
+    # build, never tolerable. The only bike node is ~1.6 km away (≫200 m) → _merge_bike_rail must raise.
+    far_lon = 8.0 + 0.02  # ~1.5 km east of the station at lon 8.0
+    bike = _bike_graph([(100, 48.0, far_lon)], [])
+    rail = _synth_rail_graph([[(48.0, 7.99), (48.0, 8.01)]])
+    stations = gpd.GeoDataFrame({"name": ["Lonely"]}, geometry=[Point(8.0, 48.0)], crs="EPSG:4326")
+    with pytest.raises(AssertionError, match="no bike node within"):
+        _merge_bike_rail(bike_graph=bike, rail_graph=rail, osm=_FakeOSM(stations=stations))
 
 
 def test_merge_links_multiple_nearby_entrances():
@@ -560,42 +592,77 @@ def test_station_entrances_empty_bike_graph_returns_none():
     assert got == []
 
 
-def test_merge_orphaned_station_dropped_by_scc():
-    # Stations with NO bike node in radius AND no track get zero edges → isolated island. The SCC
-    # filter (run after merge in build_region_graph) drops them, leaving zero dangling rail nodes.
+def test_merge_hard_fails_when_no_track_station_has_no_bike_entrance():
+    # No rail track at all + a station with NO bike node in range → the station cannot be reached by
+    # bike OR train. Per the invariant (every station MUST have a bike entrance), this HARD FAILS.
     bike = _bike_graph([(0, 48.0, 8.50), (1, 48.0, 8.5001), (2, 48.0005, 8.50005)], [(0, 1), (1, 2), (0, 2)])
-    stations = gpd.GeoDataFrame({"name": ["A", "B"]}, geometry=[Point(8.0, 48.0), Point(8.05, 48.0)], crs="EPSG:4326")
-    _merge_bike_rail(
-        bike_graph=bike,
-        rail_graph=_empty_rail_graph(),
-        osm=_FakeOSM(stations=stations),
-    )
-    assert not [u for u, v, d in bike.edges(data=True) if d["mode"] == Mode.STATION]  # no access edges
-    survivors = ox.truncate.largest_component(bike, strongly=True)
-    assert all(d["node_type"] == NodeType.BIKE for _n, d in survivors.nodes(data=True))  # island dropped
+    stations = gpd.GeoDataFrame({"name": ["Far"]}, geometry=[Point(8.0, 48.0)], crs="EPSG:4326")  # ~37 km away
+    with pytest.raises(AssertionError, match="no bike node within"):
+        _merge_bike_rail(bike_graph=bike, rail_graph=_empty_rail_graph(), osm=_FakeOSM(stations=stations))
 
 
-def test_merge_passthrough_station_without_road_access_is_kept():
-    # LEGITIMATE (user's rule): a mid-chain station B (A—B—C) where the train stops but NO road is
-    # near. B has zero station edges yet MUST survive — reachable bike→A→(rail)→B→(rail)→C→bike via
-    # bidirectional track. Only a rail island touching NO road ANYWHERE is dropped.
+def test_merge_hard_fails_on_midline_station_without_bike_entrance():
+    # Mid-chain station B (A—B—C on continuous track) that a train passes through but NO road reaches:
+    # under the invariant (EVERY station must have a bike entrance), this is a corrupt build → HARD FAIL,
+    # naming B. (Measured on real DACH data: 0/442 stations lack a bike node in range, so this never
+    # spuriously fires — but if a clip ever produced one, we refuse it rather than ship an unreachable stop.)
     bike = _bike_graph([(1000, 48.0, 8.0005), (1001, 48.0, 8.1005)], [(1000, 1001)])  # bike near A and C only
-    # continuous track through A(8.00) B(8.05) C(8.10); B has no bike node nearby
-    rail = _synth_rail_graph([[(48.0, 8.00), (48.0, 8.05), (48.0, 8.10)]])
+    rail = _synth_rail_graph([[(48.0, 8.00), (48.0, 8.05), (48.0, 8.10)]])  # continuous track A-B-C
     stations = gpd.GeoDataFrame(
         {"name": ["A", "B", "C"]}, geometry=[Point(8.0, 48.0), Point(8.05, 48.0), Point(8.10, 48.0)], crs="EPSG:4326"
     )
-    _merge_bike_rail(bike_graph=bike, rail_graph=rail, osm=_FakeOSM(stations=stations))
-    # Only A and C got bike access; B is a genuine no-road pass-through stop.
-    access = {
-        bike.nodes[u if u < 0 else v]["station_name"] for u, v, d in bike.edges(data=True) if d["mode"] == Mode.STATION
-    }
-    assert access == {"A", "C"}
-    survivors = ox.truncate.largest_component(bike, strongly=True)
-    survivor_stations = {d["station_name"] for _n, d in survivors.nodes(data=True) if d["node_type"] == NodeType.RAIL}
-    assert {"A", "B", "C"} <= survivor_stations  # pass-through B KEPT (bidirectional rail anchors it)
-    assert nx.is_strongly_connected(survivors)  # whole graph is ONE connected component
-    assert _svg_invariant_holds(survivors)
+    with pytest.raises(AssertionError, match="'B'.*no bike node within"):
+        _merge_bike_rail(bike_graph=bike, rail_graph=rail, osm=_FakeOSM(stations=stations))
+
+
+def test_merge_drops_station_off_rail_and_counts_only_kept():
+    # A station >200 m (point-to-line) from ANY track is off the routable-rail network (tram/funicular) →
+    # DROPPED (not orphaned): no node, no edges, and n_wired counts only the kept on-rail station.
+    bike = _bike_graph([(100, 48.0, 8.00), (101, 48.0, 8.05)], [])  # entrances for the on-rail station only
+    rail = _synth_rail_graph([[(48.0, 8.00), (48.0, 8.05)]])  # track along lat 48.0
+    stations = gpd.GeoDataFrame(
+        {"name": ["OnRail", "OffRail"]},
+        geometry=[Point(8.00, 48.0), Point(8.00, 48.5)],  # OffRail ~55 km NORTH of the line
+        crs="EPSG:4326",
+    )
+    n = _merge_bike_rail(bike_graph=bike, rail_graph=rail, osm=_FakeOSM(stations=stations))
+    assert n == 1  # only OnRail wired
+    names = {d["station_name"] for _n, d in bike.nodes(data=True) if d.get("station_name")}
+    assert names == {"OnRail"} and "OffRail" not in names  # OffRail dropped entirely
+
+
+class TestNearestTrack:
+    """_nearest_track snaps a point to the nearest track EDGE, returning (endpoint_node, node_dist_m,
+    line_dist_m). line_dist is the TRUE perpendicular distance to the rail LINE (the on-network gate);
+    node_dist is to the edge's nearer endpoint (the wired RAIL-edge length). Exercised on straight
+    segments, offsets, endpoints, and the no-geometry fallback with reproduced real distances.
+    """
+
+    def test_midpoint_of_long_segment_line_dist_near_zero(self):
+        # Station on the line midway between two far-apart nodes: on the LINE (line_dist≈0) but ~half the
+        # segment from either node (node_dist large) — the exact consolidation-thinning case.
+        rail = _synth_rail_graph([[(48.0, 8.00), (48.0, 8.02)]])  # ~1.5 km segment, two nodes
+        node, node_dist, line_dist = _nearest_track(rail_graph=rail, lat=48.0, lon=8.01)  # midpoint
+        assert line_dist < 5.0  # on the line
+        assert 600 < node_dist < 900  # ~half of ~1.5 km to the nearer endpoint
+        assert node in rail.nodes
+
+    def test_at_endpoint_both_distances_near_zero(self):
+        rail = _synth_rail_graph([[(48.0, 8.00), (48.0, 8.02)]])
+        _node, node_dist, line_dist = _nearest_track(rail_graph=rail, lat=48.0, lon=8.00)  # on node
+        assert node_dist < 5.0 and line_dist < 5.0
+
+    def test_perpendicular_offset_sets_line_dist(self):
+        # A point offset NORTH of the line: line_dist = the perpendicular offset (~111 m per 0.001° lat).
+        rail = _synth_rail_graph([[(48.0, 8.00), (48.0, 8.02)]])
+        _node, _node_dist, line_dist = _nearest_track(rail_graph=rail, lat=48.001, lon=8.01)  # 0.001° N
+        assert 100 < line_dist < 125  # ~111 m
+
+    def test_picks_nearer_endpoint(self):
+        # Station near the 8.00 end → returns that endpoint (smaller node_dist), not the far one.
+        rail = _synth_rail_graph([[(48.0, 8.00), (48.0, 8.02)]])
+        node, _node_dist, _line_dist = _nearest_track(rail_graph=rail, lat=48.0, lon=8.002)
+        assert abs(rail.nodes[node]["x"] - 8.00) < abs(rail.nodes[node]["x"] - 8.02)
 
 
 def test_stage_pbf_no_bbox_copies_verbatim(tmp_path):

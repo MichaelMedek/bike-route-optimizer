@@ -65,6 +65,23 @@ def test_consolidate_graph_merges_close_nodes():
     assert "4326" in str(result.graph.get("crs"))  # unprojected back to lat/lon
 
 
+def test_consolidate_graph_keeps_dead_ends(monkeypatch):
+    # REGRESSION: consolidation MUST pass dead_ends=True. dead_ends=False pruned dead-end nodes, which
+    # cascaded up low-connectivity rail branches → missing lines (Oberzent/Aglasterhausen) + orphaned
+    # stations. A dead-end is a valid destination (terminus, branch halt, cul-de-sac) and may stitch to
+    # a neighbour region later. osmnx only prunes in complex real topologies, so we assert the arg here.
+    captured = {}
+    real = graph_ops.ox.simplification.consolidate_intersections
+
+    def _spy(G, **kwargs):  # noqa: ANN001, ANN003, N803
+        captured.update(kwargs)
+        return real(G, **kwargs)
+
+    monkeypatch.setattr(graph_ops.ox.simplification, "consolidate_intersections", _spy)
+    consolidate_graph(graph=make_two_cluster_graph(), tolerance_m=25.0)
+    assert captured["dead_ends"] is True, "consolidation must KEEP dead-ends (valid destinations)"
+
+
 def test_enrich_elevations_populates_all_nodes():
     graph = nx.MultiDiGraph()
     graph.add_node(1, x=0.0, y=0.0)

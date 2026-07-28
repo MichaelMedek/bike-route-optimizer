@@ -72,8 +72,10 @@ def consolidate_graph(graph: nx.MultiDiGraph, tolerance_m: float) -> nx.MultiDiG
     """
     assert tolerance_m > 0, "consolidation tolerance must be positive"
     projected = ox.projection.project_graph(graph)
+    # dead_ends=True is ESSENTIAL: a dead-end is a valid destination (rail terminus) and
+    # may connect to a neighbour region during Phase-3 stitching.
     consolidated = ox.simplification.consolidate_intersections(
-        projected, tolerance=tolerance_m, rebuild_graph=True, dead_ends=False, reconnect_edges=True
+        projected, tolerance=tolerance_m, rebuild_graph=True, dead_ends=True, reconnect_edges=True
     )
     unprojected: nx.MultiDiGraph = ox.projection.project_graph(consolidated, to_latlong=True)
     logger.info(f"Consolidated ({tolerance_m:.0f}m): {graph.number_of_nodes()} → {unprojected.number_of_nodes()} nodes")

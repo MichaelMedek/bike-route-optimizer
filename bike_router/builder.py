@@ -21,6 +21,8 @@ import osmnx as ox
 import pandas as pd
 from pyrosm import OSM
 from shapely import from_wkt, to_wkt
+from shapely.geometry import LineString, Point
+from shapely.ops import nearest_points
 
 from bike_router.constants import (
     GraphConfig,
@@ -29,7 +31,7 @@ from bike_router.constants import (
     RailConfig,
 )
 from bike_router.elevation import DEMService
-from bike_router.geo import haversine_vec
+from bike_router.geo import haversine_distance_m, haversine_vec
 from bike_router.graph_ops import (
     bake_edge_geometry_elevations,
     consolidate_graph,
@@ -60,7 +62,9 @@ BIKE_LAYER = LayerSpec(
     custom_filter=None, filter_type=None, mode=Mode.BIKE, node_type=NodeType.BIKE, surface_allowlist=True
 )
 RAIL_LAYER = LayerSpec(
-    custom_filter='["railway"~"rail"]',
+    # rail + light_rail + narrow_gauge = routable passenger rail (S-Bahn/OEG regional lines). Anchored so
+    # "abandoned"/"disused" variants don't match; tram + funicular stay excluded (urban, not intercity).
+    custom_filter='["railway"~"^(rail|light_rail|narrow_gauge)$"]',
     filter_type="keep",
     mode=Mode.RAIL,
     node_type=NodeType.RAIL,
@@ -93,7 +97,7 @@ def _network_graph(osm: OSM, *, custom_filter: str | None, filter_type: str | No
         retain_all=True,
         force_bidirectional=True,
         network_type="cycling",  # explicit: keep_metadata=False strips the columns to_graph auto-detects from
-        simplify=True,  # contract degree-2 chains DURING build — never materialize the 13.7M raw-node graph
+        simplify=True,  # contract degree-2 chains DURING build — never materialize the raw-node graph
     )
     normalize_pyrosm_graph(graph=graph)
     return graph
@@ -182,6 +186,36 @@ def _station_entrances(
     return [(int(node_ids[i]), float(dists[i])) for i in nearest]
 
 
+def _nearest_track(*, rail_graph: nx.MultiDiGraph, lat: float, lon: float) -> tuple[int, float, float]:
+    """Snap (lat, lon) to the nearest track EDGE. Returns (endpoint_node, node_dist_m, line_dist_m).
+
+    ``line_dist_m`` = TRUE perpendicular distance to the rail LINE (used to gate on-network membership —
+    consolidation thins nodes, so a node-distance gate would falsely orphan a station the line passes
+    within metres of). ``endpoint_node`` = the edge's nearer endpoint, with ``node_dist_m`` = the RAIL
+    edge length used to wire the station to it (station is kept at its raw position, never moved).
+    """
+    u, v, key = ox.distance.nearest_edges(rail_graph, X=lon, Y=lat)
+    node = min(
+        (u, v),
+        key=lambda t: haversine_distance_m(
+            lat_a=lat, lon_a=lon, lat_b=rail_graph.nodes[t]["y"], lon_b=rail_graph.nodes[t]["x"]
+        ),
+    )
+    node_dist = haversine_distance_m(
+        lat_a=lat, lon_a=lon, lat_b=rail_graph.nodes[node]["y"], lon_b=rail_graph.nodes[node]["x"]
+    )
+    # Perpendicular distance to the edge's polyline (or its straight u–v segment if no geometry).
+    data = rail_graph.get_edge_data(u, v)[key]
+    geom = data.get("geometry")
+    if geom is None:
+        geom = LineString(
+            [(rail_graph.nodes[u]["x"], rail_graph.nodes[u]["y"]), (rail_graph.nodes[v]["x"], rail_graph.nodes[v]["y"])]
+        )
+    proj, _pt = nearest_points(geom, Point(lon, lat))
+    line_dist = haversine_distance_m(lat_a=lat, lon_a=lon, lat_b=proj.y, lon_b=proj.x)
+    return int(node), node_dist, line_dist
+
+
 def _merge_bike_rail(bike_graph: nx.MultiDiGraph, rail_graph: nx.MultiDiGraph, osm: OSM) -> int:
     """Merge the independent bike + rail graphs at stations; returns #stations.
 
@@ -215,20 +249,27 @@ def _merge_bike_rail(bike_graph: nx.MultiDiGraph, rail_graph: nx.MultiDiGraph, o
     # Assign each station a synthetic node id below the OSM id range so it can't clash. Elevation is
     # baked later by the single enrich_elevations pass (with the track nodes), not here.
     have_track = rail_graph.number_of_nodes() > 0
+    n_wired = 0
     for station_id, (name, lat, lon) in enumerate(stations, start=1):
+        # A station|halt point off the routable-rail network (>STATION_RADIUS_M by TRUE point-to-line
+        # distance) is a tram/funicular/park stop we don't route on — DROP it (logged), don't orphan.
+        if have_track:
+            track_node, node_dist, line_dist = _nearest_track(rail_graph=rail_graph, lat=lat, lon=lon)
+            if line_dist > RailConfig.STATION_RADIUS_M:
+                logger.info(f"  station dropped (off rail): {name!r} — {line_dist:.0f} m to nearest rail line")
+                continue
         node_id = -station_id
         bike_graph.add_node(node_id, x=lon, y=lat, node_type=NodeType.RAIL, station_name=name)
-        # Snap the station onto the track: a RAIL edge to its nearest track node (library nearest_nodes).
+        # Wire the station (kept at its RAW position) onto the rail graph via the nearer endpoint of its
+        # nearest track EDGE — gated on point-to-LINE distance, not node distance (consolidation thins nodes).
         if have_track:
-            track_node, snap_dist = ox.distance.nearest_nodes(rail_graph, X=lon, Y=lat, return_dist=True)
-            if snap_dist <= RailConfig.STATION_RADIUS_M:
-                bike_graph.add_edge(node_id, int(track_node), length=float(snap_dist), mode=Mode.RAIL)
-                bike_graph.add_edge(int(track_node), node_id, length=float(snap_dist), mode=Mode.RAIL)
+            bike_graph.add_edge(node_id, int(track_node), length=node_dist, mode=Mode.RAIL)
+            bike_graph.add_edge(int(track_node), node_id, length=node_dist, mode=Mode.RAIL)
         # Declare the nearest N bike nodes its entrances; each STATION edge costs straight-line length
         # + half the boarding charge (cost.py), so board + alight sum to a full boarding.
         entrances = _station_entrances(node_ids=bike_ids, node_lats=bike_lats, node_lons=bike_lons, lat=lat, lon=lon)
-        # FAIL FAST: a station with NO bike node in range is unreachable by bike — a build bug (bad
-        # clip/consolidation), never tolerable. Every station MUST produce ≥1 connector edge.
+        # FAIL FAST: a KEPT station with NO bike node in range is unreachable by bike — a build bug (bad
+        # clip/consolidation), never tolerable. Every kept station MUST produce ≥1 connector edge.
         assert entrances, (
             f"station {name!r} at ({lat:.5f}, {lon:.5f}) has no bike node within "
             f"{RailConfig.STATION_RADIUS_M:.0f} m — corrupt build, cannot reach the station by bike"
@@ -236,7 +277,8 @@ def _merge_bike_rail(bike_graph: nx.MultiDiGraph, rail_graph: nx.MultiDiGraph, o
         for bike_node, dist in entrances:
             bike_graph.add_edge(bike_node, node_id, length=dist, mode=Mode.STATION)
             bike_graph.add_edge(node_id, bike_node, length=dist, mode=Mode.STATION)
-    return len(stations)
+        n_wired += 1
+    return n_wired
 
 
 def build_region_graph(
@@ -247,8 +289,8 @@ def build_region_graph(
 ) -> nx.MultiDiGraph:
     """Build ONE region's consolidated bike+rail graph with baked elevation.
 
-    Bike and rail graphs are built by the SAME ``build_layer_graph`` (only ``LayerSpec`` differs),
-    each asserted to be exactly ONE component, and ONLY THEN merged by adding station link edges.
+    Bike and rail graphs are built by the SAME ``build_layer_graph`` (only ``LayerSpec`` differs), each
+    keeping ALL components (a region is a clip; global truncation is Phase 3), then merged at stations.
     ``pbf_path`` is parsed whole — any bbox clipping happens upstream (osmium pre-clip in Phase 2).
 
     Args:
