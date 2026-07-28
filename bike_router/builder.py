@@ -290,12 +290,15 @@ def _merge_bike_rail(bike_graph: nx.MultiDiGraph, rail_graph: nx.MultiDiGraph, o
         # Declare the nearest N bike nodes its entrances; each STATION edge costs straight-line length
         # + half the boarding charge (cost.py), so board + alight sum to a full boarding.
         entrances = _station_entrances(node_ids=bike_ids, node_lats=bike_lats, node_lons=bike_lons, lat=lat, lon=lon)
-        # FAIL FAST: a KEPT station with NO bike node in range is unreachable by bike — a build bug (bad
-        # clip/consolidation), never tolerable. Every kept station MUST produce ≥1 connector edge.
-        assert entrances, (
-            f"station {name!r} at ({lat:.5f}, {lon:.5f}) has no bike node within "
-            f"{RailConfig.STATION_RADIUS_M:.0f} m — corrupt build, cannot reach the station by bike"
-        )
+        # A station with NO bike node within radius is rail-reachable but has no bike entrance — WARN, not
+        # fail: measured on real data, rural halts (e.g. Langen(Han) 494 m, Debstedt 342 m) sit on the rail
+        # with the nearest MAPPED road 200–500 m away (OSM sparsity, not a build bug). It stays as a
+        # train-only stop; a neighbouring region may still supply an entrance after Phase-3 stitching.
+        if not entrances:
+            logger.warning(
+                f"station {name!r} at ({lat:.5f}, {lon:.5f}) has no bike node within "
+                f"{RailConfig.STATION_RADIUS_M:.0f} m — kept as train-only (no bike entrance)"
+            )
         for bike_node, dist in entrances:
             bike_graph.add_edge(bike_node, node_id, length=dist, mode=Mode.STATION)
             bike_graph.add_edge(node_id, bike_node, length=dist, mode=Mode.STATION)

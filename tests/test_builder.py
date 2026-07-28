@@ -522,15 +522,23 @@ def test_merge_wires_station_when_track_nodes_far_but_line_near():
     assert rail_edges_at_station, "station on the rail line MUST get a RAIL edge even if nearest node >200 m"
 
 
-def test_merge_hard_fails_when_station_has_no_bike_entrance_in_range():
-    # FAIL FAST: a station with NO bike node within STATION_RADIUS_M is unreachable by bike — a corrupt
-    # build, never tolerable. The only bike node is ~1.6 km away (≫200 m) → _merge_bike_rail must raise.
+def test_merge_warns_and_keeps_train_only_station_with_no_bike_entrance(caplog):
+    # A station on the rail line but with NO bike node within STATION_RADIUS_M (only bike ~1.6 km away)
+    # is kept as a TRAIN-ONLY stop with a WARNING — real rural halts (Langen(Han) 494 m) sit on rail with
+    # the nearest mapped road 200–500 m off (OSM sparsity, not a build bug). It still gets its RAIL edge.
+    import logging
+
     far_lon = 8.0 + 0.02  # ~1.5 km east of the station at lon 8.0
     bike = _bike_graph([(100, 48.0, far_lon)], [])
     rail = _synth_rail_graph([[(48.0, 7.99), (48.0, 8.01)]])
     stations = gpd.GeoDataFrame({"name": ["Lonely"]}, geometry=[Point(8.0, 48.0)], crs="EPSG:4326")
-    with pytest.raises(AssertionError, match="no bike node within"):
-        _merge_bike_rail(bike_graph=bike, rail_graph=rail, osm=_FakeOSM(stations=stations))
+    with caplog.at_level(logging.WARNING, logger="bike_router.builder"):
+        n = _merge_bike_rail(bike_graph=bike, rail_graph=rail, osm=_FakeOSM(stations=stations))
+    assert n == 1  # kept
+    assert any("no bike node within" in r.message for r in caplog.records)  # warned, not raised
+    station_id = next(nid for nid, d in bike.nodes(data=True) if d.get("station_name") == "Lonely")
+    assert [d for _u, _v, d in bike.edges(station_id, data=True) if d["mode"] == Mode.RAIL]  # on rail
+    assert not [d for _u, _v, d in bike.edges(station_id, data=True) if d["mode"] == Mode.STATION]  # no entrance
 
 
 def test_merge_links_multiple_nearby_entrances():
@@ -592,27 +600,34 @@ def test_station_entrances_empty_bike_graph_returns_none():
     assert got == []
 
 
-def test_merge_hard_fails_when_no_track_station_has_no_bike_entrance():
-    # No rail track at all + a station with NO bike node in range → the station cannot be reached by
-    # bike OR train. Per the invariant (every station MUST have a bike entrance), this HARD FAILS.
+def test_merge_no_track_station_without_entrance_warns_and_keeps(caplog):
+    # No rail track + a station with NO bike node in range: kept with a WARNING (train-only, and here
+    # not even on track). Exercises the snap-is-None + no-entrance path — no raise.
+    import logging
+
     bike = _bike_graph([(0, 48.0, 8.50), (1, 48.0, 8.5001), (2, 48.0005, 8.50005)], [(0, 1), (1, 2), (0, 2)])
     stations = gpd.GeoDataFrame({"name": ["Far"]}, geometry=[Point(8.0, 48.0)], crs="EPSG:4326")  # ~37 km away
-    with pytest.raises(AssertionError, match="no bike node within"):
-        _merge_bike_rail(bike_graph=bike, rail_graph=_empty_rail_graph(), osm=_FakeOSM(stations=stations))
+    with caplog.at_level(logging.WARNING, logger="bike_router.builder"):
+        n = _merge_bike_rail(bike_graph=bike, rail_graph=_empty_rail_graph(), osm=_FakeOSM(stations=stations))
+    assert n == 1 and any("no bike node within" in r.message for r in caplog.records)
 
 
-def test_merge_hard_fails_on_midline_station_without_bike_entrance():
-    # Mid-chain station B (A—B—C on continuous track) that a train passes through but NO road reaches:
-    # under the invariant (EVERY station must have a bike entrance), this is a corrupt build → HARD FAIL,
-    # naming B. (Measured on real DACH data: 0/442 stations lack a bike node in range, so this never
-    # spuriously fires — but if a clip ever produced one, we refuse it rather than ship an unreachable stop.)
+def test_merge_midline_station_without_entrance_warns_and_keeps(caplog):
+    # Mid-chain station B (A—B—C on continuous track) a train passes through but NO road reaches: kept as
+    # a train-only stop (on rail, no STATION edge) with a WARNING naming B — real rural halts do this.
+    import logging
+
     bike = _bike_graph([(1000, 48.0, 8.0005), (1001, 48.0, 8.1005)], [(1000, 1001)])  # bike near A and C only
     rail = _synth_rail_graph([[(48.0, 8.00), (48.0, 8.05), (48.0, 8.10)]])  # continuous track A-B-C
     stations = gpd.GeoDataFrame(
         {"name": ["A", "B", "C"]}, geometry=[Point(8.0, 48.0), Point(8.05, 48.0), Point(8.10, 48.0)], crs="EPSG:4326"
     )
-    with pytest.raises(AssertionError, match="'B'.*no bike node within"):
-        _merge_bike_rail(bike_graph=bike, rail_graph=rail, osm=_FakeOSM(stations=stations))
+    with caplog.at_level(logging.WARNING, logger="bike_router.builder"):
+        n = _merge_bike_rail(bike_graph=bike, rail_graph=rail, osm=_FakeOSM(stations=stations))
+    assert n == 3  # all three kept (all on rail)
+    assert any("'B'" in r.message and "no bike node within" in r.message for r in caplog.records)
+    b_id = next(nid for nid, d in bike.nodes(data=True) if d.get("station_name") == "B")
+    assert not [d for _u, _v, d in bike.edges(b_id, data=True) if d["mode"] == Mode.STATION]  # B train-only
 
 
 def test_merge_drops_station_off_rail_and_counts_only_kept():
