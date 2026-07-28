@@ -47,7 +47,7 @@ matplotlib.use("Agg")  # headless — must precede pyplot import
 import matplotlib.pyplot as plt  # noqa: E402
 from shapely import from_wkt  # noqa: E402
 
-from bike_router.builder import build_region_graph, dedup_by_geometry, reindex_region, remap_contiguous
+from bike_router.builder import build_region_graph_clipped, dedup_by_geometry, reindex_region, remap_contiguous
 from bike_router.constants import DEMConfig, GraphConfig, Mode, NodeType, OutputConfig, Palette
 from bike_router.elevation import DEMService
 from bike_router.graph_store import (
@@ -264,10 +264,11 @@ def _process_region(
     """Phase 2 worker: build ONE region, remap ids contiguous, write its artifact; return peak RSS (GB).
 
     Runs in a FRESH child (max_tasks_per_child=1) so the OS reclaims ALL its memory on exit — RSS
-    never accumulates across regions. Loads the DEM itself; only picklable args cross the boundary.
+    never accumulates across regions. The stage(osmium-clip)+build workflow lives in builder; only
+    picklable args cross the process boundary.
     """
     dem = DEMService(dem_path=DEMConfig.EURODEM_PATH)
-    graph = build_region_graph(pbf_path=pbf, dem=dem, tolerance_m=tolerance_m, bbox=bbox)
+    graph = build_region_graph_clipped(raw_pbf=pbf, dem=dem, tolerance_m=tolerance_m, bbox=bbox)
     nodes_df, edges_df = graph_to_tables(graph=graph)
     nodes_df, edges_df = remap_contiguous(nodes_df=nodes_df, edges_df=edges_df)
     region_dir = _REGIONS_DIR / region_key

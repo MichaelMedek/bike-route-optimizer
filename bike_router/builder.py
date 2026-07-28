@@ -7,6 +7,9 @@ Returns node/edge tables; the routing sliders decide if A* uses rail.
 """
 
 import logging
+import shutil
+import subprocess
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import cast
@@ -107,18 +110,9 @@ def build_layer_graph(osm: OSM, *, layer: LayerSpec, tolerance_m: float) -> nx.M
     return graph
 
 
-def _open_osm(pbf_path: Path, bbox: tuple[float, float, float, float] | None) -> OSM:
-    """Open a pbf, optionally clipped to a (west, south, east, north) bbox.
-
-    Clipping keeps region tests fast (parse only the corridor area) without
-    changing the build logic; full-country builds pass bbox=None.
-    """
-    if bbox is None:
-        return OSM(str(pbf_path))
-    from shapely.geometry import box
-
-    west, south, east, north = bbox
-    return OSM(str(pbf_path), bounding_box=box(west, south, east, north))
+def _open_osm(pbf_path: Path) -> OSM:
+    """Open a pbf for parsing. Bbox clipping (if any) happens upstream via osmium (see stage_pbf)."""
+    return OSM(str(pbf_path))
 
 
 def _station_points(osm: OSM) -> list[tuple[str, float, float]]:
@@ -222,7 +216,7 @@ def _merge_bike_rail(bike_graph: nx.MultiDiGraph, rail_graph: nx.MultiDiGraph, o
     return len(stations)
 
 
-def _assert_single_component(graph: nx.MultiDiGraph, *, label: str) -> None:
+def _assert_single_component(*, graph: nx.MultiDiGraph, label: str) -> None:
     """Fail fast unless the layer graph is exactly ONE weakly-connected component.
 
     Rail must be one network (every train reaches every other); bike must be one (no stranded
@@ -237,28 +231,27 @@ def build_region_graph(
     pbf_path: Path,
     dem: DEMService,
     tolerance_m: float,
-    bbox: tuple[float, float, float, float] | None = None,
 ) -> nx.MultiDiGraph:
     """Build ONE region's consolidated bike+rail graph with baked elevation.
 
     Bike and rail graphs are built by the SAME ``build_layer_graph`` (only ``LayerSpec`` differs),
     each asserted to be exactly ONE component, and ONLY THEN merged by adding station link edges.
+    ``pbf_path`` is parsed whole — any bbox clipping happens upstream (osmium pre-clip in Phase 2).
 
     Args:
-        pbf_path: Geofabrik .osm.pbf extract for the region.
+        pbf_path: Geofabrik .osm.pbf extract for the region (already clipped if a sub-region).
         dem: Loaded DEM sampler (node/station elevations are baked here).
         tolerance_m: Intersection consolidation radius (metres); 0 disables.
-        bbox: Optional (west, south, east, north) clip to speed up region tests.
     """
-    osm = _open_osm(pbf_path=pbf_path, bbox=bbox)
+    osm = _open_osm(pbf_path=pbf_path)
     name = pbf_path.name
-    logger.info(f"{name}: [0/6] osm loaded from {pbf_path} with {bbox=}")
+    logger.info(f"{name}: [0/6] osm loaded from {pbf_path}")
     # [1] BIKE and [2] RAIL — the identical build_layer_graph pipeline, only LayerSpec differs.
     graph = build_layer_graph(osm=osm, layer=BIKE_LAYER, tolerance_m=tolerance_m)
-    _assert_single_component(graph, label="bike")
+    _assert_single_component(graph=graph, label="bike")
     logger.info(f"{name}: [1/6] bike layer → {graph.number_of_nodes()} nodes (1 component)")
     rail_graph = build_layer_graph(osm=osm, layer=RAIL_LAYER, tolerance_m=tolerance_m)
-    _assert_single_component(rail_graph, label="rail")
+    _assert_single_component(graph=rail_graph, label="rail")
     logger.info(f"{name}: [2/6] rail layer → {rail_graph.number_of_nodes()} nodes (1 component)")
     # [3] MERGE: only now are the two single-component graphs joined by station link edges.
     n_stations = _merge_bike_rail(bike_graph=graph, rail_graph=rail_graph, osm=osm)
@@ -273,6 +266,48 @@ def build_region_graph(
         f"{name}: [6/6] done — {graph.number_of_nodes()} nodes, {graph.number_of_edges()} edges, {n_stations} stations"
     )
     return graph
+
+
+def stage_pbf(*, raw_pbf: Path, bbox: tuple[float, float, float, float] | None, staging_dir: Path) -> Path:
+    """Stage the parse-ready pbf into ``staging_dir`` and return its path (the ONE file the build reads).
+
+    ``osmium extract`` (C++, ~5 s, multi-core) pre-clips to the bbox with complete_ways so boundary-
+    crossing ways keep all nodes — the build then parses only the corridor instead of re-decoding the
+    whole country (the ~50-min-per-half cost). Whole regions (bbox=None) are copied as-is.
+    """
+    staged = staging_dir / raw_pbf.name  # single source of truth for the staged path
+    if bbox is None:
+        shutil.copy(raw_pbf, staged)
+        return staged
+    west, south, east, north = bbox
+    subprocess.run(  # noqa: S603 — osmium is a trusted, installed C++ tool, fixed args
+        [
+            "osmium",
+            "extract",
+            "-b",
+            f"{west},{south},{east},{north}",
+            "--strategy",
+            "complete_ways",
+            str(raw_pbf),
+            "-o",
+            str(staged),
+        ],
+        check=True,
+    )
+    return staged
+
+
+def build_region_graph_clipped(
+    *, raw_pbf: Path, dem: DEMService, tolerance_m: float, bbox: tuple[float, float, float, float] | None
+) -> nx.MultiDiGraph:
+    """Stage (osmium-clip if bbox, else copy) then build — the full clip+build workflow as one unit.
+
+    The clip runs to a temp dir that is auto-removed after parsing, so no staged pbf lingers. Returns
+    the same graph as ``build_region_graph`` on the (clipped) pbf.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        staged = stage_pbf(raw_pbf=raw_pbf, bbox=bbox, staging_dir=Path(tmp))
+        return build_region_graph(pbf_path=staged, dem=dem, tolerance_m=tolerance_m)
 
 
 def remap_contiguous(nodes_df: pd.DataFrame, edges_df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:

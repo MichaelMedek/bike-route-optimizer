@@ -26,9 +26,11 @@ from bike_router.builder import (
     _station_points,
     _tag_layer,
     build_layer_graph,
+    build_region_graph_clipped,
     dedup_by_geometry,
     reindex_region,
     remap_contiguous,
+    stage_pbf,
 )
 from bike_router.constants import Mode, NodeType, RailConfig
 from bike_router.geo import haversine_distance_m
@@ -60,7 +62,7 @@ class _SpyOSM:
     """
 
     def __init__(self) -> None:
-        self._real = _open_osm(pbf_path=_TEST_PBF, bbox=None)
+        self._real = _open_osm(pbf_path=_TEST_PBF)
         self.network_calls: list[tuple[str, object, object]] = []
         self.data_filters: list[dict] = []
         self.to_graph_bidirectional: list[bool] = []
@@ -360,7 +362,7 @@ def test_layer_specs_differ_only_in_declared_config():
 def test_build_layer_graph_bike_is_roads_only_one_component():
     # BIKE via the shared build_layer_graph: only highway edges (zero railway), tagged BIKE, and the
     # output is exactly ONE weakly-connected component (consolidate + largest-component guarantee it).
-    g = build_layer_graph(osm=_open_osm(pbf_path=_TEST_PBF, bbox=None), layer=BIKE_LAYER, tolerance_m=25.0)
+    g = build_layer_graph(osm=_open_osm(pbf_path=_TEST_PBF), layer=BIKE_LAYER, tolerance_m=25.0)
     assert g.number_of_edges() > 0
     assert all(d["mode"] == Mode.BIKE for _u, _v, _k, d in g.edges(keys=True, data=True))
     assert all(d["node_type"] == NodeType.BIKE for _n, d in g.nodes(data=True))
@@ -385,7 +387,7 @@ def test_filter_proof_rail_only_rail_bike_only_roads_on_raw_tags():
     # THE filter proof, on RAW tags (before tagging overwrites mode): the rail filter yields ONLY
     # railway=rail ways (never a highway road — the OOM regression); the bike preset yields ONLY
     # highway roads (never a railway). Symmetric, and inspects the actual OSM tags the query returned.
-    osm = _open_osm(pbf_path=_TEST_PBF, bbox=None)
+    osm = _open_osm(pbf_path=_TEST_PBF)
     rail_raw = _network_graph(osm=osm, custom_filter='["railway"~"rail"]', filter_type="keep")
     rail_vals = {d.get("railway") for _u, _v, _k, d in rail_raw.edges(keys=True, data=True)}
     assert rail_vals == {"rail"}, f"rail filter must return ONLY railway=rail, got {rail_vals}"
@@ -413,7 +415,7 @@ def test_build_layer_graph_scopes_via_spy_one_shared_path():
 
 def test_build_layer_graph_bike_edges_all_bidirectional():
     # force_bidirectional: every bike edge has its reverse (ride any road up OR down).
-    g = build_layer_graph(osm=_open_osm(pbf_path=_TEST_PBF, bbox=None), layer=BIKE_LAYER, tolerance_m=25.0)
+    g = build_layer_graph(osm=_open_osm(pbf_path=_TEST_PBF), layer=BIKE_LAYER, tolerance_m=25.0)
     directed = set(g.edges())
     assert directed and all((v, u) in directed for u, v in directed)
 
@@ -593,3 +595,59 @@ def test_merge_passthrough_station_without_road_access_is_kept():
     assert {"A", "B", "C"} <= survivor_stations  # pass-through B KEPT (bidirectional rail anchors it)
     assert nx.is_strongly_connected(survivors)  # whole graph is ONE connected component
     assert _svg_invariant_holds(survivors)
+
+
+def test_stage_pbf_no_bbox_copies_verbatim(tmp_path):
+    # bbox=None (whole region) → plain byte-for-byte copy into staging_dir, no osmium needed.
+    raw = tmp_path / "raw.osm.pbf"
+    raw.write_bytes(b"\x00PBF-BYTES\x01")
+    staging = tmp_path / "stage"
+    staging.mkdir()
+    staged = stage_pbf(raw_pbf=raw, bbox=None, staging_dir=staging)
+    assert staged == staging / "raw.osm.pbf"  # path derived once from the raw name
+    assert staged.read_bytes() == b"\x00PBF-BYTES\x01"  # verbatim copy
+
+
+def test_stage_pbf_bbox_invokes_osmium_extract(monkeypatch, tmp_path):
+    # bbox → shells out to `osmium extract` writing to the SAME path it returns (no drift).
+    from bike_router import builder
+
+    calls = []
+    monkeypatch.setattr(builder.subprocess, "run", lambda cmd, check: calls.append((cmd, check)))
+    staging = tmp_path / "stage"
+    staging.mkdir()
+    staged = stage_pbf(raw_pbf=tmp_path / "at.osm.pbf", bbox=(9.4, 46.3, 13.85, 49.1), staging_dir=staging)
+    assert staged == staging / "at.osm.pbf"
+    (cmd, check) = calls[0]
+    assert cmd[:3] == ["osmium", "extract", "-b"] and cmd[3] == "9.4,46.3,13.85,49.1"
+    assert "complete_ways" in cmd and check is True  # reference-complete + fail-fast
+    assert str(staged) in cmd  # osmium writes to exactly the returned path
+
+
+def test_build_region_graph_clipped_stages_then_builds(monkeypatch, tmp_path):
+    # The workflow: stage_pbf (into a temp dir) → build_region_graph on the STAGED path. Verify it
+    # stages with the given bbox and builds exactly what stage returned, temp dir gone afterward.
+    from bike_router import builder
+
+    staged_seen = {}
+    fake_graph = nx.MultiDiGraph()
+
+    def _fake_stage(*, raw_pbf, bbox, staging_dir):  # noqa: ANN001, ANN202
+        staged_seen["bbox"] = bbox
+        p = staging_dir / raw_pbf.name  # a real temp path inside the workflow's TemporaryDirectory
+        p.write_bytes(b"clipped")
+        staged_seen["dir"] = staging_dir
+        return p
+
+    def _fake_build(*, pbf_path, dem, tolerance_m):  # noqa: ANN001, ANN202
+        assert pbf_path.read_bytes() == b"clipped"  # builds the STAGED file, not the raw
+        return fake_graph
+
+    monkeypatch.setattr(builder, "stage_pbf", _fake_stage)
+    monkeypatch.setattr(builder, "build_region_graph", _fake_build)
+    out = build_region_graph_clipped(
+        raw_pbf=Path("/x/austria.osm.pbf"), dem=MockDEMService(), tolerance_m=25.0, bbox=(9.4, 46.3, 13.85, 49.1)
+    )
+    assert out is fake_graph
+    assert staged_seen["bbox"] == (9.4, 46.3, 13.85, 49.1)  # region bbox forwarded to the clip
+    assert not staged_seen["dir"].exists()  # TemporaryDirectory auto-removed after build

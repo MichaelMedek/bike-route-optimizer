@@ -59,18 +59,11 @@ def test_reindex_region_pure_offset():
     assert list(e2["from_node"]) == [100, 101] and list(e2["to_node"]) == [101, 102]
 
 
-def test_open_osm_without_bbox_returns_osm():
+def test_open_osm_returns_osm():
     import pyrosm
 
-    osm = _open_osm(pbf_path=pyrosm.get_data("test_pbf"), bbox=None)
-    assert osm is not None
-
-
-def test_open_osm_with_bbox_clips():
-    import pyrosm
-
-    osm = _open_osm(pbf_path=pyrosm.get_data("test_pbf"), bbox=(26.9, 60.5, 27.0, 60.6))
-    assert osm is not None  # constructed with a bounding box without error
+    osm = _open_osm(pbf_path=pyrosm.get_data("test_pbf"))
+    assert osm is not None  # bbox clipping moved upstream to osmium (stage_pbf); _open_osm just opens
 
 
 def test_assert_within_coverage_passes_and_fails(tmp_path):

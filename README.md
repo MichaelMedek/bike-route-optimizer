@@ -84,9 +84,12 @@ Every node is **exactly one** kind — a cycling node or a rail-station node, ne
 
 ## Preprocessing, publishing, and auto-download
 
-The routing graph is built once offline. The build bakes in elevation, so first download the full Europe-wide EuroDEM once (from [mapsforeurope.org](https://www.mapsforeurope.org/datasets/euro-dem)) and crop it to DACH. Then **one** script builds the graph in four phases: download the raw OpenStreetMap extracts (`.osm.pbf`, one per region); build each region **in isolation** (dropping unrideable surfaces, merging junctions within ~25 m, baking in DEM elevation, adding train links), freeing memory between regions so peak RAM stays bounded; combine them into one connected network; and validate cross-region connectivity. Each region is a standalone artifact flagged complete, so a re-run skips finished regions and resumes. Output is compact tiled map-data files; final dir must be empty first.
+The routing graph is built once offline. The build bakes in elevation, so first download the full Europe-wide EuroDEM once (from [mapsforeurope.org](https://www.mapsforeurope.org/datasets/euro-dem)) and crop it to DACH. Then **one** script builds the graph in four phases: download the raw OpenStreetMap extracts (`.osm.pbf`, one per region); build each region **in an isolated process** (osmium pre-clips sub-regions so only the needed corridor is parsed, then dropping unrideable surfaces, merging junctions within ~25 m, baking in DEM elevation, adding train links), so peak RAM stays bounded; combine them into one connected network; and validate cross-region connectivity. Each region is a standalone artifact flagged complete, so a re-run skips finished regions and resumes. Output is compact tiled map-data files; final dir must be empty first.
 
 ```bash
+# one-time: install the osmium CLI (build-only; pre-clips each region's pbf natively)
+brew install osmium-tool          # macOS  (Linux: apt-get install osmium-tool)
+
 # one-time: crop the full EuroDEM to DACH (writes data/region_dem.tif, the build's fixed input)
 python scripts/crop_dem_to_dach.py --input ~/Downloads/euro-dem-tif/data/eurodem/eurodem.tif
 
