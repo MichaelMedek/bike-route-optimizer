@@ -229,6 +229,17 @@ def _assert_split_overlaps(regions: list[Region]) -> None:
 _assert_split_overlaps(DACH_REGIONS)  # validate the split config at import — a bad split never runs
 
 
+def _pbf_dest(*, geofabrik_path: str) -> Path:
+    """Local cache path for a region's pbf (keyed by Geofabrik leaf name)."""
+    return _PBF_DIR / f"{split_geofabrik_path(geofabrik_path=geofabrik_path)}.osm.pbf"
+
+
+def _pbf_on_disk(*, geofabrik_path: str) -> bool:
+    """True if the region's pbf is already fully downloaded."""
+    dest = _pbf_dest(geofabrik_path=geofabrik_path)
+    return dest.exists() and dest.stat().st_size > 0
+
+
 def _download_pbf(*, geofabrik_path: str) -> Path:
     """Download a region's .osm.pbf if missing (atomic: temp + rename). Returns its path.
 
@@ -236,8 +247,8 @@ def _download_pbf(*, geofabrik_path: str) -> Path:
     A failed transfer unlinks its partial .tmp and re-raises so no orphan/partial lingers.
     """
     _PBF_DIR.mkdir(parents=True, exist_ok=True)
-    dest = _PBF_DIR / f"{split_geofabrik_path(geofabrik_path=geofabrik_path)}.osm.pbf"
-    if dest.exists() and dest.stat().st_size > 0:
+    dest = _pbf_dest(geofabrik_path=geofabrik_path)
+    if _pbf_on_disk(geofabrik_path=geofabrik_path):
         return dest
     url = f"{_GEOFABRIK}/{geofabrik_path}-latest.osm.pbf"
     tmp = dest.with_suffix(".pbf.tmp")
@@ -332,7 +343,6 @@ def _assert_staged_sizes_ok(*, regions: list[Region], pbfs: dict[str, Path], cli
         for region in tqdm(regions, desc="2/4 Preflight: staged sizes", unit="region"):
             staged = stage_pbf(raw_pbf=pbfs[region.geofabrik_path], bbox=cli_bbox or region.bbox, staging_dir=Path(tmp))
             size_mb = staged.stat().st_size / 1024 / 1024
-            logger.info(f"{region.key}: staged {size_mb:.0f} MB")
             if size_mb > _MAX_STAGED_PBF_MB:
                 oversized.append(f"{region.key} ({size_mb:.0f} MB)")
             staged.unlink()  # free the temp clip before staging the next (peak temp ≈ one clip)
@@ -499,10 +509,11 @@ def main(argv: list[str] | None = None) -> int:
 
     # Phase 1 — DOWNLOAD every distinct pbf up front (skip-if-present). Split halves share one pbf,
     # so dedup by geofabrik_path. Any failure aborts.
-    pbfs = {
-        gp: _download_region(geofabrik_path=gp)
-        for gp in tqdm(sorted({r.geofabrik_path for r in regions}), desc="1/4 Downloading pbfs", unit="pbf")
-    }
+    pbfs: dict[str, Path] = {}
+    for gp in tqdm(sorted({r.geofabrik_path for r in regions}), desc="1/4 Downloading pbfs", unit="pbf"):
+        if _pbf_on_disk(geofabrik_path=gp):
+            logger.info(f"{gp}: skipped, already on disk")
+        pbfs[gp] = _download_region(geofabrik_path=gp)
 
     # Phase 2 preflight — osmium-clip every to-build region to a temp file and HARD-FAIL if any
     # exceeds the MB ceiling, BEFORE the slow build loop (an oversized split is caught in seconds).

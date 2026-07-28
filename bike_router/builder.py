@@ -78,12 +78,14 @@ def _network_graph(osm: OSM, *, custom_filter: str | None, filter_type: str | No
     both directions (same length, opposite elevation delta) — a bike may ride any road up or down,
     and trains run both ways. ``network_type="cycling"`` only sets the (overridden) directionality.
     """
+    logger.info(f"    get_network (filter={custom_filter}) — parsing pbf ways/nodes ...")
     res = cast(
         "tuple[gpd.GeoDataFrame, gpd.GeoDataFrame] | None",
         osm.get_network(network_type="cycling", custom_filter=custom_filter, filter_type=filter_type, nodes=True),
     )
     assert res is not None, "pbf has no matching network"
     nodes, edges = res
+    logger.info(f"    get_network → {len(nodes)} nodes / {len(edges)} edges; building networkx graph ...")
     graph: nx.MultiDiGraph = osm.to_graph(
         nodes, edges, graph_type="networkx", osmnx_compatible=True, retain_all=True, force_bidirectional=True
     )
