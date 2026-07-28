@@ -100,12 +100,13 @@ def _network_graph(osm: OSM, *, custom_filter: str | None, filter_type: str | No
 
 
 def build_layer_graph(osm: OSM, *, layer: LayerSpec, tolerance_m: float) -> nx.MultiDiGraph:
-    """Build ONE fully-preprocessed, single-component layer graph for EITHER mode (bike or rail).
+    """Build ONE preprocessed layer graph for EITHER mode (bike or rail) — ALL components kept.
 
     THE one shared pipeline — no per-mode branches, only ``layer`` config differs: fetch ways (already
     degree-2 contracted by ``to_graph(simplify=True)``) → (bike only) drop non-rideable surfaces/
-    highways → consolidate junctions (``tolerance_m``) → keep the largest weakly-connected component →
-    tag mode/node_type. Per-step logs (prefixed by the layer's mode) trace the long fetch/consolidate gap.
+    highways → consolidate junctions (``tolerance_m``) → tag mode/node_type.
+    NOTE: this does NOT keep only the largest component — a region is a CLIP of a larger network.
+    Connectivity truncation happens ONCE globally in Phase 3, after all regions are combined and their seams dedup-stitched.
     """
     graph = _network_graph(osm=osm, custom_filter=layer.custom_filter, filter_type=layer.filter_type)
     logger.info(f"  {layer.mode}: fetched {graph.number_of_nodes()} simplified nodes")
@@ -115,8 +116,6 @@ def build_layer_graph(osm: OSM, *, layer: LayerSpec, tolerance_m: float) -> nx.M
     graph = consolidate_graph(graph=graph, tolerance_m=tolerance_m)
     logger.info(f"  {layer.mode}: consolidated → {graph.number_of_nodes()} nodes")
     assert graph.number_of_nodes() > 0
-    largest = max(nx.weakly_connected_components(graph), key=len)
-    graph = graph.subgraph(largest).copy()
     _tag_layer(graph=graph, mode=layer.mode, node_type=layer.node_type)
     return graph
 
@@ -233,16 +232,6 @@ def _merge_bike_rail(bike_graph: nx.MultiDiGraph, rail_graph: nx.MultiDiGraph, o
     return len(stations)
 
 
-def _assert_single_component(*, graph: nx.MultiDiGraph) -> None:
-    """Fail fast unless the layer graph is exactly ONE weakly-connected component.
-
-    Rail must be one network (every train reaches every other); bike must be one (no stranded
-    islands). build_layer_graph already keeps the largest component, so >1 here means a real bug.
-    """
-    n = nx.number_weakly_connected_components(graph) if graph.number_of_nodes() else 0
-    assert n == 1, f"graph must be exactly 1 component, got {n} — build invariant violated"
-
-
 def build_region_graph(
     *,
     pbf_path: Path,
@@ -262,26 +251,21 @@ def build_region_graph(
     """
     osm = _open_osm(pbf_path=pbf_path)
     name = pbf_path.name
-    logger.info(f"{name}: [0/6] osm loaded from {pbf_path}")
-    # [1] BIKE and [2] RAIL — the identical build_layer_graph pipeline, only LayerSpec differs.
+    logger.info(f"{name}: [1/6] osm loaded from {pbf_path}")
+    # [1] BIKE and [2] RAIL — the identical build_layer_graph pipeline, only LayerSpec differs. Neither
+    # is truncated to one component here: a region is a CLIP whose fringe connects via neighbours; the
+    # single global largest_component runs in Phase 3 after seams are stitched.
     graph = build_layer_graph(osm=osm, layer=BIKE_LAYER, tolerance_m=tolerance_m)
-    _assert_single_component(graph=graph)
-    logger.info(f"{name}: [1/6] bike layer → {graph.number_of_nodes()} nodes (1 component)")
+    logger.info(f"{name}: [2/6] bike layer → {graph.number_of_nodes()} nodes")
     rail_graph = build_layer_graph(osm=osm, layer=RAIL_LAYER, tolerance_m=tolerance_m)
-    _assert_single_component(graph=rail_graph)
-    logger.info(f"{name}: [2/6] rail layer → {rail_graph.number_of_nodes()} nodes (1 component)")
-    # [3] MERGE: only now are the two single-component graphs joined by station link edges.
+    logger.info(f"{name}: [3/6] rail layer → {rail_graph.number_of_nodes()} nodes")
+    # [3] MERGE: join the two graphs by station link edges.
     n_stations = _merge_bike_rail(bike_graph=graph, rail_graph=rail_graph, osm=osm)
-    logger.info(f"{name}: [3/6] merged {rail_graph.number_of_nodes()} rail nodes + {n_stations} stations")
+    logger.info(f"{name}: [4/6] merged {rail_graph.number_of_nodes()} rail nodes + {n_stations} stations")
     enrich_elevations(graph=graph, dem=dem)
-    logger.info(f"{name}: [4/6] baked node elevations")
+    logger.info(f"{name}: [5/6] baked node elevations")
     bake_edge_geometry_elevations(graph=graph, dem=dem)  # 3D vertices → inference needs no DEM
-    logger.info(f"{name}: [5/6] baked edge geometry elevations")
-    # SCC filter AFTER station wiring: guarantees ZERO dangling nodes in the written artifact.
-    graph = ox.truncate.largest_component(graph, strongly=True)
-    logger.info(
-        f"{name}: [6/6] done — {graph.number_of_nodes()} nodes, {graph.number_of_edges()} edges, {n_stations} stations"
-    )
+    logger.info(f"{name}: [6/6] baked edge geometry elevations")
     return graph
 
 
