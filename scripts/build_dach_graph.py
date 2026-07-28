@@ -61,6 +61,16 @@ from bike_router.graph_store import (
 
 logger = logging.getLogger("build_dach")
 
+# One log format for parent AND spawned workers (spawn children don't inherit the parent's config).
+_LOG_FORMAT = "%(asctime)s %(levelname)s %(name)s: %(message)s"
+_LOG_DATEFMT = "%H:%M:%S"
+
+
+def _configure_logging() -> None:
+    """Set up INFO logging — called in main() AND as each worker's initializer (spawn needs both)."""
+    logging.basicConfig(level=logging.INFO, format=_LOG_FORMAT, datefmt=_LOG_DATEFMT)
+
+
 _GEOFABRIK = "https://download.geofabrik.de/europe"
 # Raw pbf downloads + per-region artifacts are cached under the build dir (re-fetchable input
 # / resumable state), separate from the final GRAPH_DIR artifact.
@@ -380,9 +390,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
-    logging.basicConfig(
-        level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s", datefmt="%H:%M:%S"
-    )
+    _configure_logging()
 
     regions = [r for r in DACH_REGIONS if r.key in set(args.only)] if args.only else list(DACH_REGIONS)
     cli_bbox = tuple(args.bbox) if args.bbox else None  # global test clip; overrides each region's own bbox
@@ -411,7 +419,9 @@ def main(argv: list[str] | None = None) -> int:
     # fork-safe. Skip confirmed_complete regions; a killed worker (OOM) fails loud.
     ctx = multiprocessing.get_context("spawn")
     max_child_rss = 0.0  # largest single-region child peak — the real memory watermark of the build
-    with ProcessPoolExecutor(max_workers=1, max_tasks_per_child=1, mp_context=ctx) as pool:
+    with ProcessPoolExecutor(
+        max_workers=1, max_tasks_per_child=1, mp_context=ctx, initializer=_configure_logging
+    ) as pool:
         for region in tqdm(regions, desc="2/4 Building regions", unit="region"):
             if _region_complete(region_key=region.key):
                 logger.info(f"{region.key}: skipped, already complete")
