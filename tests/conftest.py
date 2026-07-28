@@ -276,22 +276,6 @@ def make_surface_mix_graph() -> nx.MultiDiGraph:
     return graph
 
 
-def make_contract_chain_graph() -> nx.MultiDiGraph:
-    """A 1↔2↔3↔4 bidirectional chain where node 3 branches (a parallel 3↔4 edge).
-
-    Node 2 is a pure degree-2 passthrough (must contract, summing 100+150=250 m); node 3
-    branches so it stays. Pre-cost; contraction ranks parallel edges by raw length.
-    """
-    graph = nx.MultiDiGraph()
-    for node in (1, 2, 3, 4):
-        graph.add_node(node, x=float(node), y=0.0)
-    for left, right, length in [(1, 2, 100.0), (2, 3, 150.0), (3, 4, 80.0)]:
-        graph.add_edge(left, right, key=0, length=length, surface="asphalt", highway="residential")
-        graph.add_edge(right, left, key=0, length=length, surface="asphalt", highway="residential")
-    graph.add_edge(3, 4, key=1, length=80.0, surface="asphalt", highway="residential")  # node 3 branches → kept
-    return graph
-
-
 def make_two_cluster_graph() -> nx.MultiDiGraph:
     """Two tight knots (~5 m nodes) ~2 km apart, linked by one long edge (for consolidation).
 

@@ -11,7 +11,6 @@ import numpy as np
 from bike_router import graph_ops
 from bike_router.graph_ops import (
     consolidate_graph,
-    contract_interstitial_nodes,
     drop_disallowed_edges,
     enrich_elevations,
     normalize_pyrosm_graph,
@@ -19,7 +18,6 @@ from bike_router.graph_ops import (
 )
 from tests.conftest import (
     MockDEMService,
-    make_contract_chain_graph,
     make_line_graph,
     make_surface_mix_graph,
     make_two_cluster_graph,
@@ -49,13 +47,6 @@ def test_drop_disallowed_edges_surface_and_highway_allowlist():
     assert not graph.has_edge(4, 5)  # gravel;dirt removed (names a disallowed surface)
     assert not graph.has_edge(5, 6)  # motorway removed (disallowed highway — no bikes)
     assert 6 not in graph  # orphaned node pruned
-
-
-def test_contract_interstitial_nodes_removes_passthrough_keeps_length():
-    result = contract_interstitial_nodes(graph=make_contract_chain_graph())
-    assert 2 not in result  # interstitial node removed
-    assert 1 in result and 3 in result
-    assert min(d["length"] for d in result.get_edge_data(1, 3).values()) == 250.0  # summed run
 
 
 def test_consolidate_graph_rejects_nonpositive_tolerance():
