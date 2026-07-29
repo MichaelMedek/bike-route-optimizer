@@ -73,22 +73,24 @@ def test_route_ribbon_segments_green_lifted_and_width_inverse_speed():
         assert seg.width_m > 0
         for lon, lat, _z in seg.points:
             assert math.isfinite(lon) and math.isfinite(lat)
-    # INVERTED width (fluid dynamics): the slow uphill run is WIDER than the fast flat/downhill.
+    # Pipe-flow width (∝ 1/√speed): the slow uphill run is WIDER than the fast flat/downhill.
     widths = sorted(seg.width_m for seg in segments)
     assert len(set(widths)) >= 2, "uphill and flat/downhill legs must differ in width"
     fastest = max(p.speed_kmh for p in track.points)  # 25 km/h (tier-0 base, flat/downhill)
     slowest = min(p.speed_kmh for p in track.points)  # the climb
     assert slowest < fastest
-    # fastest → narrowest, slowest → widest (∝ 1/speed)
+    # fastest → narrowest, slowest → widest (∝ 1/√speed)
     assert min(widths) == pytest.approx(ribbon_width_m(speed_kmh=fastest))
     assert max(widths) == pytest.approx(ribbon_width_m(speed_kmh=slowest))
 
 
-def test_ribbon_width_m_halves_when_speed_doubles():
-    # Fluid-dynamics anchor: double the speed → half the width.
-    assert ribbon_width_m(speed_kmh=WebMapConfig.RIBBON_REF_SPEED_KMH) == pytest.approx(WebMapConfig.RIBBON_REF_WIDTH_M)
-    fast = ribbon_width_m(speed_kmh=WebMapConfig.RIBBON_REF_SPEED_KMH * 2)
-    assert fast == pytest.approx(WebMapConfig.RIBBON_REF_WIDTH_M / 2)
+def test_ribbon_width_m_pipe_flow_quarter_speed_doubles_width():
+    # Water-in-a-pipe: area×speed conserved, width is the diameter (area ∝ width²), so
+    # width ∝ 1/√speed → 4× slower = 2× wider (4× area). Anchored at REF_SPEED → REF_WIDTH.
+    ref_speed, ref_width = WebMapConfig.RIBBON_REF_SPEED_KMH, WebMapConfig.RIBBON_REF_WIDTH_M
+    assert ribbon_width_m(speed_kmh=ref_speed) == pytest.approx(ref_width)
+    assert ribbon_width_m(speed_kmh=ref_speed / 4) == pytest.approx(ref_width * 2)  # 4× slower → 2× wide
+    assert ribbon_width_m(speed_kmh=ref_speed * 4) == pytest.approx(ref_width / 2)  # 4× faster → half
 
 
 def test_rail_and_station_segments_use_fixed_width():

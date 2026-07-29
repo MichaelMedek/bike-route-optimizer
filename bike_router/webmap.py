@@ -93,13 +93,13 @@ def _segment_tooltip(point: TrackPoint) -> str:
 
 
 def ribbon_width_m(speed_kmh: float) -> float:
-    """Ribbon width from speed, INVERSELY (fluid-dynamics): half the speed → double the width.
+    """Ribbon width from speed like water in a pipe: flow (area×speed) is conserved.
 
-    Slow spots read as fat/congested pipes, fast spots as thin fast-flowing ones — the eye is
-    drawn to the slow parts. Anchored at RIBBON_REF_SPEED_KMH → RIBBON_REF_WIDTH_M.
+    Width is the pipe DIAMETER, so cross-section area ∝ width²; conserving area×speed gives
+    width ∝ 1/√speed — 4× slower → 2× wider (4× area). Anchored RIBBON_REF_SPEED_KMH → REF_WIDTH.
     """
     assert speed_kmh > 0, "speed must be positive to size the ribbon"
-    return WebMapConfig.RIBBON_REF_WIDTH_M * WebMapConfig.RIBBON_REF_SPEED_KMH / speed_kmh
+    return WebMapConfig.RIBBON_REF_WIDTH_M * math.sqrt(WebMapConfig.RIBBON_REF_SPEED_KMH / speed_kmh)
 
 
 def route_ribbon_segments(
@@ -110,7 +110,7 @@ def route_ribbon_segments(
     """Split the route into contiguous runs sharing one colour + width + tooltip, for rendering.
 
     Colour comes from segment_color (condition/mode). BIKE segments size their width by effort
-    (∝ 1/speed, so slow spots are wider); RAIL + STATION segments use the fixed RIBBON_REF_WIDTH_M.
+    (∝ 1/√speed, so slow spots are wider); RAIL + STATION segments use the fixed RIBBON_REF_WIDTH_M.
     A pedalled segment's tooltip describes it (surface/road/gradient/speed); a train run shows its
     whole-leg label from ``rail_tooltips`` (one per train ride, in order). Consecutive runs share
     their boundary point so the ribbon stays continuous.
@@ -128,7 +128,7 @@ def route_ribbon_segments(
     for point in track.points[1:]:  # each point is the FAR end of one edge (point 0 has no edge)
         xyz = [point.lon, point.lat, point.elevation_m + float_above_m]
         color = segment_color(mode=point.mode, surface_bad=point.surface_bad, road_bad=point.road_bad)
-        # Bike segments size by effort (∝ 1/speed); rail + station segments draw the fixed
+        # Bike segments size by effort (∝ 1/√speed); rail + station segments draw the fixed
         # reference width (a train's pace isn't rider effort; station hops are negligible links).
         pedalled = point.mode == str(Mode.BIKE)
         width = ribbon_width_m(speed_kmh=point.speed_kmh) if pedalled else WebMapConfig.RIBBON_REF_WIDTH_M
