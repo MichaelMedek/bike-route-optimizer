@@ -82,6 +82,7 @@ class GraphConfig:
     NODES_SUBDIR = "nodes"
     EDGES_SUBDIR = "edges"
     META_FILENAME = "meta.json"
+    OVERVIEW_FILENAME = "dach_graph_overview.png"  # whole-network preview, written into the artifact dir
 
     HF_REPO_ID = "MichaelMedek/dach_bike_graph"
     HF_FILENAME = META_FILENAME  # the whole snapshot is pulled; meta anchors the download

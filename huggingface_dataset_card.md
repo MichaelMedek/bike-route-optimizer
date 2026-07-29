@@ -22,6 +22,10 @@ A prebuilt, ready-to-route cycling + railway graph covering **Germany, Austria, 
 
 Everything routing needs is **baked in** — node elevations and full 3D edge geometry — so an application downloads this once and routes offline, with **no Overpass and no elevation service at query time.**
 
+![DACH bike + rail graph overview](dach_graph_overview.png)
+
+*The whole network — bike roads (thin blue) and rail lines (thick purple). Shipped as `dach_graph_overview.png`.*
+
 ## Coverage
 
 | Parameter | Value |
@@ -39,7 +43,7 @@ The exact bounding box built is recorded in `meta.json` (`bbox` = `[west, south,
 ## What's in the graph
 
 - **Bike network** — every bike-legal way, with genuinely unrideable surfaces (mud, sand, rock, …) removed while rough-but-rideable ground (dirt, grass, earth, …) is kept and penalised, degree-2 pass-through nodes contracted, and intersections within **25 m** consolidated to shrink the graph while keeping the true road shape.
-- **Railway** — stations wired into the network with bike↔station *station* access edges (nearest bike nodes within **200 m**) and station→station *rail* edges.
+- **Railway** — heavy rail plus regional `light_rail` and `narrow_gauge` (trams, funiculars, and park/miniature railways are excluded). Each station is snapped onto the nearest rail line by a *rail* edge, and joined to nearby bike nodes (within **200 m**) by bike↔station *station* access edges.
 - **Baked elevation** — every node has an `elevation_m`, and every bike and rail edge's geometry is a 3D `LINESTRING Z (lon lat elev …)`, so the elevation profile follows the real road/track.
 
 ## File layout
@@ -50,6 +54,7 @@ The dataset is tiled on a 0.5° lat/lon grid so a consumer reads only the tiles 
 meta.json                     # bbox, tile_deg, consolidation tolerance, node/edge/station counts, source regions
 nodes/tile_<row>_<col>.parquet
 edges/tile_<row>_<col>.parquet
+dach_graph_overview.png       # whole-network preview image
 ```
 
 ### Schema
@@ -78,7 +83,7 @@ Then read the tiles covering your area with pandas / pyarrow and rebuild a graph
 
 ## How it was built
 
-Reproducible from OpenStreetMap: each Geofabrik region extract is read with pyrosm, the cycling + railway networks are extracted, surfaces filtered, nodes contracted and consolidated, elevation baked from the EuroDEM, and railway links added; the 31 DACH sub-regions are then merged and tiled.
+Reproducible from OpenStreetMap: each Geofabrik region extract is read with pyrosm, the cycling + railway networks are extracted, surfaces filtered, nodes contracted and consolidated, elevation baked from the EuroDEM, and railway links added; the 31 orginal DACH sub-regions (Autria and Switzerland are furter split during pre-processing) are then merged, seam-deduplicated, and tiled.
 
 ## License
 

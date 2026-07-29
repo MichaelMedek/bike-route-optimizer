@@ -5,18 +5,17 @@ from ski-resort-designer's conftest, plus a tiny MultiDiGraph builder for cost /
 routing tests. No network, no GeoTIFF — CI-safe.
 """
 
-import pathlib
 from dataclasses import replace
 
 import networkx as nx
 import numpy as np
 import pytest
 
-from bike_router.constants import PARAM_SPECS, GeoConfig, Mode, NodeType, RoutingParams
+from bike_router.constants import PARAM_SPECS, PROJECT_ROOT, GeoConfig, Mode, NodeType, RoutingParams
 from bike_router.elevation import DEMService
 
 # The committed real Schwarzwald artifact — the ONLY data source e2e tests may use.
-FIXTURE_GRAPH_DIR = pathlib.Path(__file__).parent / "fixtures" / "dach_graph"
+FIXTURE_GRAPH_DIR = PROJECT_ROOT / "tests" / "fixtures" / "dach_graph"
 
 
 class MockDEMService(DEMService):
