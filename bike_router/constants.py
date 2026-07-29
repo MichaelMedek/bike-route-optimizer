@@ -443,10 +443,12 @@ class WebMapConfig:
     reframes to the start/end midpoint, zoom derived from the direct-line span.
     """
 
-    # Default camera (Freudenstadt, Germany), north-up with a tilt.
-    DEFAULT_LAT = 48.4634
-    DEFAULT_LON = 8.4111
-    DEFAULT_PITCH = 50.0
+    # Opening camera: high above the Bodensee (Lake Constance, the DE/AT/CH tripoint ≈ DACH
+    # centre), zoomed far out so the whole coverage region is in view before a route is set.
+    DEFAULT_LAT = 47.6
+    DEFAULT_LON = 9.4
+    DEFAULT_ZOOM = 6.0  # far out (whole DACH); route framing uses VIEWING_ZOOM, not this
+    DEFAULT_PITCH = 30.0  # deck.gl pitch: 0 = top-down, 90 = horizon
     DEFAULT_BEARING = 0.0
     # Rendered map height in the browser, pixels.
     MAP_HEIGHT_PX = 600
@@ -477,8 +479,9 @@ class WebMapConfig:
     # Station hop-on/hop-off markers: smaller than the start/end markers, rail-coloured.
     STATION_MARKER_RADIUS_M = 35.0
     STATION_MARKER_MIN_PIXELS = 5
-    # Zoom, same log formula as ski-resort's MapConfig.zoom_for_span_m:
-    VIEWING_ZOOM = 12.0
+    # Zoom, same log formula as ski-resort's MapConfig.zoom_for_span_m. Set one level below the
+    # raw span fit so the framed route — which usually extends past the straight start→end span.
+    VIEWING_ZOOM = 11.0
     ZOOM_SPAN_ANCHOR_M = 8000.0  # a route this long fits at VIEWING_ZOOM
     ZOOM_STEPS_OUT = 4.0
     ZOOM_STEPS_IN = 3.0

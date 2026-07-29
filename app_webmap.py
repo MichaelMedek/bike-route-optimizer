@@ -28,6 +28,7 @@ from bike_router.webmap import (
     SURFACE_DONUT_COLORS,
     composition_donut,
     default_view_state,
+    elevation_profile_chart,
     route_ribbon_segments,
     route_view_state,
 )
@@ -81,6 +82,10 @@ def _render_route_output(result: object) -> None:
         )
         for col, (title, by_km, colors) in zip(st.columns(len(donuts)), donuts, strict=True):
             col.altair_chart(composition_donut(title=title, by_km=by_km, colors=colors), use_container_width=True)
+
+        # Below the donuts: the elevation profile (distance × elevation), coloured by the
+        # same condition palette as the 3D ribbon and PNG.
+        st.altair_chart(elevation_profile_chart(track=track), use_container_width=True)
 
     # Always visible: which trains to catch, the bike-leg Maps links, and the downloads —
     # the actionable output the rider actually leaves with.

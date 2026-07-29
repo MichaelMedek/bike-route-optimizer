@@ -11,12 +11,14 @@ import pydeck as pdk
 import pytest
 
 from bike_router.constants import Mode, Palette, WebMapConfig
+from bike_router.geo import haversine_distance_m
 from bike_router.routing import shortest_route
 from bike_router.track import build_track
 from bike_router.webmap import (
     RibbonSegment,
     ViewState,
     default_view_state,
+    elevation_profile_chart,
     ribbon_width_m,
     route_ribbon_segments,
     route_view_state,
@@ -125,23 +127,44 @@ def test_route_ribbon_segments_custom_float():
     assert points[0][2] == pytest.approx(first_point.elevation_m + 250.0)
 
 
-def test_default_view_state_is_freudenstadt():
+def test_elevation_profile_chart_distance_elevation_and_condition_colors():
+    # Profile encodes distance (km) × elevation, coloured by the SAME condition palette as the
+    # ribbon. The line graph rises 100→130→100 m over two 800 m edges → ~1.6 km, all "good".
+    track = _line_track()
+    chart = elevation_profile_chart(track=track)
+    frame = chart.data
+    assert list(frame.columns) == ["km", "elevation", "condition"]
+    assert frame["km"].iloc[0] == pytest.approx(0.0)
+    assert frame["km"].is_monotonic_increasing and frame["km"].iloc[-1] > 0  # cumulative distance
+    assert frame["elevation"].max() == pytest.approx(130.0)
+    assert set(frame["condition"]) == {"good"}  # all-bike paved/quiet → good
+    # colour scale is keyed on the shared Palette.CONDITION_COLORS domain
+    scale = chart.to_dict()["encoding"]["color"]["scale"]
+    assert scale["domain"] == list(Palette.CONDITION_COLORS)
+    assert scale["range"] == [Palette.CONDITION_COLORS[c] for c in Palette.CONDITION_COLORS]
+
+
+def test_default_view_state_is_dach_overview():
     view = default_view_state()
     assert view == ViewState(
         latitude=WebMapConfig.DEFAULT_LAT,
         longitude=WebMapConfig.DEFAULT_LON,
-        zoom=WebMapConfig.VIEWING_ZOOM,
+        zoom=WebMapConfig.DEFAULT_ZOOM,  # far-out DACH overview, not the closer route zoom
         pitch=WebMapConfig.DEFAULT_PITCH,
         bearing=WebMapConfig.DEFAULT_BEARING,
     )
 
 
 def test_route_view_state_centres_on_midpoint():
-    view = route_view_state(start_latlon=(48.0, 8.0), end_latlon=(48.4, 8.6))
+    start, end = (48.0, 8.0), (48.4, 8.6)
+    view = route_view_state(start_latlon=start, end_latlon=end)
     assert view.latitude == pytest.approx(48.2)
     assert view.longitude == pytest.approx(8.3)
     assert view.bearing == WebMapConfig.DEFAULT_BEARING
     assert view.pitch == WebMapConfig.DEFAULT_PITCH
+    # Zoom is the span fit; VIEWING_ZOOM already sits one level out (context around the route).
+    span_m = haversine_distance_m(lat_a=start[0], lon_a=start[1], lat_b=end[0], lon_b=end[1])
+    assert view.zoom == pytest.approx(zoom_for_span_m(span_m=span_m))
 
 
 def test_zoom_for_span_anchor_and_clamps():
@@ -167,10 +190,12 @@ def test_layer_builders_return_expected_pydeck_layers():
         _seg(list(WebMapConfig.RAIL_COLOR), 8.0, [[8.01, 48.0, 1100.0], [8.02, 48.0, 1100.0]], tooltip="Train: A → B"),
     ]
     ribbons = create_route_ribbon_layers(segments=segments)
-    assert len(ribbons) == 2  # one PathLayer per run
-    assert all(layer.type == "PathLayer" and layer.pickable for layer in ribbons)  # pickable → tooltip
-    assert ribbons[0].id == "route_ribbon_0" and ribbons[1].id == "route_ribbon_1"
-    assert ribbons[0].data[0]["tooltip"] == "paved · quiet way"  # per-segment tooltip carried
+    assert len(ribbons) == 1  # ONE PathLayer holding all runs (uniform picking across the ribbon)
+    layer = ribbons[0]
+    assert layer.type == "PathLayer" and layer.pickable and layer.id == "route_ribbon"
+    assert len(layer.data) == 2  # both runs are rows in the single layer
+    assert layer.data[0]["tooltip"] == "paved · quiet way"  # per-segment tooltip carried
+    assert layer.data[1]["tooltip"] == "Train: A → B"
 
 
 def test_endpoint_layer_marks_start_and_end_with_labels():
@@ -206,7 +231,7 @@ def test_build_deck_layer_count_and_camera():
     deck_endpoints = build_deck(view=view, ribbon_segments=None, endpoints=((48.0, 8.0, 300.0), (48.4, 8.6, 500.0)))
     assert len(deck_endpoints.layers) == 2
 
-    # Endpoints + stations + a two-run route → terrain + stations + markers + one ribbon per run.
+    # Endpoints + stations + a two-run route → terrain + stations + markers + the single ribbon layer.
     two_run = [
         _seg(_rgb(Palette.GOOD), 20.0, [[8.0, 48.0, 1100.0], [8.01, 48.0, 1100.0]]),
         _seg(list(WebMapConfig.RAIL_COLOR), 8.0, [[8.01, 48.0, 1100.0], [8.02, 48.0, 1100.0]]),
@@ -218,4 +243,4 @@ def test_build_deck_layer_count_and_camera():
         stations=[(48.01, 8.01, 500.0, "S (500 m)")],
     )
     ids = [layer.id for layer in deck_full.layers]
-    assert ids == ["terrain_3d", "route_stations", "route_endpoints", "route_ribbon_0", "route_ribbon_1"]
+    assert ids == ["terrain_3d", "route_stations", "route_endpoints", "route_ribbon"]

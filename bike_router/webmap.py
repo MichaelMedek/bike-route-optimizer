@@ -58,6 +58,52 @@ def composition_donut(title: str, by_km: dict[str, float], colors: dict[str, str
     return chart
 
 
+def elevation_profile_chart(track: Track) -> alt.Chart:
+    """2D elevation profile: x = distance (km), y = elevation (m), coloured by condition.
+
+    Filled area under the curve, each point tinted by its segment's condition using the SAME
+    Palette.CONDITION_COLORS as the 3D ribbon and PNG (blue good / reds bad / purple train).
+    Cumulative distance is summed from the per-point haversine gaps (the track carries no km).
+    """
+    conditions = list(Palette.CONDITION_COLORS)
+    rows = []
+    dist_km = 0.0
+    prev = track.points[0]
+    for point in track.points:
+        dist_km += haversine_distance_m(lat_a=prev.lat, lon_a=prev.lon, lat_b=point.lat, lon_b=point.lon) / 1000.0
+        prev = point
+        rows.append(
+            {
+                "km": dist_km,
+                "elevation": point.elevation_m,
+                "condition": classify_condition(
+                    mode=point.mode, surface_bad=point.surface_bad, road_bad=point.road_bad
+                ),
+            }
+        )
+    frame = pd.DataFrame(rows)
+    chart: alt.Chart = (
+        alt.Chart(frame, title="Elevation profile")
+        .mark_area(line=True, opacity=0.85)
+        .encode(
+            x=alt.X("km:Q", title="Distance (km)"),
+            y=alt.Y("elevation:Q", title="Elevation (m)", scale=alt.Scale(zero=False)),
+            color=alt.Color(
+                "condition:N",
+                scale=alt.Scale(domain=conditions, range=[Palette.CONDITION_COLORS[c] for c in conditions]),
+                legend=alt.Legend(orient="bottom", title=None),
+            ),
+            tooltip=[
+                alt.Tooltip("km:Q", format=".1f", title="km"),
+                alt.Tooltip("elevation:Q", format=".0f", title="m"),
+                alt.Tooltip("condition:N", title="segment"),
+            ],
+        )
+        .properties(height=200)
+    )
+    return chart
+
+
 def segment_color(*, mode: str, surface_bad: bool, road_bad: bool) -> list[int]:
     """RGB for a route segment — the single source both the 3D ribbon and PNG use.
 
@@ -182,11 +228,11 @@ def zoom_for_span_m(span_m: float) -> float:
 
 
 def default_view_state() -> ViewState:
-    """The opening camera: Freudenstadt, north-up, tilted."""
+    """The opening camera: high above the Bodensee (DACH centre), zoomed out, north-up, tilted."""
     return ViewState(
         latitude=WebMapConfig.DEFAULT_LAT,
         longitude=WebMapConfig.DEFAULT_LON,
-        zoom=WebMapConfig.VIEWING_ZOOM,
+        zoom=WebMapConfig.DEFAULT_ZOOM,
         pitch=WebMapConfig.DEFAULT_PITCH,
         bearing=WebMapConfig.DEFAULT_BEARING,
     )

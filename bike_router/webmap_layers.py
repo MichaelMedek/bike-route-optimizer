@@ -27,29 +27,30 @@ def create_terrain_layer(mesh_max_error: float) -> pdk.Layer:
 
 
 def create_route_ribbon_layers(segments: list[RibbonSegment]) -> list[pdk.Layer]:
-    """One pickable PathLayer per contiguous run, in its condition colour + speed-scaled width.
+    """ONE pickable PathLayer holding every contiguous run as a data row (path/color/width/tooltip).
 
-    Each datum carries a ``tooltip`` string so the deck-level tooltip config shows the
-    segment's surface/road/gradient/speed (or, for a train run, the whole train leg) on hover.
+    A single layer (not one-per-run) so deck.gl picking is uniform across the WHOLE ribbon —
+    stacking many single-datum PathLayers made only the first few runs hoverable. Per-row width
+    comes from the ``width`` accessor, colour from ``color``, hover text from ``tooltip``.
 
     Args:
         segments: RibbonSegment runs from webmap.route_ribbon_segments (color RGB, width_m,
             points ``[[lon, lat, z], ...]`` z-lifted, tooltip text).
     """
+    data = [{"path": seg.points, "color": seg.color, "width": seg.width_m, "tooltip": seg.tooltip} for seg in segments]
     return [
         pdk.Layer(
             "PathLayer",
-            [{"path": seg.points, "color": seg.color, "tooltip": seg.tooltip}],
+            data,
             get_path="path",
             get_color="color",
-            get_width=seg.width_m,
+            get_width="width",
             width_min_pixels=WebMapConfig.RIBBON_MIN_PIXELS,
             cap_rounded=True,
             joint_rounded=True,
-            id=f"route_ribbon_{index}",
+            id="route_ribbon",
             pickable=True,
         )
-        for index, seg in enumerate(segments)
     ]
 
 
