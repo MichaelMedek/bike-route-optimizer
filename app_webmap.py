@@ -33,6 +33,10 @@ from bike_router.webmap import (
 )
 from bike_router.webmap_layers import build_deck
 
+# Fixed button labels, defined ONCE — referenced by the buttons AND the help/caption text
+SET_LABEL = "📍 Set start & end"
+COMPUTE_LABEL = "🧭 Compute route"
+
 
 def _download_graph_with_bar() -> None:
     """One-time prebuilt-graph download with an st.progress bar (the ONLY bar)."""
@@ -173,7 +177,7 @@ def main() -> None:
 
     # 2. Set start & end: resolve_endpoints geocodes the box texts + snaps to the graph;
     # we mark them on the map and recenter. Recentering lives ONLY here (camera_epoch).
-    if st.button("📍 Set start & end", use_container_width=True):
+    if st.button(SET_LABEL, use_container_width=True):
         try:
             with st.spinner("Looking up places…"):
                 start, end = resolve_endpoints(origin=origin, destination=destination)
@@ -206,9 +210,24 @@ def main() -> None:
         }
 
     # 4. Compute the route — draws the ribbon; does NOT recenter (step 2 owns the camera).
-    needs_endpoints = st.session_state.start_latlon is None
-    compute_help = "Set a start and end first" if needs_endpoints else "Plan the route for the current sliders"
-    if st.button("🧭 Compute route", use_container_width=True, disabled=needs_endpoints, help=compute_help):
+    # Gated on the two-button workflow: enabled ONLY when both boxes still hold the EXACT text
+    # Set resolved. Editing either box (without re-Setting) disables Compute again.
+    endpoints_set = st.session_state.start_latlon is not None
+    endpoints_match = (
+        endpoints_set
+        and origin == st.session_state.get("start_box_resolved")
+        and destination == st.session_state.get("end_box_resolved")
+    )
+    # The three valid states are explicit branches; the else is unreachable (guard).
+    if not endpoints_set:
+        compute_help = "Set a start and end first"
+    elif endpoints_set and not endpoints_match:
+        compute_help = f"Start/End changed — press {SET_LABEL} again first"
+    elif endpoints_set and endpoints_match:
+        compute_help = "Plan the route for the current slider settings"
+    else:
+        raise AssertionError(f"unreachable compute state: set={endpoints_set} match={endpoints_match}")
+    if st.button(COMPUTE_LABEL, use_container_width=True, disabled=not endpoints_match, help=compute_help):
         try:
             params = RoutingParams(**slider_values)
             with st.spinner("Planning route…"):
@@ -225,8 +244,8 @@ def main() -> None:
             )
         except BikeRouterError as error:  # too short/long, out of coverage, or no route
             st.toast(str(error), icon="⚠️")
-    if needs_endpoints:
-        st.caption("⬆️ Set start & end first to enable **Compute route**.")
+    if not endpoints_match:
+        st.caption(f"⬆️ Press **{SET_LABEL}** first to enable **{COMPUTE_LABEL}**.")
 
     # 5. 3D map. camera_epoch (bumped only by Set start & end) keys the remount.
     endpoints = (
