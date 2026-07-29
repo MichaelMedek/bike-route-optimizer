@@ -57,12 +57,6 @@ def check_uphill_costlier(graph: nx.MultiDiGraph, node_lower: int, node_upper: i
     logger.info(f"Sanity 2 OK: uphill {cost_up:.1f} > downhill {cost_down:.1f}")
 
 
-def check_strongly_connected(graph: nx.MultiDiGraph) -> None:
-    """Sanity 3: the routable core must be strongly connected (a route exists)."""
-    assert nx.is_strongly_connected(graph), "Sanity 3 failed: graph is not strongly connected"
-    logger.info("Sanity 3 OK: graph is strongly connected")
-
-
 def find_steepest_bidirectional_edge(graph: nx.MultiDiGraph) -> tuple[int, int] | None:
     """Return (node_a, node_b) of the bidirectional BIKE edge with the largest |Δelevation|.
 

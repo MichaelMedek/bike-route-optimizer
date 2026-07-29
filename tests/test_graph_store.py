@@ -9,11 +9,12 @@ from bike_router.constants import Mode, NodeType
 from bike_router.errors import OutOfCoverageError
 from bike_router.graph_store import (
     _covering_tiles,
+    _intersecting_tiles,
+    _read_tiles,
     _scalar,
     graph_from_tables,
     graph_to_tables,
-    load_corridor_graph,
-    load_meta,
+    load_route_graph,
     snap_to_node,
     write_graph_parquet,
 )
@@ -161,30 +162,74 @@ def test_covering_tiles_grows_by_margin():
     assert len(tiles) == 9
 
 
-def test_write_then_load_corridor_roundtrip(tmp_path):
+def test_intersecting_tiles_only_cells_the_polygon_crosses():
+    # A tall thin box spanning exactly two 0.5° rows in one column touches exactly 2 tiles —
+    # NOT the 3×3 a bbox+margin would return. Confirms the polygon-intersection math.
+    corridor = box(8.1, 48.1, 8.2, 48.6)  # lon in tile col 16; lat 48.1→48.6 spans rows 96,97
+    tiles = _intersecting_tiles(corridor=corridor, tile_deg=0.5)
+    assert set(tiles) == {(96, 16), (97, 16)}
+
+
+def test_intersecting_tiles_fewer_than_bbox_margin_on_diagonal():
+    # A diagonal tube's bbox spans a big rectangle, but the tube only crosses cells near the
+    # diagonal — strictly fewer than _covering_tiles(margin=1), and every returned cell truly touches.
+    from bike_router.corridor import build_corridor
+
+    corridor = build_corridor(start_latlon=(48.0, 8.0), dest_latlon=(51.0, 11.0), half_width_km=10.0, extend_km=0.0)
+    intersecting = _intersecting_tiles(corridor=corridor, tile_deg=0.5)
+    bbox_margin = _covering_tiles(bounds=corridor.bounds, tile_deg=0.5, margin=1)
+    assert len(intersecting) < len(bbox_margin)
+    for row, col in intersecting:  # no false positives
+        assert corridor.intersects(box(col * 0.5, row * 0.5, (col + 1) * 0.5, (row + 1) * 0.5))
+
+
+def test_read_tiles_mode_pushdown(tmp_path):
+    # _read_tiles with a mode filter returns ONLY matching rows (parquet predicate pushdown).
     graph = make_store_roundtrip_graph()
     nodes_df, edges_df = graph_to_tables(graph=graph)
     meta = {"bbox": [7.9, 47.9, 8.2, 48.1], "tile_deg": 0.5, "tolerance_m": 25.0}
     write_graph_parquet(nodes_df=nodes_df, edges_df=edges_df, meta=meta, out_dir=tmp_path)
-    assert (tmp_path / "meta.json").exists()
-    assert load_meta(graph_dir=tmp_path)["tile_deg"] == 0.5
+    tiles = _intersecting_tiles(corridor=box(7.99, 47.99, 8.02, 48.02), tile_deg=0.5)
+    rail_only = _read_tiles(
+        directory=tmp_path / "edges", columns=graph_store._EDGE_COLS, tiles=tiles, filters=[("mode", "==", "rail")]
+    )
+    assert not rail_only.empty and set(rail_only["mode"]) == {Mode.RAIL}
 
-    corridor = box(7.99, 47.99, 8.02, 48.02)
-    loaded = load_corridor_graph(corridor=corridor, graph_dir=tmp_path)
-    assert loaded.number_of_nodes() == 6 and loaded.number_of_edges() == 14  # 4 bike + 2 rail, ring+rail+station
-    # rail edge preserved through the round-trip
+
+def _write_fixture_store(tmp_path):
+    graph = make_store_roundtrip_graph()
+    nodes_df, edges_df = graph_to_tables(graph=graph)
+    meta = {"bbox": [7.9, 47.9, 8.2, 48.1], "tile_deg": 0.5, "tolerance_m": 25.0}
+    write_graph_parquet(nodes_df=nodes_df, edges_df=edges_df, meta=meta, out_dir=tmp_path)
+    return tmp_path
+
+
+def test_load_route_graph_recombines_bike_rail_station(tmp_path):
+    # Both corridors cover the tiny fixture → full bike ring + rail + station edges recombine,
+    # and NO strongly-connected pruning is applied (returned as-built).
+    store = _write_fixture_store(tmp_path)
+    wide = box(7.9, 47.9, 8.2, 48.1)  # covers all fixture nodes for both layers
+    loaded = load_route_graph(bike_corridor=wide, rail_corridor=wide, graph_dir=store)
+    assert loaded.number_of_nodes() == 6 and loaded.number_of_edges() == 14  # 4 bike + 2 rail nodes; ring+rail+station
     modes = {d["mode"] for _u, _v, _k, d in loaded.edges(keys=True, data=True)}
-    assert Mode.RAIL in modes
+    assert modes == {Mode.BIKE, Mode.RAIL, Mode.STATION}
 
 
-def test_load_corridor_outside_coverage_raises(tmp_path):
-    graph = make_store_roundtrip_graph()
-    nodes_df, edges_df = graph_to_tables(graph=graph)
-    meta = {"bbox": [7.9, 47.9, 8.2, 48.1], "tile_deg": 0.5, "tolerance_m": 25.0}
-    write_graph_parquet(nodes_df=nodes_df, edges_df=edges_df, meta=meta, out_dir=tmp_path)
+def test_load_route_graph_bike_confined_rail_generous(tmp_path):
+    # A bike corridor covering only the 4 bike nodes + a rail corridor also covering them yields the
+    # bike ring plus the station/rail bridge; proves the two layers load independently and recombine.
+    store = _write_fixture_store(tmp_path)
+    both = box(7.999, 47.999, 8.011, 48.011)
+    loaded = load_route_graph(bike_corridor=both, rail_corridor=both, graph_dir=store)
+    node_types = {d["node_type"] for _n, d in loaded.nodes(data=True)}
+    assert NodeType.BIKE in node_types and NodeType.RAIL in node_types
+
+
+def test_load_route_graph_outside_coverage_raises(tmp_path):
+    store = _write_fixture_store(tmp_path)
     far = box(20.0, 60.0, 20.1, 60.1)  # no tiles there
-    with pytest.raises(AssertionError):
-        load_corridor_graph(corridor=far, graph_dir=tmp_path)
+    with pytest.raises(AssertionError, match="bike corridor is outside"):
+        load_route_graph(bike_corridor=far, rail_corridor=far, graph_dir=store)
 
 
 def test_snap_to_node_returns_nearest_node_with_elevation():

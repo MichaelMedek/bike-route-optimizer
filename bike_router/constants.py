@@ -126,14 +126,18 @@ class GeoConfig:
 class CorridorConfig:
     """The "Schlauch" search corridor around the straight start→dest line.
 
-    A tube HALF_WIDTH_KM each side of the direct line (isotropic in real km; the
-    km→degree conversion corrects longitude shrink). Trips outside MIN/MAX_TRIP_KM
-    are rejected up front.
+    Two tubes, each extended past both endpoints: a tight bike tube (bike is ~98% of
+    the graph — the compute weight) and a wide rail tube (rail is ~1%, so loading it
+    generously is cheap and lets a route ride a train that leaves the bike tube and
+    returns). Isotropic in real km; trips outside MIN/MAX_TRIP_KM are rejected up front.
     """
 
-    HALF_WIDTH_KM = 22.0  # search this far each side of the direct line
+    BIKE_HALF_WIDTH_KM = 30.0  # bike tube half-width each side of the direct line
+    BIKE_EXTEND_KM = 5.0  # extend the bike tube this far past each endpoint
+    RAIL_HALF_WIDTH_KM = 80.0  # rail tube half-width (wide: rail is sparse, ~1% of edges)
+    RAIL_EXTEND_KM = 50.0  # extend the rail tube this far past each endpoint
     MIN_TRIP_KM = 5.0  # too short to bother planning
-    MAX_TRIP_KM = 200.0  # beyond this the corridor graph is too big / out of scope
+    MAX_TRIP_KM = 300.0  # beyond this the corridor graph is too big / out of scope
 
 
 class Palette:
@@ -514,7 +518,13 @@ assert set(SpeedConfig.BASE_KMH_BY_TIER) == set(SurfaceConfig.SURFACE_TIER.value
 assert all(speed > SpeedConfig.WALK_KMH for speed in SpeedConfig.BASE_KMH_BY_TIER.values()), "base speeds > walk"
 assert SpeedConfig.WALK_GRADE > 0, "WALK_GRADE must be a positive uphill grade"
 assert 0 < CorridorConfig.MIN_TRIP_KM < CorridorConfig.MAX_TRIP_KM, "trip bounds must be 0 < min < max"
-assert CorridorConfig.HALF_WIDTH_KM > 0, "corridor half-width must be positive"
+assert CorridorConfig.BIKE_HALF_WIDTH_KM > 0 and CorridorConfig.RAIL_HALF_WIDTH_KM > 0, (
+    "corridor half-widths must be positive"
+)
+assert CorridorConfig.BIKE_EXTEND_KM >= 0 and CorridorConfig.RAIL_EXTEND_KM >= 0, (
+    "corridor extends must be non-negative"
+)
+assert CorridorConfig.RAIL_HALF_WIDTH_KM > CorridorConfig.BIKE_HALF_WIDTH_KM, "rail tube must be wider than bike tube"
 assert max(SpeedConfig.BASE_KMH_BY_TIER.values()) < RailConfig.RAIL_SPEED_KMH, "rail must be faster than any bike leg"
 assert RailConfig.BOARDING_WAIT_S > 0 and RailConfig.STATION_RADIUS_M > 0, "rail waits/radius must be positive"
 assert RailConfig.STATION_MAX_ENTRANCES >= 1, "must declare at least one entrance per station"

@@ -6,11 +6,20 @@ import pytest
 
 from bike_router.errors import BikeRouterError, GeocodeConnectionError, GeocodeNotFoundError
 from bike_router.geocoding import (
+    _GEOCODE_CACHE,
     geocode,
     geocode_endpoint,
     photon_autocomplete,
     photon_label,
 )
+
+
+@pytest.fixture(autouse=True)
+def _clear_geocode_cache():
+    """Reset the module-level geocode cache so per-test call counts are deterministic."""
+    _GEOCODE_CACHE.clear()
+    yield
+    _GEOCODE_CACHE.clear()
 
 
 def test_geocode_returns_latlon():
@@ -24,6 +33,19 @@ def test_geocode_returns_latlon():
 
     assert (lat, lon) == (48.4633, 8.4116)
     fake_geocode_fn.assert_called_once_with("Freudenstadt, Germany")
+
+
+def test_geocode_caches_repeated_place():
+    """Nominatim policy mandates caching: a repeated identical query hits the network fn once."""
+    loc = MagicMock()
+    loc.latitude, loc.longitude = 48.0, 8.0
+    fake_geocode_fn = MagicMock(return_value=loc)
+
+    first = geocode(place="Freudenstadt, Germany", geocode_fn=fake_geocode_fn)
+    second = geocode(place="Freudenstadt, Germany", geocode_fn=fake_geocode_fn)
+
+    assert first == second == (48.0, 8.0)
+    fake_geocode_fn.assert_called_once()  # second call served from cache, no network
 
 
 def test_geocode_not_found_is_bikerouter_error():

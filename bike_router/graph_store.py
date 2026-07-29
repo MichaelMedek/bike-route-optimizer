@@ -19,8 +19,8 @@ from typing import Any
 import networkx as nx
 import pandas as pd
 from huggingface_hub import hf_hub_download, list_repo_files
-from shapely import from_wkt, to_wkt
-from shapely.geometry import LineString, Polygon
+from shapely import covers, from_wkt, points, to_wkt
+from shapely.geometry import LineString, Polygon, box
 
 from bike_router.constants import GraphConfig, Mode, NodeType
 from bike_router.errors import OutOfCoverageError
@@ -64,6 +64,23 @@ def _covering_tiles(bounds: tuple[float, float, float, float], tile_deg: float, 
         (row, col)
         for row in range(row_lo - margin, row_hi + margin + 1)
         for col in range(col_lo - margin, col_hi + margin + 1)
+    ]
+
+
+def _intersecting_tiles(*, corridor: Polygon, tile_deg: float) -> list[tuple[int, int]]:
+    """(row, col) tiles whose grid cell actually overlaps the corridor polygon.
+
+    Far fewer than the corridor bbox for a diagonal route — only the cells the tube
+    truly crosses, not the whole bounding rectangle.
+    """
+    min_lon, min_lat, max_lon, max_lat = corridor.bounds
+    row_lo, col_lo = tile_index(lat=min_lat, lon=min_lon, tile_deg=tile_deg)
+    row_hi, col_hi = tile_index(lat=max_lat, lon=max_lon, tile_deg=tile_deg)
+    return [
+        (row, col)
+        for row in range(row_lo, row_hi + 1)
+        for col in range(col_lo, col_hi + 1)
+        if corridor.intersects(box(col * tile_deg, row * tile_deg, (col + 1) * tile_deg, (row + 1) * tile_deg))
     ]
 
 
@@ -152,17 +169,23 @@ def load_meta(graph_dir: Path = GraphConfig.GRAPH_DIR) -> dict[str, Any]:
     return meta
 
 
-def _read_tiles(directory: Path, columns: list[str], tiles: list[tuple[int, int]] | None = None) -> pd.DataFrame:
+def _read_tiles(
+    directory: Path,
+    columns: list[str],
+    tiles: list[tuple[int, int]] | None = None,
+    filters: list[tuple[str, str, object]] | None = None,
+) -> pd.DataFrame:
     """Concatenate per-tile Parquet files in ``directory`` into one DataFrame.
 
     ``tiles`` = the specific (row, col) tiles to read (missing skipped) for a corridor window;
-    ``tiles=None`` reads EVERY ``tile_*.parquet`` (a whole region/artifact). Empty → empty frame.
+    ``tiles=None`` reads EVERY ``tile_*.parquet`` (a whole region/artifact). ``filters`` = optional
+    pyarrow predicate pushdown (e.g. by mode/node_type), so a tile yields only matching rows.
     """
     if tiles is None:
         paths = sorted(directory.glob("tile_*.parquet"))
     else:
         paths = [p for row, col in tiles if (p := directory / f"{_tile_name(row=row, col=col)}.parquet").exists()]
-    frames = [pd.read_parquet(path) for path in paths]
+    frames = [pd.read_parquet(path, filters=filters) for path in paths]
     if not frames:
         return pd.DataFrame(columns=columns)
     return pd.concat(frames, ignore_index=True)
@@ -285,26 +308,72 @@ def _assert_height_diffs_consistent(graph: nx.MultiDiGraph) -> None:
         )
 
 
-def load_corridor_graph(corridor: Polygon, graph_dir: Path = GraphConfig.GRAPH_DIR) -> nx.MultiDiGraph:
-    """Reconstruct the corridor's bike+rail graph from the tiled artifact.
+def _load_layer(
+    *, corridor: Polygon, graph_dir: Path, node_type: str, edge_modes: list[str]
+) -> tuple[pd.DataFrame, pd.DataFrame, set[int]]:
+    """Read one mode-layer's nodes/edges for a corridor, keeping only nodes inside it.
 
-    Reads only the tiles the corridor bbox spans (+1 margin), rebuilds a MultiDiGraph,
-    and returns its largest strongly-connected component. Rail edges are always
-    included — the sliders alone decide whether A* uses them.
+    Reads only tiles the corridor crosses and only rows of the requested node_type / edge
+    modes (parquet pushdown), then masks nodes to those the corridor COVERS (covers, not
+    contains — a point exactly on the tube edge must count). Returns (nodes, edges, inside_ids).
     """
-    meta = load_meta(graph_dir=graph_dir)
-    tile_deg = meta["tile_deg"]
-    tiles = _covering_tiles(bounds=corridor.bounds, tile_deg=tile_deg, margin=1)
-    nodes_df = _read_tiles(directory=graph_dir / GraphConfig.NODES_SUBDIR, tiles=tiles, columns=_NODE_COLS)
-    edges_df = _read_tiles(directory=graph_dir / GraphConfig.EDGES_SUBDIR, tiles=tiles, columns=_EDGE_COLS)
-    assert not nodes_df.empty, "corridor is outside the prebuilt graph coverage (no node tiles)"
+    tile_deg = load_meta(graph_dir=graph_dir)["tile_deg"]
+    tiles = _intersecting_tiles(corridor=corridor, tile_deg=tile_deg)
+    nodes_df = _read_tiles(
+        directory=graph_dir / GraphConfig.NODES_SUBDIR,
+        columns=_NODE_COLS,
+        tiles=tiles,
+        filters=[("node_type", "==", node_type)],
+    )
+    edges_df = _read_tiles(
+        directory=graph_dir / GraphConfig.EDGES_SUBDIR,
+        columns=_EDGE_COLS,
+        tiles=tiles,
+        filters=[("mode", "in", edge_modes)],
+    )
+    inside_mask = covers(corridor, points(nodes_df["lon"].to_numpy(dtype=float), nodes_df["lat"].to_numpy(dtype=float)))
+    nodes_df = nodes_df[inside_mask]
+    inside_ids = set(nodes_df["osmid"].astype(int))
+    return nodes_df.reset_index(drop=True), edges_df, inside_ids
 
+
+def load_route_graph(
+    *, bike_corridor: Polygon, rail_corridor: Polygon, graph_dir: Path = GraphConfig.GRAPH_DIR
+) -> nx.MultiDiGraph:
+    """Reconstruct the routing graph from two corridors: a tight bike tube + a wide rail tube.
+
+    Bike (the ~98% compute weight) is confined to the narrow tube; sparse rail is loaded from a
+    much wider tube so a route may ride a train that leaves and re-enters the bike tube. Station
+    access edges bridge the two. NOT strongly-component-pruned: A* raises NoRouteError if no path,
+    and a valid multi-component corridor (e.g. across a water gap) must not be rejected. The result
+    is optimal WITHIN the tube — a detour leaving it is out of scope by construction.
+    """
+    bike_nodes, bike_edges, bike_ids = _load_layer(
+        corridor=bike_corridor, graph_dir=graph_dir, node_type=NodeType.BIKE, edge_modes=[Mode.BIKE]
+    )
+    rail_nodes, rail_edges, rail_ids = _load_layer(
+        corridor=rail_corridor, graph_dir=graph_dir, node_type=NodeType.RAIL, edge_modes=[Mode.RAIL, Mode.STATION]
+    )
+    assert not bike_nodes.empty, "bike corridor is outside the prebuilt graph coverage (no node tiles)"
+
+    from_in = rail_edges["from_node"].astype(int)
+    to_in = rail_edges["to_node"].astype(int)
+    is_station = rail_edges["mode"] == Mode.STATION
+    # rail↔rail edges: both endpoints in the rail tube; station edges: bike end in bike tube AND
+    # rail end in rail tube (the two ids sets are disjoint, so membership picks the right endpoint).
+    keep_rail = (~is_station) & from_in.isin(rail_ids) & to_in.isin(rail_ids)
+    keep_station = is_station & (
+        (from_in.isin(bike_ids) & to_in.isin(rail_ids)) | (from_in.isin(rail_ids) & to_in.isin(bike_ids))
+    )
+    rail_edges = rail_edges[keep_rail | keep_station]
+
+    bf, bt = bike_edges["from_node"].astype(int), bike_edges["to_node"].astype(int)
+    bike_edges = bike_edges[bf.isin(bike_ids) & bt.isin(bike_ids)]
+
+    nodes_df = pd.concat([bike_nodes, rail_nodes], ignore_index=True)
+    edges_df = pd.concat([bike_edges, rail_edges], ignore_index=True)
     graph = graph_from_tables(nodes_df=nodes_df, edges_df=edges_df)
     assert graph.number_of_edges() > 0, "corridor graph has no edges"
-    import osmnx as ox  # local import: only needed here, keeps module import light
-
-    graph = ox.truncate.largest_component(graph, strongly=True)
-    assert graph.number_of_nodes() > 0, "corridor graph empty after taking largest component"
     return graph
 
 

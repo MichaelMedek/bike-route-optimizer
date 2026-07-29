@@ -11,6 +11,7 @@ import pytest
 from shapely.geometry import box
 
 from bike_router import pipeline
+from bike_router.constants import CorridorConfig, GeoConfig
 from bike_router.errors import (
     GeocodeConnectionError,
     NoRouteError,
@@ -26,9 +27,13 @@ def _wire_offline(monkeypatch, tmp_path, graph):
     monkeypatch.setattr(
         pipeline, "geocode_endpoint", lambda place, label, geocode_fn: (48.0, 8.0) if label == "Start" else (48.0, 8.2)
     )
-    monkeypatch.setattr(pipeline, "build_corridor", lambda start_latlon, dest_latlon: box(7.9, 47.9, 8.1, 48.1))
+    monkeypatch.setattr(
+        pipeline,
+        "build_corridor",
+        lambda start_latlon, dest_latlon, half_width_km, extend_km: box(7.9, 47.9, 8.1, 48.1),
+    )
     monkeypatch.setattr(pipeline, "_assert_within_coverage", lambda start_latlon, dest_latlon, graph_dir: None)
-    monkeypatch.setattr(pipeline, "load_corridor_graph", lambda corridor, graph_dir: graph)
+    monkeypatch.setattr(pipeline, "load_route_graph", lambda bike_corridor, rail_corridor, graph_dir: graph)
     monkeypatch.setattr(pipeline, "snap_endpoints", lambda graph, start_latlon, dest_latlon: (1, 3))
     monkeypatch.setattr(
         pipeline, "route_output_paths", lambda origin, destination, params: (tmp_path / "r.gpx", tmp_path / "r.png")
@@ -68,10 +73,14 @@ def test_plan_route_rejects_too_short_trip(monkeypatch):
 
 
 def test_plan_route_rejects_too_far_trip(monkeypatch):
-    # ~330 km apart (48.0 → 51.0 lat) → beyond MAX_TRIP_KM
+    # Just beyond MAX_TRIP_KM north of the start (derive the latitude delta from the constant so
+    # this stays correct if the bound changes). ~1.2× the limit in degrees of latitude.
+    far_lat = 48.0 + 1.2 * CorridorConfig.MAX_TRIP_KM / (GeoConfig.METERS_PER_DEGREE_EQUATOR / 1000.0)
     monkeypatch.setattr(pipeline, "make_geocode_fn", lambda: lambda place: None)
     monkeypatch.setattr(
-        pipeline, "geocode_endpoint", lambda place, label, geocode_fn: (48.0, 8.0) if label == "Start" else (51.0, 8.0)
+        pipeline,
+        "geocode_endpoint",
+        lambda place, label, geocode_fn: (48.0, 8.0) if label == "Start" else (far_lat, 8.0),
     )
     with pytest.raises(TripTooLongError):
         pipeline.plan_route(origin="A", destination="B", params=DEFAULT_PARAMS)
@@ -92,7 +101,11 @@ def test_plan_route_rejects_outside_coverage(monkeypatch):
     monkeypatch.setattr(
         pipeline, "geocode_endpoint", lambda place, label, geocode_fn: (48.0, 8.0) if label == "Start" else (48.0, 8.2)
     )
-    monkeypatch.setattr(pipeline, "build_corridor", lambda start_latlon, dest_latlon: box(7.9, 47.9, 8.1, 48.1))
+    monkeypatch.setattr(
+        pipeline,
+        "build_corridor",
+        lambda start_latlon, dest_latlon, half_width_km, extend_km: box(7.9, 47.9, 8.1, 48.1),
+    )
 
     def _outside(start_latlon, dest_latlon, graph_dir):
         raise OutOfCoverageError("Route is outside the prebuilt graph coverage")
@@ -106,7 +119,7 @@ def test_plan_route_no_route_raises_no_route_error(tmp_path: Path, monkeypatch):
     graph = make_line_graph()
     graph.add_node(99, x=20.0, y=60.0, elevation=100.0)  # isolated target
     _wire_offline(monkeypatch, tmp_path, graph)
-    monkeypatch.setattr(pipeline, "check_strongly_connected", lambda graph: None)  # bypass (disconnected)
+    # No strongly-connected pre-check: a disconnected corridor is legitimate; A* raises NoRouteError.
     monkeypatch.setattr(pipeline, "snap_endpoints", lambda graph, start_latlon, dest_latlon: (1, 99))
     with pytest.raises(NoRouteError):
         pipeline.plan_route(origin="Start", destination="End", params=DEFAULT_PARAMS)

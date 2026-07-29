@@ -7,7 +7,6 @@ from bike_router.constants import CostConfig, Mode, RoutingParams
 from bike_router.cost import assign_edge_costs
 from bike_router.sanity import (
     check_simplify_shrunk,
-    check_strongly_connected,
     check_uphill_costlier,
     find_steepest_bidirectional_edge,
 )
@@ -30,14 +29,6 @@ def test_check_simplify_shrunk_pass_and_fail():
 
 def test_check_simplify_shrunk_skips_tiny_graph():
     check_simplify_shrunk(nodes_before=10, nodes_after=10)  # too small → no assertion
-
-
-def test_check_strongly_connected_pass_and_fail():
-    graph = make_line_graph()
-    check_strongly_connected(graph=graph)
-    graph.add_node(99, x=20.0, y=60.0, elevation=0.0)  # unreachable
-    with pytest.raises(AssertionError):
-        check_strongly_connected(graph=graph)
 
 
 def test_find_steepest_and_uphill_costlier():

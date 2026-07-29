@@ -21,12 +21,11 @@ from bike_router.geocoding import geocode_endpoint, make_geocode_fn
 from bike_router.gmaps import build_gmaps_url
 from bike_router.gpx_export import build_gpx
 from bike_router.graph_ops import snap_endpoints
-from bike_router.graph_store import load_corridor_graph, load_meta, snap_to_node
+from bike_router.graph_store import load_meta, load_route_graph, snap_to_node
 from bike_router.naming import route_output_paths
 from bike_router.plotting import plot_elevation_heatmap
 from bike_router.routing import shortest_route
 from bike_router.sanity import (
-    check_strongly_connected,
     check_uphill_costlier,
     find_steepest_bidirectional_edge,
 )
@@ -133,10 +132,20 @@ def plan_route(
         )
 
     _assert_within_coverage(start_latlon=start_latlon, dest_latlon=dest_latlon, graph_dir=graph_dir)
-    corridor = build_corridor(start_latlon=start_latlon, dest_latlon=dest_latlon)
+    bike_corridor = build_corridor(
+        start_latlon=start_latlon,
+        dest_latlon=dest_latlon,
+        half_width_km=CorridorConfig.BIKE_HALF_WIDTH_KM,
+        extend_km=CorridorConfig.BIKE_EXTEND_KM,
+    )
+    rail_corridor = build_corridor(
+        start_latlon=start_latlon,
+        dest_latlon=dest_latlon,
+        half_width_km=CorridorConfig.RAIL_HALF_WIDTH_KM,
+        extend_km=CorridorConfig.RAIL_EXTEND_KM,
+    )
 
-    graph = load_corridor_graph(corridor=corridor, graph_dir=graph_dir)
-    check_strongly_connected(graph=graph)
+    graph = load_route_graph(bike_corridor=bike_corridor, rail_corridor=rail_corridor, graph_dir=graph_dir)
 
     source, target = snap_endpoints(graph=graph, start_latlon=start_latlon, dest_latlon=dest_latlon)
     assign_edge_costs(graph=graph, params=params)

@@ -24,6 +24,10 @@ GeocodeFn = Callable[[str], Location | None]
 # Injectable HTTP seam (url, params, timeout) → parsed JSON — lets tests run offline.
 HttpParams = dict[str, str | float]
 
+# Nominatim's usage policy MANDATES caching ("Results must be cached … clients sending
+# repeatedly the same query may be blocked"). Place→(lat,lon) is immutable.
+_GEOCODE_CACHE: dict[str, tuple[float, float]] = {}
+
 
 class HttpGetter(Protocol):
     """Callable seam for an HTTP GET returning parsed JSON (keyword-callable)."""
@@ -60,6 +64,8 @@ def geocode(place: str, geocode_fn: GeocodeFn) -> tuple[float, float]:
         GeocodeConnectionError: if the service is unreachable (no internet).
         GeocodeNotFoundError: if the service answered but nothing matched.
     """
+    if place in _GEOCODE_CACHE:  # policy-mandated: never re-query an identical string
+        return _GEOCODE_CACHE[place]
     try:
         location = geocode_fn(place)
     except GeocoderServiceError as exc:  # unreachable service / no connection
@@ -68,7 +74,9 @@ def geocode(place: str, geocode_fn: GeocodeFn) -> tuple[float, float]:
         ) from exc
     if location is None:
         raise GeocodeNotFoundError(f"Could not geocode {place!r} — no matching location found.")
-    return float(location.latitude), float(location.longitude)
+    result = (float(location.latitude), float(location.longitude))
+    _GEOCODE_CACHE[place] = result
+    return result
 
 
 def geocode_endpoint(place: str, label: str, geocode_fn: GeocodeFn) -> tuple[float, float]:
