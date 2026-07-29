@@ -8,7 +8,7 @@ import logging
 
 import networkx as nx
 
-from bike_router.constants import CostConfig, RoutingParams, SanityConfig
+from bike_router.constants import CostConfig, Mode, RoutingParams, SanityConfig
 from bike_router.track import cheapest_edge
 
 logger = logging.getLogger(__name__)
@@ -64,14 +64,15 @@ def check_strongly_connected(graph: nx.MultiDiGraph) -> None:
 
 
 def find_steepest_bidirectional_edge(graph: nx.MultiDiGraph) -> tuple[int, int] | None:
-    """Return (node_a, node_b) of the bidirectional edge with the largest |Δelevation|.
+    """Return (node_a, node_b) of the bidirectional BIKE edge with the largest |Δelevation|.
 
+    Only BIKE edges qualify: Sanity 2 checks the terrain penalty, which is bike-only.
     Used to feed check_uphill_costlier a genuinely non-flat edge.
     """
     steepest = None
     steepest_delta = 0.0
-    for node_a, node_b in graph.edges():
-        if not graph.has_edge(node_b, node_a):
+    for node_a, node_b, data in graph.edges(data=True):
+        if data["mode"] != Mode.BIKE or not graph.has_edge(node_b, node_a):
             continue
         delta = abs(graph.nodes[node_b]["elevation"] - graph.nodes[node_a]["elevation"])
         if delta > steepest_delta:

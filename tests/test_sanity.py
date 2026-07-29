@@ -62,11 +62,29 @@ def test_uphill_check_skipped_when_penalty_disabled():
     check_uphill_costlier(graph=graph, node_lower=steepest[0], node_upper=steepest[1], params=params)  # no raise
 
 
+def test_find_steepest_ignores_rail_picks_bike_edge():
+    """Regression: the steepest bidirectional edge may be RAIL (terrain-blind cost → up==down),
+    which would spuriously fail Sanity 2. The selector must consider only BIKE edges.
+    """
+    graph = nx.MultiDiGraph()
+    graph.add_node(1, x=8.0, y=48.0, elevation=100.0)
+    graph.add_node(2, x=8.1, y=48.0, elevation=140.0)  # bike edge: 40 m climb
+    graph.add_node(3, x=8.2, y=48.0, elevation=1000.0)  # rail edge: 900 m Δelev (steeper by |Δ|)
+    for node_a, node_b in [(1, 2), (2, 1)]:
+        graph.add_edge(node_a, node_b, key=0, length=100.0, surface="asphalt", highway="residential", mode=Mode.BIKE)
+    for node_a, node_b in [(2, 3), (3, 2)]:
+        graph.add_edge(node_a, node_b, key=0, length=100.0, mode=Mode.RAIL)
+    assign_edge_costs(graph=graph, params=DEFAULT_PARAMS)
+    steepest = find_steepest_bidirectional_edge(graph=graph)
+    assert steepest is not None and set(steepest) == {1, 2}  # the BIKE edge, NOT the steeper rail edge
+    check_uphill_costlier(graph=graph, node_lower=steepest[0], node_upper=steepest[1], params=DEFAULT_PARAMS)
+
+
 def test_find_steepest_returns_none_when_no_bidirectional_edge():
     graph = nx.MultiDiGraph()
     graph.add_node(1, x=8.0, y=48.0, elevation=100.0)
     graph.add_node(2, x=8.1, y=48.0, elevation=200.0)
-    graph.add_edge(1, 2, key=0, length=100.0)  # one-way only
+    graph.add_edge(1, 2, key=0, length=100.0, mode=Mode.BIKE)  # one-way only
     assert find_steepest_bidirectional_edge(graph=graph) is None
 
 
