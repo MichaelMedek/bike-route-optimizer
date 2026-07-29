@@ -30,15 +30,15 @@ Add `--extra_km_per_uphill_100m 100` (or any other preference flag) to bias the 
 
 ## The five preferences
 
-Each preference is expressed in the same intuitive unit: **how many extra kilometres would you happily pedal to avoid one unit of the bad thing.** `0` = ignore it, higher = go further out of your way to avoid it. Each cell below mirrors the slider/`--help` tooltip verbatim.
+Each preference is expressed in the same intuitive unit: **how many extra kilometres you'd happily pedal to detour around one unit of the bad thing.** `0` never means it's free (it still costs its real distance) — it means *don't detour*; higher = go further out of your way to avoid it. Each cell below mirrors the slider/`--help` tooltip verbatim.
 
 | Flag | What it means (`0` = … ; high = …) |
 |---|---|
-| `--extra_km_per_uphill_100m` | Extra km you'd ride to avoid every 100 m of climbing (0 = ignore hills; high = long detours to stay flat). |
-| `--extra_km_per_unpaved_km` | Extra km you'd ride to avoid 1 km of unpaved surface (0 = don't mind gravel; high = detour far to stay paved). |
-| `--extra_km_per_main_road_km` | Extra km you'd ride to avoid 1 km on a busy main road (0 = don't mind them; high = detour far to avoid main roads). |
-| `--extra_km_per_rail_km` | Extra km you'd bike to avoid 1 km carried by train (0 = train distance is free; high = avoid long train legs). |
-| `--extra_km_per_boarding` | Extra km you'd bike to avoid boarding a train once (0 = board freely; high = avoid catching trains). |
+| `--extra_km_per_uphill_100m` | How far out of your way you'd ride to dodge 100 m of climbing. 0 = shortest route, ignore hills; higher = detour to stay flat. |
+| `--extra_km_per_unpaved_km` | Extra km you'd ride to swap 1 km of gravel/dirt for pavement. 0 = don't avoid unpaved; higher = detour to stay paved. |
+| `--extra_km_per_main_road_km` | Extra km you'd ride to swap 1 km of busy road for a quiet one. 0 = don't avoid main roads; higher = detour for quiet ways. |
+| `--extra_km_per_rail_km` | Per-km cost of riding the train, like a fare. 0 = don't mind trains over similar-length biking; higher = avoid long train legs, bike instead. |
+| `--extra_km_per_boarding` | Flat cost of getting on a train once (a transfer boards again). 0 = board freely at any station even multiple train legs; higher = avoid trains however long. |
 
 ## Example: Freiburg → Feldberg
 

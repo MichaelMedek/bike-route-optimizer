@@ -284,37 +284,39 @@ class RoutingParamSpec:
     default: float
 
 
-# The three "extra km" preferences, defined ONCE. CLI args and web sliders both
-# iterate this — no duplicated label/default/help text anywhere.
+# The five "extra km" preferences, defined ONCE. CLI args and web sliders both iterate
+# this — no duplicated label/default/help anywhere. Each value is a DETOUR willingness:
+# extra km you'd add on top of the real distance to avoid one unit of the bad thing; 0
+# never means "free" (the thing still costs its real distance) — it means "don't detour".
 PARAM_SPECS = (
     RoutingParamSpec(
         field="extra_km_per_uphill_100m",
-        label="Uphill penalty (extra km per 100 m climb)",
-        help="Extra km you'd ride to avoid every 100 m of climbing (0 = ignore hills; high = long detours to stay flat).",
+        label="Hill avoidance (extra km per 100 m climb)",
+        help="How far out of your way you'd ride to dodge 100 m of climbing. 0 = shortest route, ignore hills; higher = detour to stay flat.",
         default=12.0,
     ),
     RoutingParamSpec(
         field="extra_km_per_unpaved_km",
-        label="Unpaved penalty (extra km per unpaved km)",
-        help="Extra km you'd ride to avoid 1 km of unpaved surface (0 = don't mind gravel; high = detour far to stay paved).",
+        label="Unpaved avoidance (extra km per unpaved km)",
+        help="Extra km you'd ride to swap 1 km of gravel/dirt for pavement. 0 = don't avoid unpaved; higher = detour to stay paved.",
         default=1.0,
     ),
     RoutingParamSpec(
         field="extra_km_per_main_road_km",
-        label="Main road penalty (extra km per main-road km)",
-        help="Extra km you'd ride to avoid 1 km on a busy main road (0 = don't mind them; high = detour far to avoid main roads).",
+        label="Main-road avoidance (extra km per km)",
+        help="Extra km you'd ride to swap 1 km of busy road for a quiet one. 0 = don't avoid main roads; higher = detour for quiet ways.",
         default=1.0,
     ),
     RoutingParamSpec(
         field="extra_km_per_rail_km",
-        label="Rail distance penalty (extra km per rail km)",
-        help="Extra km you'd bike to avoid 1 km carried by train (0 = train distance is free; high = avoid long train legs).",
+        label="Train-distance cost (extra km per rail km)",
+        help="Per-km cost of riding the train, like a fare. 0 = don't mind trains over similar-length biking; higher = avoid long train legs, bike instead.",
         default=1.0,
     ),
     RoutingParamSpec(
         field="extra_km_per_boarding",
-        label="Train boarding penalty (extra km per boarding)",
-        help="Extra km you'd bike to avoid boarding a train once (0 = board freely; high = avoid catching trains).",
+        label="Train-boarding cost (extra km per boarding)",
+        help="Flat cost of getting on a train once (a transfer boards again). 0 = board freely at any station, even multiple train legs; higher = avoid trains however long.",
         default=15.0,
     ),
 )
