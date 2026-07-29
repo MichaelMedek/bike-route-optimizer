@@ -10,8 +10,7 @@ Usage:
     2. python scripts/upload_graph_to_huggingface.py
     3. On first run you'll be prompted to login (creates ~/.huggingface/token).
 
-Note: create the dataset repo first if it does not exist, e.g.
-    huggingface-cli repo create dach_bike_graph --type dataset
+The dataset repo is created on first run if it does not exist.
 """
 
 from huggingface_hub import HfApi, login
@@ -33,6 +32,7 @@ def upload_graph_to_hf() -> None:
 
     login()
     api = HfApi()
+    api.create_repo(repo_id=GraphConfig.HF_REPO_ID, repo_type="dataset", exist_ok=True)
     api.upload_folder(folder_path=str(artifact_dir), repo_id=GraphConfig.HF_REPO_ID, repo_type="dataset")
     # Push the repo-root dataset card directly AS README.md so the Hub renders it.
     api.upload_file(
