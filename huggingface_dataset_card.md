@@ -42,7 +42,7 @@ The exact bounding box built is recorded in `meta.json` (`bbox` = `[west, south,
 
 ## What's in the graph
 
-- **Bike network** — every bike-legal way, with genuinely unrideable surfaces (mud, sand, rock, …) removed while rough-but-rideable ground (dirt, grass, earth, …) is kept and penalised, degree-2 pass-through nodes contracted, and intersections within **25 m** consolidated to shrink the graph while keeping the true road shape.
+- **Bike network** — every bike-legal way, with genuinely unrideable surfaces (mud, sand, rock, …) removed, degree-2 pass-through nodes contracted, and intersections within **25 m** consolidated to shrink the graph while keeping the true road shape.
 - **Railway** — heavy rail plus regional `light_rail` and `narrow_gauge` (trams, funiculars, and park/miniature railways are excluded). Each station is snapped onto the nearest rail line by a *rail* edge, and joined to nearby bike nodes (within **200 m**) by bike↔station *station* access edges.
 - **Baked elevation** — every node has an `elevation_m`, and every bike and rail edge's geometry is a 3D `LINESTRING Z (lon lat elev …)`, so the elevation profile follows the real road/track.
 
