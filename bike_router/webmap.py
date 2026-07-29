@@ -10,6 +10,7 @@ from dataclasses import dataclass
 
 import altair as alt
 import pandas as pd
+import plotly.graph_objects as go
 
 from bike_router.constants import Mode, Palette, RoadConfig, SurfaceConfig, WebMapConfig
 from bike_router.geo import haversine_distance_m
@@ -58,50 +59,70 @@ def composition_donut(title: str, by_km: dict[str, float], colors: dict[str, str
     return chart
 
 
-def elevation_profile_chart(track: Track) -> alt.Chart:
-    """2D elevation profile: x = distance (km), y = elevation (m), coloured by condition.
+def elevation_profile_chart(track: Track) -> go.Figure:
+    """Plotly elevation profile: x = distance (km), y = elevation (m); line coloured bike vs train.
 
-    Filled area under the curve, each point tinted by its segment's condition using the SAME
-    Palette.CONDITION_COLORS as the 3D ribbon and PNG (blue good / reds bad / purple train).
-    Cumulative distance is summed from the per-point haversine gaps (the track carries no km).
+    A Plotly figure (Altair collapsed to a flat line inside the expander). One Scatter per
+    contiguous MODE run, coloured bike-route blue / train-path purple with the SAME
+    MODE_DONUT_COLORS as the "By mode" donut (station hops count as bike). Consecutive runs share
+    their boundary point so the line stays continuous. Distance is the cumulative haversine gap.
     """
-    conditions = list(Palette.CONDITION_COLORS)
-    rows = []
+
+    def _label(mode: str) -> str:
+        rail, bike = WebMapConfig.MODE_DONUT_LABELS[Mode.RAIL], WebMapConfig.MODE_DONUT_LABELS[Mode.BIKE]
+        return rail if mode == str(Mode.RAIL) else bike
+
+    # Cumulative distance + mode label per point.
+    dists, elevs, labels = [], [], []
     dist_km = 0.0
     prev = track.points[0]
     for point in track.points:
         dist_km += haversine_distance_m(lat_a=prev.lat, lon_a=prev.lon, lat_b=point.lat, lon_b=point.lon) / 1000.0
+        dists.append(dist_km)
+        elevs.append(point.elevation_m)
+        labels.append(_label(mode=point.mode))
         prev = point
-        rows.append(
-            {
-                "km": dist_km,
-                "elevation": point.elevation_m,
-                "condition": classify_condition(
-                    mode=point.mode, surface_bad=point.surface_bad, road_bad=point.road_bad
-                ),
-            }
-        )
-    frame = pd.DataFrame(rows)
-    chart: alt.Chart = (
-        alt.Chart(frame, title="Elevation profile")
-        .mark_area(line=True, opacity=0.85)
-        .encode(
-            x=alt.X("km:Q", title="Distance (km)"),
-            y=alt.Y("elevation:Q", title="Elevation (m)", scale=alt.Scale(zero=False)),
-            color=alt.Color(
-                "condition:N",
-                scale=alt.Scale(domain=conditions, range=[Palette.CONDITION_COLORS[c] for c in conditions]),
-                legend=alt.Legend(orient="bottom", title=None),
-            ),
-            tooltip=[
-                alt.Tooltip("km:Q", format=".1f", title="km"),
-                alt.Tooltip("elevation:Q", format=".0f", title="m"),
-                alt.Tooltip("condition:N", title="segment"),
-            ],
-        )
-        .properties(height=200)
+
+    fig = go.Figure()
+    seen_legend: set[str] = set()
+    run_start = 0
+    for i in range(1, len(labels) + 1):
+        # Close a run at a mode change or the end; include the boundary point so runs join.
+        if i == len(labels) or labels[i] != labels[run_start]:
+            label = labels[run_start]
+            end = i if i == len(labels) else i + 1  # share the boundary vertex with the next run
+            fig.add_trace(
+                go.Scatter(
+                    x=dists[run_start:end],
+                    y=elevs[run_start:end],
+                    mode="lines",
+                    line={"color": MODE_DONUT_COLORS[label], "width": 2},
+                    name=label,
+                    legendgroup=label,
+                    showlegend=label not in seen_legend,  # one legend entry per mode
+                    hovertemplate="%{x:.1f} km · %{y:.0f} m<extra></extra>",
+                )
+            )
+            seen_legend.add(label)
+            run_start = i
+
+    lo, hi = min(elevs), max(elevs)
+    pad = max((hi - lo) * 0.1, 5.0)  # headroom so the line isn't glued to the axes
+    fig.update_layout(
+        title="Elevation profile",
+        height=220,
+        margin={"l": 0, "r": 0, "t": 30, "b": 0},
+        plot_bgcolor="white",
+        legend={"orientation": "h", "yanchor": "bottom", "y": -0.3},
+        xaxis={"title": "Distance (km)", "showgrid": True, "gridcolor": "rgba(200,200,200,0.3)"},
+        yaxis={
+            "title": "Elevation (m)",
+            "range": [lo - pad, hi + pad],
+            "showgrid": True,
+            "gridcolor": "rgba(200,200,200,0.3)",
+        },
     )
-    return chart
+    return fig
 
 
 def segment_color(*, mode: str, surface_bad: bool, road_bad: bool) -> list[int]:

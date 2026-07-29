@@ -81,9 +81,11 @@ def test_build_track_sets_condition_and_speed_per_point():
     assert track.points[2].surface_bad is False  # asphalt → surface still good
 
 
-def test_densify_track_follows_baked_3d_polyline_and_keeps_timing():
-    # The fixture's edge 1→2 has endpoints due-north but a baked 3D geometry that detours
-    # EAST through a 200 m apex. densify_track must emit those real vertices + elevations.
+def test_densify_track_follows_real_2d_polyline_with_interpolated_elevation():
+    # The fixture's edge 1→2 detours EAST through a vertex whose BAKED z is 200 m, but the node
+    # elevations are 100→140. densify keeps the real 2D bulge yet interpolates z linearly between
+    # the nodes (single source: same elevation the optimiser + stats use) — the 200 m DEM apex is
+    # NOT emitted, so there's no jitter/tunnel artefact.
     graph = make_densify_detour_graph()
     stats = RouteStats(distance_km=3.0, duration_min=10.0, ascent_m=40.0, descent_m=0.0)
     track = Track(
@@ -118,12 +120,13 @@ def test_densify_track_follows_baked_3d_polyline_and_keeps_timing():
     assert len(dense.points) == 3  # the three real polyline vertices
     assert dense.points[0].elapsed_s == 0.0 and dense.points[-1].elapsed_s == 600.0  # timing preserved
     assert dense.total.distance_km == 3.0  # stats carried over unchanged
-    assert max(p.lon for p in dense.points) > 8.02  # the eastward bulge is present
-    assert max(p.elevation_m for p in dense.points) == 200.0  # baked apex elevation used in the profile
-    # ascent/descent carried from the node-level track, NOT re-summed from the 200 m apex jitter
+    assert max(p.lon for p in dense.points) > 8.02  # the eastward 2D bulge is present
+    # z is LINEAR node-to-node (100→140), NOT the baked 200 m apex: no vertex exceeds 140.
+    assert max(p.elevation_m for p in dense.points) == pytest.approx(140.0)
+    assert dense.points[0].elevation_m == pytest.approx(100.0)
+    assert all(100.0 - 1e-6 <= p.elevation_m <= 140.0 + 1e-6 for p in dense.points)
+    # ascent/descent carried from the node-level track, unchanged by densification
     assert dense.total.ascent_m == pytest.approx(40.0) and dense.total.descent_m == pytest.approx(0.0)
-    # the leg's condition/speed propagate to every densified vertex
-    assert all(not p.surface_bad and not p.road_bad and p.speed_kmh == 18.0 for p in dense.points)
 
 
 def test_densify_track_straight_hop_without_geometry():

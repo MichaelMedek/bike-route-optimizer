@@ -160,7 +160,8 @@ def plan_route(
     logger.info(f"Route: {len(node_path)} nodes")
 
     track = build_track(graph=graph, node_path=node_path)
-    # Expand to the full baked 3D road polyline (elevation already in the artifact).
+    # Expand to the full real 2D polyline; elevation stays LINEAR node-to-node (edge_vertices_3d),
+    # so the GPX, 3D ribbon, and elevation profile all read the SAME elevation the optimiser and stats use
     track = densify_track(graph=graph, node_path=node_path, track=track)
     composition = route_composition(graph=graph, node_path=node_path)
     logger.info(

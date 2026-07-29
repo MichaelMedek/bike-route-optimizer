@@ -83,9 +83,9 @@ def _render_route_output(result: object) -> None:
         for col, (title, by_km, colors) in zip(st.columns(len(donuts)), donuts, strict=True):
             col.altair_chart(composition_donut(title=title, by_km=by_km, colors=colors), use_container_width=True)
 
-        # Below the donuts: the elevation profile (distance × elevation), coloured by the
-        # same condition palette as the 3D ribbon and PNG.
-        st.altair_chart(elevation_profile_chart(track=track), use_container_width=True)
+        # Below the donuts: the elevation profile (distance × elevation), line coloured by mode
+        # (bike/train) like the "By mode" donut.
+        st.plotly_chart(elevation_profile_chart(track=track), width="stretch")
 
     # Always visible: which trains to catch, the bike-leg Maps links, and the downloads —
     # the actionable output the rider actually leaves with.
@@ -182,7 +182,11 @@ def main() -> None:
 
     # 2. Set start & end: resolve_endpoints geocodes the box texts + snaps to the graph;
     # we mark them on the map and recenter. Recentering lives ONLY here (camera_epoch).
-    if st.button(SET_LABEL, use_container_width=True):
+    if st.button(
+        SET_LABEL,
+        use_container_width=True,
+        help="Geocode the Start/End places",
+    ):
         try:
             with st.spinner("Looking up places…"):
                 start, end = resolve_endpoints(origin=origin, destination=destination)

@@ -15,6 +15,7 @@ from bike_router.geo import haversine_distance_m
 from bike_router.routing import shortest_route
 from bike_router.track import build_track
 from bike_router.webmap import (
+    MODE_DONUT_COLORS,
     RibbonSegment,
     ViewState,
     default_view_state,
@@ -127,21 +128,19 @@ def test_route_ribbon_segments_custom_float():
     assert points[0][2] == pytest.approx(first_point.elevation_m + 250.0)
 
 
-def test_elevation_profile_chart_distance_elevation_and_condition_colors():
-    # Profile encodes distance (km) × elevation, coloured by the SAME condition palette as the
-    # ribbon. The line graph rises 100→130→100 m over two 800 m edges → ~1.6 km, all "good".
+def test_elevation_profile_chart_distance_elevation_line_coloured_by_mode():
+    # Plotly profile: distance × elevation, line tinted by mode with the SAME colours as the
+    # "By mode" donut. The all-bike line graph rises 100→130→100 m → one bike-blue trace.
     track = _line_track()
-    chart = elevation_profile_chart(track=track)
-    frame = chart.data
-    assert list(frame.columns) == ["km", "elevation", "condition"]
-    assert frame["km"].iloc[0] == pytest.approx(0.0)
-    assert frame["km"].is_monotonic_increasing and frame["km"].iloc[-1] > 0  # cumulative distance
-    assert frame["elevation"].max() == pytest.approx(130.0)
-    assert set(frame["condition"]) == {"good"}  # all-bike paved/quiet → good
-    # colour scale is keyed on the shared Palette.CONDITION_COLORS domain
-    scale = chart.to_dict()["encoding"]["color"]["scale"]
-    assert scale["domain"] == list(Palette.CONDITION_COLORS)
-    assert scale["range"] == [Palette.CONDITION_COLORS[c] for c in Palette.CONDITION_COLORS]
+    fig = elevation_profile_chart(track=track)
+    assert len(fig.data) == 1  # single contiguous bike run
+    trace = fig.data[0]
+    assert trace.name == WebMapConfig.MODE_DONUT_LABELS[Mode.BIKE]
+    assert trace.line.color == MODE_DONUT_COLORS[WebMapConfig.MODE_DONUT_LABELS[Mode.BIKE]]  # matches the donut
+    assert max(trace.y) == pytest.approx(130.0) and min(trace.y) == pytest.approx(100.0)
+    assert trace.x[0] == pytest.approx(0.0) and trace.x[-1] > 0  # cumulative distance
+    lo, hi = fig.layout.yaxis.range
+    assert lo < 100.0 and hi > 130.0  # padded elevation range (not a flat/auto axis)
 
 
 def test_default_view_state_is_dach_overview():

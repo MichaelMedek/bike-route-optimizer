@@ -10,10 +10,11 @@ from dataclasses import dataclass
 from typing import Any
 
 import networkx as nx
+import numpy as np
 
 from bike_router.constants import CostConfig, GpxConfig, Mode, RailConfig, SpeedConfig
 from bike_router.cost import road_tier, surface_tier
-from bike_router.geo import haversine_distance_m
+from bike_router.geo import haversine_distance_m, haversine_vec
 from bike_router.speed import effective_speed_kmh, kmh_to_ms
 
 
@@ -310,21 +311,24 @@ def densify_track(graph: nx.MultiDiGraph, node_path: list[int], track: Track) ->
 def edge_vertices_3d(
     graph: nx.MultiDiGraph, node_a: int, node_b: int, data: dict[str, Any]
 ) -> list[tuple[float, float, float]]:
-    """(lon, lat, elev) vertices of edge a→b from its baked 3D geometry.
+    """(lon, lat, elev) vertices of edge a→b: REAL 2D polyline, elevation LINEAR node-to-node.
 
-    Bike and rail edges both carry a baked 3D LineString; only station access-links
-    have no geometry, so fall back to a straight segment at the two node elevations.
+    z is interpolated between the two node elevations by along-edge distance (NOT the per-vertex
+    baked DEM z) — the single elevation source the optimiser + stats also use. Station links have
+    no geometry → a straight two-node segment.
     """
-    geom = data.get("geometry")
     ea, eb = float(graph.nodes[node_a]["elevation"]), float(graph.nodes[node_b]["elevation"])
-    if geom is None:
-        return [
-            (graph.nodes[node_a]["x"], graph.nodes[node_a]["y"], ea),
-            (graph.nodes[node_b]["x"], graph.nodes[node_b]["y"], eb),
-        ]
-    coords = [(c[0], c[1], c[2] if len(c) > 2 else ea) for c in geom.coords]
-    # Orient a→b by matching the first vertex to node_a's coords.
     ax, ay = graph.nodes[node_a]["x"], graph.nodes[node_a]["y"]
-    if abs(coords[0][0] - ax) + abs(coords[0][1] - ay) > abs(coords[-1][0] - ax) + abs(coords[-1][1] - ay):
-        coords = coords[::-1]
-    return coords
+    geom = data.get("geometry")
+    if geom is None:
+        return [(ax, ay, ea), (graph.nodes[node_b]["x"], graph.nodes[node_b]["y"], eb)]
+    xy = np.asarray(geom.coords, dtype=np.float64)[:, :2]  # drop any baked z; keep the 2D path
+    # Orient a→b by matching the first vertex to node_a's coords.
+    if abs(xy[0, 0] - ax) + abs(xy[0, 1] - ay) > abs(xy[-1, 0] - ax) + abs(xy[-1, 1] - ay):
+        xy = xy[::-1]
+    # Vectorized cumulative along-edge distance → linear z between the node elevations.
+    seg = haversine_vec(lat_a=xy[:-1, 1], lon_a=xy[:-1, 0], lat_b=xy[1:, 1], lon_b=xy[1:, 0])
+    cum = np.concatenate(([0.0], np.cumsum(seg)))
+    frac = cum / (cum[-1] or 1.0)
+    z = ea + (eb - ea) * frac
+    return [(float(x), float(y), float(zi)) for (x, y), zi in zip(xy, z, strict=True)]

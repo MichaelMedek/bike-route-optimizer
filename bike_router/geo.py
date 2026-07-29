@@ -18,6 +18,8 @@ def haversine_vec(
     lon_b: "npt.NDArray[np.float64] | float",
 ) -> "npt.NDArray[np.float64]":
     """Vectorized great-circle distance in metres (elementwise over broadcastable arrays)."""
+    assert np.all(np.abs(lat_a) <= 90.0) and np.all(np.abs(lat_b) <= 90.0), "latitude out of range"
+    assert np.all(np.abs(lon_a) <= 180.0) and np.all(np.abs(lon_b) <= 180.0), "longitude out of range"
     delta_lat = np.radians(lat_b - lat_a)
     delta_lon = np.radians(lon_b - lon_a)
     chord = (
