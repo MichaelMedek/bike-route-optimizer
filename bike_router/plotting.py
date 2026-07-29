@@ -22,8 +22,13 @@ from matplotlib.ticker import MaxNLocator  # noqa: E402
 
 from bike_router.composition import RouteComposition, format_composition  # noqa: E402
 from bike_router.constants import PlotConfig, RoutingParams, WebMapConfig  # noqa: E402
-from bike_router.cost import road_tier, surface_tier  # noqa: E402
-from bike_router.track import Track, cheapest_edge, classify_condition, edge_vertices_3d  # noqa: E402
+from bike_router.track import (  # noqa: E402
+    Track,
+    cheapest_edge,
+    classify_condition,
+    edge_condition_speed,
+    edge_vertices_3d,
+)
 from bike_router.webmap import segment_color  # noqa: E402
 
 logger = logging.getLogger(__name__)
@@ -67,8 +72,13 @@ def _draw_route_overlay(*, axes: Axes, graph: nx.MultiDiGraph, route_nodes: list
     for node_a, node_b in zip(route_nodes[:-1], route_nodes[1:], strict=True):
         data = cheapest_edge(edges=graph.get_edge_data(node_a, node_b))
         mode = str(data["mode"])
-        surface_bad = surface_tier(surface=data.get("surface")) != 0
-        road_bad = road_tier(highway=data.get("highway")) != 0
+        # Condition booleans from the single source (edge_condition_speed), not re-thresholded here.
+        surface_bad, road_bad, _speed = edge_condition_speed(
+            data=data,
+            elev_source=float(graph.nodes[node_a]["elevation"]),
+            elev_target=float(graph.nodes[node_b]["elevation"]),
+            length_m=float(data["length"]),
+        )
         rgb = segment_color(mode=mode, surface_bad=surface_bad, road_bad=road_bad)
         color = (rgb[0] / 255, rgb[1] / 255, rgb[2] / 255)
         edge_label = classify_condition(mode=mode, surface_bad=surface_bad, road_bad=road_bad)

@@ -54,10 +54,10 @@ def _as_values(tag: object) -> list[str]:
     run spliced with an untagged segment → ``['asphalt', nan]``). Treating ``nan`` as the literal string
     "nan" would reject every untagged/mixed road — dropping the majority of the network. So drop nans.
     """
-    if _is_missing(tag):
+    if _is_missing(value=tag):
         return []
     if isinstance(tag, list | tuple | set):
-        return [str(value).lower() for value in tag if not _is_missing(value)]
+        return [str(value).lower() for value in tag if not _is_missing(value=value)]
     return [str(tag).lower()]
 
 

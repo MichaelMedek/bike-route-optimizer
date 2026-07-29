@@ -109,6 +109,14 @@ def climb_totals(deltas: list[float]) -> tuple[float, float]:
     return ascent, descent
 
 
+def edge_grade(*, elev_source: float, elev_target: float, length_m: float) -> float:
+    """Signed rise/run of an edge (+ uphill, − downhill) — the ONE grade formula.
+
+    length_m is a baked graph invariant (> 0); a zero would divide-raise, surfacing the bug.
+    """
+    return (elev_target - elev_source) / length_m
+
+
 def iter_route_edges(graph: nx.MultiDiGraph, node_path: list[int]) -> Iterator[tuple[int, int, dict[str, Any]]]:
     """Yield ``(node_a, node_b, cheapest_edge_data)`` for each hop on the A* path."""
     for node_a, node_b in zip(node_path[:-1], node_path[1:], strict=True):
@@ -126,7 +134,7 @@ def edge_condition_speed(
     mode = data["mode"]
     if mode == Mode.BIKE:
         s_tier = surface_tier(surface=data.get("surface"))
-        grade = (elev_target - elev_source) / length_m if length_m > 0 else 0.0
+        grade = edge_grade(elev_source=elev_source, elev_target=elev_target, length_m=length_m)
         speed_kmh = effective_speed_kmh(surface_tier=s_tier, grade=grade)
         return s_tier != 0, road_tier(highway=data.get("highway")) != 0, speed_kmh
     elif mode == Mode.RAIL:
@@ -171,7 +179,11 @@ def build_track(graph: nx.MultiDiGraph, node_path: list[int]) -> Track:
         length_m=float(first_data["length"]),
     )
     first_len = float(first_data["length"])
-    first_grade = (float(graph.nodes[node_path[1]]["elevation"]) - float(first["elevation"])) / first_len
+    first_grade = edge_grade(
+        elev_source=float(first["elevation"]),
+        elev_target=float(graph.nodes[node_path[1]]["elevation"]),
+        length_m=first_len,
+    )
     points = [
         TrackPoint(
             lat=first["y"],
@@ -217,7 +229,7 @@ def build_track(graph: nx.MultiDiGraph, node_path: list[int]) -> Track:
         total_m += length_m
 
         target = graph.nodes[node_b]
-        grade = delta / length_m
+        grade = edge_grade(elev_source=elev_a, elev_target=elev_b, length_m=length_m)
         points.append(
             TrackPoint(
                 lat=target["y"],

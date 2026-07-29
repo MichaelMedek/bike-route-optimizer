@@ -24,6 +24,7 @@ from shapely.geometry import LineString, Polygon, box
 
 from bike_router.constants import GraphConfig, Mode, NodeType
 from bike_router.errors import OutOfCoverageError
+from bike_router.geo import haversine_vec
 from bike_router.progress import ProgressFn, null_progress
 
 logger = logging.getLogger(__name__)
@@ -228,7 +229,7 @@ def graph_from_tables(nodes_df: pd.DataFrame, edges_df: pd.DataFrame) -> nx.Mult
                 "y": float(lat),
                 "elevation": float(elev),
                 "node_type": NodeType(ntype),
-                "station_name": name if isinstance(name, str) else None,
+                "station_name": _str_or_none(value=name),
             },
         )
         for osmid, lat, lon, elev, ntype, name in zip(
@@ -242,8 +243,8 @@ def graph_from_tables(nodes_df: pd.DataFrame, edges_df: pd.DataFrame) -> nx.Mult
         )
     )
     present = set(graph.nodes)
-    surfaces = edges_df["surface"].map(lambda v: v if isinstance(v, str) else None)
-    highways = edges_df["highway"].map(lambda v: v if isinstance(v, str) else None)
+    surfaces = edges_df["surface"].map(_str_or_none)
+    highways = edges_df["highway"].map(_str_or_none)
     geoms = edges_df["geometry_wkt"].map(lambda w: from_wkt(w) if isinstance(w, str) else None)
     graph.add_edges_from(
         (
@@ -391,8 +392,8 @@ def snap_to_node(lat: float, lon: float, graph_dir: Path = GraphConfig.GRAPH_DIR
         raise OutOfCoverageError(f"No routable graph near ({lat:.4f}, {lon:.4f}) — outside the covered region.")
     lats = nodes_df["lat"].to_numpy()
     lons = nodes_df["lon"].to_numpy()
-    d2 = (lats - lat) ** 2 + ((lons - lon) * math.cos(math.radians(lat))) ** 2  # planar; fine for nearest
-    row = nodes_df.iloc[int(d2.argmin())]
+    dists = haversine_vec(lat_a=lat, lon_a=lon, lat_b=lats, lon_b=lons)  # shared vectorized great-circle
+    row = nodes_df.iloc[int(dists.argmin())]
     return float(row["lat"]), float(row["lon"]), float(row["elevation_m"])
 
 
@@ -438,6 +439,11 @@ def _geometry_wkt(geom: object) -> str | None:
     return None
 
 
+def _str_or_none(value: object) -> str | None:
+    """A str value, else None — the ONE 'non-str/NaN → None' coercion for tag/name columns."""
+    return value if isinstance(value, str) else None
+
+
 def _scalar(value: object) -> object:
     """Collapse a list-valued OSM tag to its first element; unknown/empty → None.
 
@@ -447,4 +453,4 @@ def _scalar(value: object) -> object:
     """
     if isinstance(value, list | tuple):
         return value[0] if value else None
-    return value if isinstance(value, str) else None
+    return _str_or_none(value=value)

@@ -29,11 +29,10 @@ def haversine_vec(
 
 
 def haversine_distance_m(lat_a: float, lon_a: float, lat_b: float, lon_b: float) -> float:
-    """Scalar great-circle distance between two lat/lon points, in metres."""
-    assert -90.0 <= lat_a <= 90.0, "lat_a out of range"
-    assert -90.0 <= lat_b <= 90.0, "lat_b out of range"
-    assert -180.0 <= lon_a <= 180.0, "lon_a out of range"
-    assert -180.0 <= lon_b <= 180.0, "lon_b out of range"
+    """Scalar great-circle distance between two lat/lon points, in metres.
+
+    Thin float() wrapper over haversine_vec — which owns the lat/lon range asserts.
+    """
     distance = float(haversine_vec(lat_a=lat_a, lon_a=lon_a, lat_b=lat_b, lon_b=lon_b))
     assert distance >= 0, "distance must be non-negative"
     return distance

@@ -64,7 +64,7 @@ class RailConfig:
     BOARDING_WAIT_S = 1800.0  # 30 min wait added once per boarding (time only)
     STATION_RADIUS_M = 200.0  # bike node ↔ station-node access-link distance
     STATION_MAX_ENTRANCES = 5  # declare up to this many nearest bike nodes as entrances
-    RAIL_TAGS = ("rail",)  # OSM railway= values kept as routable track
+    RAIL_TAGS = ("rail", "light_rail", "narrow_gauge")  # OSM railway= values kept as routable track
     STATION_TAGS = ("station", "halt")  # OSM railway= values treated as boardable stops
 
 
@@ -95,10 +95,8 @@ class GraphConfig:
     TILE_DEG = 0.5
     # Lat/lon decimal places kept when serializing geometry (6 dp ≈ 0.1 m).
     COORD_PRECISION = 6
-    # Min total bike-edge length (km) for an isolated bike component to be KEPT. A region is a clip:
-    # bike roads legitimately split into pieces that connect only through neighbours, so we do NOT force
-    # one component. Small strays (<this) are dropped as noise; a large island (e.g. lake/ocean island
-    # roads, usable once you're there) is kept. Rail is exempt — it must always be ONE component.
+    # Min bike-edge length (km) to KEEP an isolated bike component. A region is a clip, so bike roads
+    # legitimately split; small strays (<this) are pruned as noise, large islands kept. Rail is exempt.
     MIN_BIKE_COMPONENT_KM = 50.0
     # Reader tolerance: stored height_diff_m must match to_elev − from_elev within this
     # (metres), else the artifact is corrupt/stale and the load hard-fails.
@@ -175,11 +173,8 @@ class Palette:
 class SurfaceConfig:
     """Surface → penalty TIER (0 = paved/good, 1 = loose/moderate, 2 = rough/natural).
 
-    ALLOWLIST: only the categories listed here enter the graph. Any OTHER named surface
-    (mud/sand/rock/impassable/…) is dropped at build time; a missing/untagged surface is
-    assumed DEFAULT_TIER and kept. The tier is a literal multiplier on the unpaved penalty:
-    tier 0 rides free, tier 1 adds --extra_km_per_unpaved_km once, tier 2 doubles it (natural
-    ground/dirt/grass — rideable but rough, per the OSM surface wiki).
+    ALLOWLIST: only listed categories enter the graph (others dropped at build; untagged →
+    DEFAULT_TIER). The tier is a literal multiplier on --extra_km_per_unpaved_km (0 free, 1 ×1, 2 ×2).
     """
 
     SURFACE_TIER = {

@@ -222,7 +222,7 @@ def _assert_split_overlaps(regions: list[Region]) -> None:
             _assert_rectangular_tiling(pbf=pbf, a_key=a_key, a=a, b_key=b_key, b=b)
 
 
-_assert_split_overlaps(DACH_REGIONS)  # validate the split config at import — a bad split never runs
+_assert_split_overlaps(regions=DACH_REGIONS)  # validate the split config at import — a bad split never runs
 
 
 def _pbf_dest(*, geofabrik_path: str) -> Path:
@@ -328,6 +328,18 @@ def _region_complete(region_key: str) -> bool:
     return bool(json.loads(meta_path.read_text()).get("confirmed_complete", False))
 
 
+def _base_meta(*, nodes_df: pd.DataFrame, edges_df: pd.DataFrame, tolerance_m: float) -> dict:
+    """The meta.json keys common to a per-region artifact and the combined DACH artifact."""
+    return {
+        "bbox": list(compute_bbox(nodes_df=nodes_df)),
+        "tile_deg": GraphConfig.TILE_DEG,
+        "tolerance_m": tolerance_m,
+        "n_nodes": int(len(nodes_df)),
+        "n_edges": int(len(edges_df)),
+        "n_stations": int((nodes_df["node_type"] == NodeType.RAIL).sum()),
+    }
+
+
 def _assert_staged_sizes_ok(*, regions: list[Region], pbfs: dict[str, Path], cli_bbox: Bbox | None) -> None:
     """Preflight: osmium-clip EVERY region to a temp file and fail loud if any exceeds the per-region
     MB ceiling — BEFORE the build loop, so an oversized split is caught in ~seconds (native C++ clip).
@@ -368,12 +380,7 @@ def _process_region(
     nodes_df, edges_df = remap_contiguous(nodes_df=nodes_df, edges_df=edges_df)
     region_dir = _REGIONS_DIR / region_key
     meta = {
-        "bbox": list(compute_bbox(nodes_df=nodes_df)),
-        "tile_deg": GraphConfig.TILE_DEG,
-        "tolerance_m": tolerance_m,
-        "n_nodes": int(len(nodes_df)),
-        "n_edges": int(len(edges_df)),
-        "n_stations": int((nodes_df["node_type"] == NodeType.RAIL).sum()),
+        **_base_meta(nodes_df=nodes_df, edges_df=edges_df, tolerance_m=tolerance_m),
         "confirmed_complete": True,  # written LAST via write_graph_parquet → the atomic "done" flag
     }
     write_graph_parquet(nodes_df=nodes_df, edges_df=edges_df, meta=meta, out_dir=region_dir)
@@ -566,12 +573,7 @@ def main(argv: list[str] | None = None) -> int:
     _assert_all_regions_complete(regions=built)
     nodes_df, edges_df = _combine_regions(regions=built)
     meta = {
-        "bbox": list(compute_bbox(nodes_df=nodes_df)),
-        "tile_deg": GraphConfig.TILE_DEG,
-        "tolerance_m": tolerance_m,
-        "n_nodes": int(len(nodes_df)),
-        "n_edges": int(len(edges_df)),
-        "n_stations": int((nodes_df["node_type"] == NodeType.RAIL).sum()),
+        **_base_meta(nodes_df=nodes_df, edges_df=edges_df, tolerance_m=tolerance_m),
         "regions_built": built,
     }
     write_graph_parquet(nodes_df=nodes_df, edges_df=edges_df, meta=meta, out_dir=out_dir, compression="zstd")

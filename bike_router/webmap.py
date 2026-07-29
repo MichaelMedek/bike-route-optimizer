@@ -36,7 +36,8 @@ def composition_donut(title: str, by_km: dict[str, float], colors: dict[str, str
     ``colors`` maps each category label to a hex colour so wedges are meaningful
     (blue good / red bad; blue bike / purple train) rather than Altair defaults.
     """
-    total = sum(by_km.values()) or 1.0
+    total = sum(by_km.values())
+    assert total > 0, "composition donut needs a non-empty km breakdown"
     frame = pd.DataFrame([{"category": label, "km": km, "pct": km / total * 100} for label, km in by_km.items()])
     domain = list(colors)
     chart: alt.Chart = (
@@ -153,7 +154,13 @@ def _segment_tooltip(point: TrackPoint) -> str:
     surface = "unpaved" if point.surface_bad else "paved"
     road = "main road" if point.road_bad else "quiet way"
     grade_pct = point.grade * 100
-    slope = f"{grade_pct:+.0f}% {'uphill' if grade_pct > 0.5 else 'downhill' if grade_pct < -0.5 else 'flat'}"
+    if grade_pct > 0.5:
+        direction = "uphill"
+    elif grade_pct < -0.5:
+        direction = "downhill"
+    else:
+        direction = "flat"
+    slope = f"{grade_pct:+.0f}% {direction}"
     return f"{surface} · {road} · {slope} · ~{point.speed_kmh:.0f} km/h"
 
 

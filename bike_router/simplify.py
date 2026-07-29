@@ -92,10 +92,8 @@ class RailLeg:
 def split_rail_legs(graph: nx.MultiDiGraph, node_path: list[int]) -> list[RailLeg]:
     """Boarding + alighting station (name + position) for each train ride on the route.
 
-    A train ride is a maximal run of consecutive RAIL edges (an on-train change at a
-    junction stays one ride); the first rail node is boarded, the last alighted. Two
-    separate rides (a pedalled leg between them) yield two RailLegs — this is why a
-    route with two trains shows three pedalled Google Maps legs.
+    A ride is a maximal run of consecutive RAIL edges (a junction change stays one ride):
+    board the first rail node, alight the last. Separate rides yield separate RailLegs.
     """
     return [
         RailLeg(board=_station(graph=graph, node=run[0]), alight=_station(graph=graph, node=run[-1]))

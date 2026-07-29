@@ -81,7 +81,7 @@ def _render_route_output(result: object) -> None:
             ("By mode", comp.by_mode_km, MODE_DONUT_COLORS),
         )
         for col, (title, by_km, colors) in zip(st.columns(len(donuts)), donuts, strict=True):
-            col.altair_chart(composition_donut(title=title, by_km=by_km, colors=colors), use_container_width=True)
+            col.altair_chart(composition_donut(title=title, by_km=by_km, colors=colors), width="stretch")
 
         # Below the donuts: the elevation profile (distance × elevation), line coloured by mode
         # (bike/train) like the "By mode" donut.
@@ -109,7 +109,7 @@ def _render_route_output(result: object) -> None:
             data=path.read_bytes(),
             file_name=path.name,
             mime=mime,
-            use_container_width=True,
+            width="stretch",
         )
 
 
@@ -129,7 +129,7 @@ def _place_input(*, field: str, label: str, placeholder: str, bbox: tuple[float,
         bbox: coverage box biasing the suggestions.
     """
     typed = st.text_input(label, key=field, placeholder=placeholder)
-    if typed == st.session_state.get(f"{field}_resolved"):
+    if typed == st.session_state[f"{field}_resolved"]:
         return typed  # already resolved to this text → no stale suggestions under the box
     # Suggestions ranked by Photon relevance (OSM prominence + proximity to the bbox centre);
     # each is a button that fills the box on click. Deduped and index-keyed so a repeated
@@ -144,7 +144,7 @@ def _place_input(*, field: str, label: str, placeholder: str, bbox: tuple[float,
             key=f"{field}_sug_{index}",
             on_click=_fill_box,
             kwargs={"field": field, "value": suggestion},
-            use_container_width=True,
+            width="stretch",
         )
     return typed
 
@@ -164,6 +164,8 @@ def main() -> None:
         "result": None,
         "ribbon_segments": None,
         "stations": None,
+        "start_box_resolved": None,  # exact box text Set resolved (gates Compute + hides suggestions)
+        "end_box_resolved": None,
         "view": default_view_state(),
         "camera_epoch": 0,
     }.items():
@@ -184,7 +186,7 @@ def main() -> None:
     # we mark them on the map and recenter. Recentering lives ONLY here (camera_epoch).
     if st.button(
         SET_LABEL,
-        use_container_width=True,
+        width="stretch",
         help="Geocode the Start/End places",
     ):
         try:
@@ -224,8 +226,8 @@ def main() -> None:
     endpoints_set = st.session_state.start_latlon is not None
     endpoints_match = (
         endpoints_set
-        and origin == st.session_state.get("start_box_resolved")
-        and destination == st.session_state.get("end_box_resolved")
+        and origin == st.session_state.start_box_resolved
+        and destination == st.session_state.end_box_resolved
     )
     # The three valid states are explicit branches; the else is unreachable (guard).
     if not endpoints_set:
@@ -236,7 +238,7 @@ def main() -> None:
         compute_help = "Plan the route for the current slider settings"
     else:
         raise AssertionError(f"unreachable compute state: set={endpoints_set} match={endpoints_match}")
-    if st.button(COMPUTE_LABEL, use_container_width=True, disabled=not endpoints_match, help=compute_help):
+    if st.button(COMPUTE_LABEL, width="stretch", disabled=not endpoints_match, help=compute_help):
         try:
             params = RoutingParams(**slider_values)
             with st.spinner("Planning route…"):

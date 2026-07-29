@@ -69,6 +69,17 @@ class RouteResult:
     composition: RouteComposition
 
 
+def _geocode_both(*, origin: str, destination: str) -> tuple[tuple[float, float], tuple[float, float]]:
+    """Geocode origin + destination to (lat, lon) via ONE rate-limited fn (1 req/s spans both).
+
+    Fail-fast: a bad Start raises before Destination is looked up.
+    """
+    geocode_fn = make_geocode_fn()
+    start_ll = geocode_endpoint(place=origin, label="Start", geocode_fn=geocode_fn)
+    dest_ll = geocode_endpoint(place=destination, label="Destination", geocode_fn=geocode_fn)
+    return start_ll, dest_ll
+
+
 def resolve_endpoints(
     *, origin: str, destination: str, graph_dir: Path = GraphConfig.GRAPH_DIR
 ) -> tuple[tuple[float, float, float], tuple[float, float, float]]:
@@ -83,9 +94,7 @@ def resolve_endpoints(
         destination: Destination place string.
         graph_dir: Prebuilt-graph dir (tests override; defaults to the shipped artifact).
     """
-    geocode_fn = make_geocode_fn()  # one rate-limited fn spans both calls (1 req/s)
-    start_ll = geocode_endpoint(place=origin, label="Start", geocode_fn=geocode_fn)
-    end_ll = geocode_endpoint(place=destination, label="End", geocode_fn=geocode_fn)
+    start_ll, end_ll = _geocode_both(origin=origin, destination=destination)
     return (
         snap_to_node(lat=start_ll[0], lon=start_ll[1], graph_dir=graph_dir),
         snap_to_node(lat=end_ll[0], lon=end_ll[1], graph_dir=graph_dir),
@@ -110,10 +119,7 @@ def plan_route(
         params: The rider's five "extra km" routing preferences (incl. rail sliders).
         graph_dir: Prebuilt-graph dir (tests override; defaults to the shipped artifact).
     """
-    geocode_fn = make_geocode_fn()  # one rate-limited fn spans both calls (1 req/s)
-    # Fail-fast: a bad Start raises before Destination is ever looked up.
-    start_latlon = geocode_endpoint(place=origin, label="Start", geocode_fn=geocode_fn)
-    dest_latlon = geocode_endpoint(place=destination, label="Destination", geocode_fn=geocode_fn)
+    start_latlon, dest_latlon = _geocode_both(origin=origin, destination=destination)
     logger.info(f"Geocoded: {origin}={start_latlon}, {destination}={dest_latlon}")
 
     trip_km = (

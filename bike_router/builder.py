@@ -63,9 +63,9 @@ BIKE_LAYER = LayerSpec(
     custom_filter=None, filter_type=None, mode=Mode.BIKE, node_type=NodeType.BIKE, surface_allowlist=True
 )
 RAIL_LAYER = LayerSpec(
-    # rail + light_rail + narrow_gauge = routable passenger rail (S-Bahn/OEG regional lines). Anchored so
+    # Routable passenger rail from RailConfig.RAIL_TAGS (single source). Anchored so
     # "abandoned"/"disused" variants don't match; tram + funicular stay excluded (urban, not intercity).
-    custom_filter='["railway"~"^(rail|light_rail|narrow_gauge)$"]',
+    custom_filter=f'["railway"~"^({"|".join(RailConfig.RAIL_TAGS)})$"]',
     filter_type="keep",
     mode=Mode.RAIL,
     node_type=NodeType.RAIL,

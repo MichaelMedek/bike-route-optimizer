@@ -133,14 +133,10 @@ def photon_autocomplete(
     limit: int = PhotonConfig.LIMIT,
     http_get: HttpGetter = _default_http_get,
 ) -> list[str]:
-    """Search-as-you-type place labels biased to ``bbox`` (for the suggestion helper).
+    """Search-as-you-type place labels ("Name, City, State") biased to ``bbox``.
 
-    Returns display labels only ("Name, City, State"); clicking one just fills the text
-    box (still freely editable), and the box text is what gets geocoded on submit — so
-    suggestions are a pure convenience, never required.
-
-    A blank term returns [] without a request. ANY network/timeout/parse error also
-    returns [] — a per-keystroke typeahead must never crash on a weak connection.
+    A blank term or ANY network/timeout/parse error returns [] — a per-keystroke typeahead
+    must never crash on a weak connection (suggestions are convenience, never required).
 
     Args:
         term: The partial text the user has typed.
