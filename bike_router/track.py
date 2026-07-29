@@ -14,7 +14,7 @@ import numpy as np
 
 from bike_router.constants import CostConfig, GpxConfig, Mode, RailConfig, SpeedConfig
 from bike_router.cost import road_tier, surface_tier
-from bike_router.geo import haversine_distance_m, haversine_vec
+from bike_router.geo import haversine_vec
 from bike_router.speed import effective_speed_kmh, kmh_to_ms
 
 
@@ -278,11 +278,9 @@ def densify_track(graph: nx.MultiDiGraph, node_path: list[int], track: Track) ->
         leg_grade = leg_point.grade  # the leg's node-level gradient, shared by its dense vertices
         verts = edge_vertices_3d(graph=graph, node_a=node_a, node_b=node_b, data=data)
         t_start, t_end = track.points[index].elapsed_s, track.points[index + 1].elapsed_s
-        seg_lengths = [
-            haversine_distance_m(lat_a=verts[i][1], lon_a=verts[i][0], lat_b=verts[i + 1][1], lon_b=verts[i + 1][0])
-            for i in range(len(verts) - 1)
-        ]
-        total = sum(seg_lengths) or 1.0
+        vxy = np.asarray([(v[0], v[1]) for v in verts], dtype=np.float64)
+        seg_lengths = haversine_vec(lat_a=vxy[:-1, 1], lon_a=vxy[:-1, 0], lat_b=vxy[1:, 1], lon_b=vxy[1:, 0])
+        total = float(seg_lengths.sum()) or 1.0
         cum = 0.0
         last_leg = index == len(node_path) - 2
         stop = len(verts) if last_leg else len(verts) - 1  # avoid duplicating shared node vertex

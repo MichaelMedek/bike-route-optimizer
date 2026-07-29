@@ -9,11 +9,12 @@ import math
 from dataclasses import dataclass
 
 import altair as alt
+import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 
 from bike_router.constants import Mode, Palette, RoadConfig, SurfaceConfig, WebMapConfig
-from bike_router.geo import haversine_distance_m
+from bike_router.geo import haversine_vec
 from bike_router.track import Track, TrackPoint, classify_condition
 
 
@@ -72,16 +73,13 @@ def elevation_profile_chart(track: Track) -> go.Figure:
         rail, bike = WebMapConfig.MODE_DONUT_LABELS[Mode.RAIL], WebMapConfig.MODE_DONUT_LABELS[Mode.BIKE]
         return rail if mode == str(Mode.RAIL) else bike
 
-    # Cumulative distance + mode label per point.
-    dists, elevs, labels = [], [], []
-    dist_km = 0.0
-    prev = track.points[0]
-    for point in track.points:
-        dist_km += haversine_distance_m(lat_a=prev.lat, lon_a=prev.lon, lat_b=point.lat, lon_b=point.lon) / 1000.0
-        dists.append(dist_km)
-        elevs.append(point.elevation_m)
-        labels.append(_label(mode=point.mode))
-        prev = point
+    # Cumulative distance (vectorized) + per-point mode label + elevation.
+    lats = np.array([p.lat for p in track.points], dtype=np.float64)
+    lons = np.array([p.lon for p in track.points], dtype=np.float64)
+    step_km = haversine_vec(lat_a=lats[:-1], lon_a=lons[:-1], lat_b=lats[1:], lon_b=lons[1:]) / 1000.0
+    dists = np.concatenate(([0.0], np.cumsum(step_km)))
+    elevs = [p.elevation_m for p in track.points]
+    labels = [_label(mode=p.mode) for p in track.points]
 
     fig = go.Figure()
     seen_legend: set[str] = set()
@@ -268,7 +266,7 @@ def route_view_state(start_latlon: tuple[float, float], end_latlon: tuple[float,
     """
     start_lat, start_lon = start_latlon
     end_lat, end_lon = end_latlon
-    span_m = haversine_distance_m(lat_a=start_lat, lon_a=start_lon, lat_b=end_lat, lon_b=end_lon)
+    span_m = float(haversine_vec(lat_a=start_lat, lon_a=start_lon, lat_b=end_lat, lon_b=end_lon))
     return ViewState(
         latitude=(start_lat + end_lat) / 2.0,
         longitude=(start_lon + end_lon) / 2.0,
