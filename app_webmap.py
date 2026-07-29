@@ -51,32 +51,32 @@ def _suggest(term: str, bbox: tuple[float, float, float, float]) -> list[str]:
 
 
 def _render_route_output(result: object) -> None:
-    """Stats, composition donuts, train legs, Google Maps links, and downloads."""
+    """Route output: stats + donuts in a collapsible box; trains, links, downloads always shown."""
     track = result.track
-    # Two metric rows: the whole journey (bike + train) and the pedalled part only.
-    # Both render the SAME four stats via RouteStats.metric_pairs (single source of format).
-    stat_rows = (
-        ("**Total** (bike + train)", track.total, "Time"),
-        ("**Bike only**", track.bike, "Ride time"),
-    )
-    for caption, stats, duration_label in stat_rows:
-        st.caption(caption)
-        pairs = stats.metric_pairs(duration_label=duration_label)
-        for col, (label, value) in zip(st.columns(len(pairs)), pairs, strict=True):
-            col.metric(label, value)
+    # Collapsible: the two stat rows (bike + total) and the three composition donuts —
+    # detail the rider can expand, not the primary call to action.
+    with st.expander("📊 Stats & composition", expanded=False):
+        stat_rows = (
+            ("**Total** (bike + train)", track.total, "Time"),
+            ("**Bike only**", track.bike, "Ride time"),
+        )
+        for caption, stats, duration_label in stat_rows:
+            st.caption(caption)
+            pairs = stats.metric_pairs(duration_label=duration_label)
+            for col, (label, value) in zip(st.columns(len(pairs)), pairs, strict=True):
+                col.metric(label, value)
 
-    # Composition: three interactive donuts (% by km), side by side across the width.
-    comp = result.composition
-    donuts = (
-        ("By surface", comp.by_surface_km, SURFACE_DONUT_COLORS),
-        ("By road", comp.by_road_km, ROAD_DONUT_COLORS),
-        ("By mode", comp.by_mode_km, MODE_DONUT_COLORS),
-    )
-    for col, (title, by_km, colors) in zip(st.columns(len(donuts)), donuts, strict=True):
-        col.altair_chart(composition_donut(title=title, by_km=by_km, colors=colors), use_container_width=True)
+        comp = result.composition
+        donuts = (
+            ("By surface", comp.by_surface_km, SURFACE_DONUT_COLORS),
+            ("By road", comp.by_road_km, ROAD_DONUT_COLORS),
+            ("By mode", comp.by_mode_km, MODE_DONUT_COLORS),
+        )
+        for col, (title, by_km, colors) in zip(st.columns(len(donuts)), donuts, strict=True):
+            col.altair_chart(composition_donut(title=title, by_km=by_km, colors=colors), use_container_width=True)
 
-    # Train rides: boarding + alighting station per ride, so the rider can look the train
-    # up in a railway app. Absent for a pure-bike route.
+    # Always visible: which trains to catch, the bike-leg Maps links, and the downloads —
+    # the actionable output the rider actually leaves with.
     if result.rail_legs:
         st.caption("🚆 Trains to catch (look these up in your railway app):")
         for line in format_rail_legs(rail_legs=result.rail_legs):
@@ -117,16 +117,20 @@ def _place_input(*, field: str, label: str, placeholder: str, bbox: tuple[float,
     typed = st.text_input(label, key=field, placeholder=placeholder)
     # Offer suggestions for what's typed so far; each is a button that fills the box on
     # click (writing the field key before the text_input re-renders next run). Never
-    # required, never blocks — a slow/failed Photon just yields no buttons.
-    for suggestion in _suggest(term=typed, bbox=bbox):
-        if suggestion != typed:
-            st.button(
-                f"↳ {suggestion}",
-                key=f"{field}_sug_{suggestion}",
-                on_click=_fill_box,
-                kwargs={"field": field, "value": suggestion},
-                use_container_width=True,
-            )
+    # required, never blocks — a slow/failed Photon just yields no buttons. Deduped and
+    # index-keyed so a repeated Photon label can't collide on the Streamlit element key.
+    seen: set[str] = set()
+    for index, suggestion in enumerate(_suggest(term=typed, bbox=bbox)):
+        if suggestion == typed or suggestion in seen:
+            continue
+        seen.add(suggestion)
+        st.button(
+            f"↳ {suggestion}",
+            key=f"{field}_sug_{index}",
+            on_click=_fill_box,
+            kwargs={"field": field, "value": suggestion},
+            use_container_width=True,
+        )
     return typed
 
 
@@ -183,14 +187,15 @@ def main() -> None:
     if st.session_state.start_latlon is not None:
         st.caption(f"🔵 Start: **{origin}**    🔷 End: **{destination}**")
 
-    # 3+. One slider per routing knob, straight from the shared PARAM_SPECS (the same
-    # source the CLI reads). Range 0 → MAX_EXTRA_KM, starting at each spec's default.
-    slider_values = {
-        spec.field: st.slider(
-            spec.label, 0.0, RoutingDefaults.MAX_EXTRA_KM, value=spec.default, step=0.1, help=spec.help
-        )
-        for spec in PARAM_SPECS
-    }
+    # 3+. Routing knobs tucked into one collapsible container, straight from the shared
+    # PARAM_SPECS (the same source the CLI reads). Range 0 → MAX_EXTRA_KM, each at its default.
+    with st.expander("⚙️ Tuning", expanded=False):
+        slider_values = {
+            spec.field: st.slider(
+                spec.label, 0.0, RoutingDefaults.MAX_EXTRA_KM, value=spec.default, step=0.1, help=spec.help
+            )
+            for spec in PARAM_SPECS
+        }
 
     # 4. Compute the route — draws the ribbon; does NOT recenter (step 2 owns the camera).
     needs_endpoints = st.session_state.start_latlon is None
