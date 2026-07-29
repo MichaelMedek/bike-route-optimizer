@@ -61,10 +61,8 @@ def _figsize_for_route(*, route_lons: list[float], route_lats: list[float]) -> t
     return map_w + PlotConfig.SIDE_MARGIN_IN, map_h + PlotConfig.STATS_HEIGHT_IN, map_h
 
 
-def _draw_route_overlay(
-    *, axes: Axes, graph: nx.MultiDiGraph, route_nodes: list[int], route_lons: list[float], route_lats: list[float]
-) -> None:
-    """Draw each route edge coloured by condition/mode along its baked polyline, then zoom."""
+def _draw_route_overlay(*, axes: Axes, graph: nx.MultiDiGraph, route_nodes: list[int]) -> None:
+    """Draw each route edge coloured by condition/mode along its baked polyline."""
     seen_labels: set[str] = set()
     for node_a, node_b in zip(route_nodes[:-1], route_nodes[1:], strict=True):
         data = cheapest_edge(edges=graph.get_edge_data(node_a, node_b))
@@ -86,13 +84,6 @@ def _draw_route_overlay(
             zorder=5,
             label=label,
         )
-
-    # Zoom to the route bounds. Pad BOTH axes by a fraction of the route's larger extent —
-    # always positive for a valid route (>= 2 distinct nodes), so an axis-aligned route
-    # (span 0 on one axis) still gets a real margin.
-    pad = max(max(route_lons) - min(route_lons), max(route_lats) - min(route_lats)) * PlotConfig.ROUTE_ZOOM_MARGIN
-    axes.set_xlim(min(route_lons) - pad, max(route_lons) + pad)
-    axes.set_ylim(min(route_lats) - pad, max(route_lats) + pad)
 
 
 def plot_elevation_heatmap(
@@ -128,8 +119,8 @@ def plot_elevation_heatmap(
     cmap = matplotlib.colormaps[cmap_name]  # cm.get_cmap removed in matplotlib 3.9+
     node_colors = [cmap(norm(elevation)) for elevation in elevations]
 
-    # Size the page to the route's geographic aspect BEFORE drawing, so the equal-aspect
-    # map (OSMnx keeps it accurate) fills its axis and the colorbar hugs it — no dead gap.
+    # Size the page to the ROUTE's geographic aspect BEFORE drawing (the plotted graph is the loaded
+    # schlauch). Equal-aspect map fills its axis, colorbar hugs it.
     route_lons = [graph.nodes[node]["x"] for node in route_nodes]
     route_lats = [graph.nodes[node]["y"] for node in route_nodes]
     fig_w, fig_h, map_h = _figsize_for_route(route_lons=route_lons, route_lats=route_lats)
@@ -164,7 +155,14 @@ def plot_elevation_heatmap(
     # Route overlay: colour each edge by CONDITION (green good / red bad) or purple for
     # trains — the same segment_color the 3D map uses (one source of truth). Each edge
     # follows its BAKED OSM polyline, so rail/bike curves render as the real path.
-    _draw_route_overlay(axes=axes, graph=graph, route_nodes=route_nodes, route_lons=route_lons, route_lats=route_lats)
+    _draw_route_overlay(axes=axes, graph=graph, route_nodes=route_nodes)
+
+    # Zoom to the route bounds (padded) so the route is clearly visible; the loaded schlauch nodes
+    # around it still show within this view. Pad by a fraction of the route's larger extent — always
+    # positive for a valid route (>= 2 distinct nodes), so an axis-aligned route still gets a margin.
+    pad = max(max(route_lons) - min(route_lons), max(route_lats) - min(route_lats)) * PlotConfig.ROUTE_ZOOM_MARGIN
+    axes.set_xlim(min(route_lons) - pad, max(route_lons) + pad)
+    axes.set_ylim(min(route_lats) - pad, max(route_lats) + pad)
 
     # Start / end markers, named so the reader knows which end is which. Colors
     # read from WebMapConfig so the PNG and 3D map share one source of truth.
