@@ -9,6 +9,7 @@ import networkx as nx
 import numpy as np
 
 from bike_router import graph_ops
+from bike_router.constants import Mode, NodeType
 from bike_router.graph_ops import (
     consolidate_graph,
     drop_disallowed_edges,
@@ -134,3 +135,19 @@ def test_snap_endpoints_maps_latlon_to_nodes(monkeypatch):
     source, target = snap_endpoints(graph=make_line_graph(), start_latlon=(48.0, 8.0), dest_latlon=(48.0, 8.02))
     assert (source, target) == (1, 3)
     assert calls[0] == (8.0, 48.0)  # X is longitude, Y is latitude
+
+
+def test_snap_endpoints_never_snaps_to_a_rail_node():
+    # Regression: a route must start/end on a BIKE node, reaching rail only via a station edge.
+    # Here a rail node sits EXACTLY on the target point; snap must still pick the nearest bike node,
+    # else the route would begin/end on a platform and ride rail for a single (half) boarding.
+    graph = nx.MultiDiGraph(crs="EPSG:4326")
+    graph.add_node(1, x=8.000, y=48.0, elevation=100.0, node_type=NodeType.BIKE, station_name=None)
+    graph.add_node(2, x=8.020, y=48.0, elevation=100.0, node_type=NodeType.BIKE, station_name=None)
+    graph.add_node(-1, x=8.010, y=48.0, elevation=100.0, node_type=NodeType.RAIL, station_name="S")  # on the dest point
+    for a, b in [(1, 2), (2, 1)]:
+        graph.add_edge(a, b, key=0, length=1500.0, mode=Mode.BIKE)
+    source, target = snap_endpoints(graph=graph, start_latlon=(48.0, 8.000), dest_latlon=(48.0, 8.010))
+    assert graph.nodes[source]["node_type"] == NodeType.BIKE
+    assert graph.nodes[target]["node_type"] == NodeType.BIKE
+    assert target != -1  # NOT the rail node even though it is the geographically nearest

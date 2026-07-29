@@ -15,6 +15,7 @@ import numpy as np
 import osmnx as ox
 from shapely.geometry import LineString
 
+from bike_router.constants import NodeType
 from bike_router.cost import road_included, surface_included
 from bike_router.elevation import DEMService
 
@@ -87,14 +88,17 @@ def snap_endpoints(
     start_latlon: tuple[float, float],
     dest_latlon: tuple[float, float],
 ) -> tuple[int, int]:
-    """Snap (lat, lon) start/dest to their nearest graph node ids.
+    """Snap (lat, lon) start/dest to their nearest BIKE node ids.
 
-    OSMnx expects X=longitude, Y=latitude.
+    Only bike nodes qualify: a route must start/end pedalling and reach rail only across a
+    station edge (board/alight), never begin or end ON a platform. OSMnx expects X=lon, Y=lat.
     """
     start_lat, start_lon = start_latlon
     dest_lat, dest_lon = dest_latlon
-    source = int(ox.distance.nearest_nodes(graph, X=start_lon, Y=start_lat))
-    target = int(ox.distance.nearest_nodes(graph, X=dest_lon, Y=dest_lat))
+    bike_graph = graph.subgraph(n for n, d in graph.nodes(data=True) if d["node_type"] == NodeType.BIKE)
+    assert bike_graph.number_of_nodes() > 0, "no bike node to snap endpoints to"
+    source = int(ox.distance.nearest_nodes(bike_graph, X=start_lon, Y=start_lat))
+    target = int(ox.distance.nearest_nodes(bike_graph, X=dest_lon, Y=dest_lat))
     assert source in graph and target in graph, "snapped nodes must exist in the graph"
     return source, target
 
