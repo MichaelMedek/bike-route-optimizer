@@ -53,12 +53,14 @@ def _suggest(term: str, bbox: tuple[float, float, float, float]) -> list[str]:
 def _render_route_output(result: object) -> None:
     """Route output: stats + donuts in a collapsible box; trains, links, downloads always shown."""
     track = result.track
-    # Collapsible: the two stat rows (bike + total) and the three composition donuts —
-    # detail the rider can expand, not the primary call to action.
+    # Collapsible: route stats + the three composition donuts — detail to expand, not the
+    # primary call to action. Show the bike-vs-total split ONLY when a train is used; a
+    # pure-bike route has one set of numbers, so just show "Route".
     with st.expander("📊 Stats & composition", expanded=False):
         stat_rows = (
-            ("**Total** (bike + train)", track.total, "Time"),
-            ("**Bike only**", track.bike, "Ride time"),
+            (("**Total** (bike + train)", track.total, "Time"), ("**Bike only**", track.bike, "Ride time"))
+            if result.rail_legs
+            else (("**Route**", track.bike, "Ride time"),)
         )
         for caption, stats, duration_label in stat_rows:
             st.caption(caption)
@@ -107,6 +109,8 @@ def _place_input(*, field: str, label: str, placeholder: str, bbox: tuple[float,
     The text_input is the SINGLE source of truth — its exact text is returned and later
     geocoded verbatim. Photon suggestions are a pure convenience: clicking one just fills
     the box (a normal edit the user can still change); typing/pasting anything is fine.
+    Suggestions are hidden once the box text matches the last resolved endpoint (set via
+    the button), and reappear the moment the user edits the box again.
 
     Args:
         field: session_state key for this box's text.
@@ -115,10 +119,11 @@ def _place_input(*, field: str, label: str, placeholder: str, bbox: tuple[float,
         bbox: coverage box biasing the suggestions.
     """
     typed = st.text_input(label, key=field, placeholder=placeholder)
-    # Offer suggestions for what's typed so far; each is a button that fills the box on
-    # click (writing the field key before the text_input re-renders next run). Never
-    # required, never blocks — a slow/failed Photon just yields no buttons. Deduped and
-    # index-keyed so a repeated Photon label can't collide on the Streamlit element key.
+    if typed == st.session_state.get(f"{field}_resolved"):
+        return typed  # already resolved to this text → no stale suggestions under the box
+    # Suggestions ranked by Photon relevance (OSM prominence + proximity to the bbox centre);
+    # each is a button that fills the box on click. Deduped and index-keyed so a repeated
+    # Photon label can't collide on the Streamlit element key. Never required, never blocks.
     seen: set[str] = set()
     for index, suggestion in enumerate(_suggest(term=typed, bbox=bbox)):
         if suggestion == typed or suggestion in seen:
@@ -174,6 +179,8 @@ def main() -> None:
             st.session_state.update(
                 start_latlon=start,  # (lat, lon, elevation_m)
                 end_latlon=end,
+                start_box_resolved=origin,  # suppress suggestions until the box is edited again
+                end_box_resolved=destination,
                 result=None,  # stale route from the previous endpoints
                 ribbon_segments=None,
                 stations=None,
@@ -242,7 +249,12 @@ def main() -> None:
         endpoint_labels=endpoint_labels,
         stations=st.session_state.stations,
     )
-    st.pydeck_chart(deck, height=WebMapConfig.MAP_HEIGHT_PX, key=f"bike_map_{st.session_state.camera_epoch}")
+    # Key on epoch + the exact framing: deck.gl keeps the user's panned camera once mounted
+    # and treats initial_view_state as initial-only, so "Set start & end" must FORCE a fresh
+    # mount to re-zoom. A key that encodes the view guarantees that on every Set.
+    view = st.session_state.view
+    map_key = f"bike_map_{st.session_state.camera_epoch}_{view.latitude:.4f}_{view.longitude:.4f}_{view.zoom:.2f}"
+    st.pydeck_chart(deck, height=WebMapConfig.MAP_HEIGHT_PX, key=map_key)
 
     # 6. Stats + export controls BELOW the map, shown once a route exists.
     if st.session_state.result is not None:

@@ -148,7 +148,7 @@ class Palette:
     near-black red. Green = good, purple = trains, blue/cyan = start/end markers.
     """
 
-    GOOD = "#2e7d32"  # green — good surface AND quiet road
+    GOOD = "#1565c0"  # blue — good surface AND quiet road (high-contrast on terrain)
     BAD_SURFACE = "#d63f15"  # red variant — unpaved/loose surface on a quiet road
     BAD_ROAD = "#c80d29"  # red variant — main road with a good surface
     BAD_BOTH = "#280303"  # near-black red — main road AND unpaved (worst)
@@ -183,7 +183,7 @@ class SurfaceConfig:
     """
 
     SURFACE_TIER = {
-        # tier 0 — paved / good (no unpaved penalty, colored green)
+        # tier 0 — paved / good (no unpaved penalty, colored blue)
         "asphalt": 0,
         "concrete": 0,
         "concrete:plates": 0,
@@ -235,7 +235,7 @@ class RoadConfig:
     """
 
     ROAD_TIER = {
-        # tier 0 — quiet / bike-friendly (no main-road penalty, colored green)
+        # tier 0 — quiet / bike-friendly (no main-road penalty, colored blue)
         "cycleway": 0,
         "path": 0,
         "footway": 0,
@@ -260,7 +260,7 @@ class RoadConfig:
     }
     # Untagged highway (~0% in practice) → assume main road (kept, penalised).
     DEFAULT_TIER = 1
-    # Per-tier human label + swatch (donut colours): tier 0 (quiet) green, tier 1 (main) crimson.
+    # Per-tier human label + swatch (donut colours): tier 0 (quiet) blue, tier 1 (main) crimson.
     TIER_LABEL_COLORS = {0: ("quiet way", Palette.GOOD), 1: ("main road", Palette.BAD_ROAD)}
 
 
@@ -315,7 +315,7 @@ PARAM_SPECS = (
         field="extra_km_per_boarding",
         label="Train boarding penalty (extra km per boarding)",
         help="Extra km you'd bike to avoid boarding a train once (0 = board freely; high = avoid catching trains).",
-        default=20.0,
+        default=15.0,
     ),
 )
 
@@ -384,7 +384,7 @@ class PlotConfig:
     """Debug elevation-heatmap PNG rendering."""
 
     # Elevation colormap: cividis (blue→yellow, colourblind-safe) — deliberately avoids
-    # green/red/purple so it never clashes with the route's condition + rail colours.
+    # blue/red/purple so it never clashes with the route's condition + rail colours.
     CMAP = "cividis"
     DPI = 200
     ROUTE_ZOOM_MARGIN = 0.08  # pad the debug plot's route bounds by this fraction of the span
@@ -454,10 +454,10 @@ class WebMapConfig:
     # STATION segments draw the fixed RIBBON_REF_WIDTH_M (a train's pace isn't rider "effort").
     RIBBON_FLOAT_ABOVE_M = 100.0
     RIBBON_REF_SPEED_KMH = 20.0
-    RIBBON_REF_WIDTH_M = 20.0
-    RIBBON_MIN_PIXELS = 3
+    RIBBON_REF_WIDTH_M = 40.0  # wide so the route reads clearly against the terrain texture
+    RIBBON_MIN_PIXELS = 6
     # Endpoint markers keep their own blue/cyan; the ribbon itself is coloured by
-    # CONDITION (green good / graded reds for bad) and purple for trains. All colours come
+    # CONDITION (blue good / graded reds for bad) and purple for trains. All colours come
     # from the single Palette (hex), converted here via hex_to_rgb for the RGB pydeck/PNG APIs.
     START_COLOR = Palette.hex_to_rgb(hex_color=Palette.START)  # blue (start marker)
     END_COLOR = Palette.hex_to_rgb(hex_color=Palette.END)  # cyan (destination marker)

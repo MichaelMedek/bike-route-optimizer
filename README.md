@@ -44,7 +44,7 @@ Each preference is expressed in the same intuitive unit: **how many extra kilome
 
 ![Freiburg to Feldberg route](docs/route_example_feldberg.png)
 
-Feldberg is a steep climb up the Black Forest. Told to avoid hills, the planner puts the rider on a **train** (purple) for the hard ascent — because a rail line already runs that way — and keeps them on the **bike** (green/red) for the flatter start and the final stretch the train doesn't reach. The short **red** bit near the top is unpaved: the only way up there, so it's ridden rather than taking a long detour to stay paved.
+Feldberg is a steep climb up the Black Forest. Told to avoid hills, the planner puts the rider on a **train** (purple) for the hard ascent — because a rail line already runs that way — and keeps them on the **bike** (blue/red) for the flatter start and the final stretch the train doesn't reach. The short **red** bit near the top is unpaved: the only way up there, so it's ridden rather than taking a long detour to stay paved.
 
 ## The physics & mathematics
 

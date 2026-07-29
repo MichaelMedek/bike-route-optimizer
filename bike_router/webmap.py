@@ -32,7 +32,7 @@ def composition_donut(title: str, by_km: dict[str, float], colors: dict[str, str
     """Small interactive Altair donut of a km breakdown (hover → label / km / %).
 
     ``colors`` maps each category label to a hex colour so wedges are meaningful
-    (green good / red bad; blue bike / purple train) rather than Altair defaults.
+    (blue good / red bad; blue bike / purple train) rather than Altair defaults.
     """
     total = sum(by_km.values()) or 1.0
     frame = pd.DataFrame([{"category": label, "km": km, "pct": km / total * 100} for label, km in by_km.items()])

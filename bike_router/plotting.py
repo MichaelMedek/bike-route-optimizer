@@ -152,7 +152,7 @@ def plot_elevation_heatmap(
         save=False,
     )
 
-    # Route overlay: colour each edge by CONDITION (green good / red bad) or purple for
+    # Route overlay: colour each edge by CONDITION (blue good / red bad) or purple for
     # trains — the same segment_color the 3D map uses (one source of truth). Each edge
     # follows its BAKED OSM polyline, so rail/bike curves render as the real path.
     _draw_route_overlay(axes=axes, graph=graph, route_nodes=route_nodes)
