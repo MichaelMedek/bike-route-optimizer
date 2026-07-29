@@ -8,6 +8,7 @@ Run:  streamlit run app_webmap.py
 """
 
 import streamlit as st
+from streamlit_deckgl import st_deckgl
 
 from bike_router.constants import PARAM_SPECS, RoutingDefaults, RoutingParams, WebMapConfig
 from bike_router.errors import BikeRouterError
@@ -249,12 +250,11 @@ def main() -> None:
         endpoint_labels=endpoint_labels,
         stations=st.session_state.stations,
     )
-    # Key on epoch + the exact framing: deck.gl keeps the user's panned camera once mounted
-    # and treats initial_view_state as initial-only, so "Set start & end" must FORCE a fresh
-    # mount to re-zoom. A key that encodes the view guarantees that on every Set.
-    view = st.session_state.view
-    map_key = f"bike_map_{st.session_state.camera_epoch}_{view.latitude:.4f}_{view.longitude:.4f}_{view.zoom:.2f}"
-    st.pydeck_chart(deck, height=WebMapConfig.MAP_HEIGHT_PX, key=map_key)
+    # Render via st_deckgl (NOT st.pydeck_chart): a changed key remounts the component and
+    # re-applies initial_view_state, so "Set start & end" — the only camera move — always
+    # re-zooms. camera_epoch (bumped only by Set) is the whole key; nothing else moves the view.
+    map_key = f"bike_map_{st.session_state.camera_epoch}"
+    st_deckgl(deck, key=map_key, height=WebMapConfig.MAP_HEIGHT_PX)
 
     # 6. Stats + export controls BELOW the map, shown once a route exists.
     if st.session_state.result is not None:
