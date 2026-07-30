@@ -353,6 +353,20 @@ class GradeConfig:
     MARGIN = 0.02  # rise/run: |grade| BELOW this reads as flat (so only ~-1/0/+1% is flat, ≥2% slopes)
 
 
+class SkiResortConfig:
+    """Ski-resort extraction thresholds (build-time; scripts/build_ski_resort.py).
+
+    Prominence-based gates separating real lifts (monotonic rail climbs) and slopes (bike
+    descents) from trivial noise, per the peak-detection literature.
+    """
+
+    LIFT_PROMINENCE_M = 40.0  # min prominence for a station to count as a peak (TOP) / pit (BOTTOM)
+    LIFT_MIN_CLIMB_M = 80.0  # min net gain bottom→top for a monotone rail segment to be a lift
+    LIFT_DIP_TOLERANCE_M = 15.0  # max mid-climb counter-drop tolerated before the ascent splits in two
+    SLOPE_MAX_PAIR_KM = 12.0  # spatial gate on candidate (top, bottom) slope pairs
+    SLOPE_MIN_DROP_M = 40.0  # min top−bottom elevation for a slope search to be attempted
+
+
 class SpeedConfig:
     """Surface- and grade-adaptive cycling speed (km/h), two anchors linearly interpolated: at
     0 % grade the rider does the surface's base speed; at WALK_GRADE (a steep 12 %) they slow to

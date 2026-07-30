@@ -109,6 +109,37 @@ def test_plan_route(tmp_path: Path, monkeypatch):
     assert set(result.composition.by_quality_km) == {"good"}
 
 
+def test_route_path_between(monkeypatch):
+    # The reusable search core honours ``modes``: a BIKE-only search must never traverse the rail
+    # edge, and explicit source/target route between those exact nodes (no bike-node snap).
+    nodes_df, edges_df = _line_tables()
+    monkeypatch.setattr(
+        pipeline,
+        "build_corridor",
+        lambda start_latlon, dest_latlon, half_width_km, extend_km: box(7.9, 47.9, 8.1, 48.1),
+    )
+    monkeypatch.setattr(
+        pipeline, "load_route_tables", lambda bike_corridor, rail_corridor, graph_dir: (nodes_df, edges_df)
+    )
+    captured: dict[str, object] = {}
+
+    def _capture(path_nodes, params, graph_dir):
+        captured["path"] = [osmid for osmid, _lat, _lon in path_nodes]
+        return make_line_route()
+
+    monkeypatch.setattr(pipeline, "load_path_edges", _capture)
+    route = pipeline.route_path_between(
+        start_latlon=(48.0, 8.0),
+        dest_latlon=(48.0, 8.02),
+        params=DEFAULT_PARAMS,
+        modes=(Mode.BIKE,),
+        source_osmid=1,
+        target_osmid=3,
+    )
+    assert isinstance(route, RoutePath)
+    assert captured["path"][0] == 1 and captured["path"][-1] == 3  # routed between the explicit nodes
+
+
 def test_plan_route_rejects_too_short_trip(monkeypatch):
     monkeypatch.setattr(pipeline, "make_geocode_fn", lambda: lambda place: None)
     monkeypatch.setattr(

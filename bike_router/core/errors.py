@@ -40,3 +40,7 @@ class RouteTooLargeError(BikeRouterError):
 
 class ParamOutOfRangeError(BikeRouterError):
     """A routing preference is outside the allowed [0, MAX_EXTRA_KM] range."""
+
+
+class EmptyResortError(BikeRouterError):
+    """The bbox yields no connected ski-resort core (no lifts, or the SCC has < 2 stations)."""

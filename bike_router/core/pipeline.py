@@ -30,6 +30,7 @@ from bike_router.core.naming import route_output_paths
 from bike_router.core.plotting import plot_route_debug
 from bike_router.core.progress import log_rss
 from bike_router.core.route_graph import RouteGraph, shortest_path
+from bike_router.core.route_path import RoutePath
 from bike_router.core.sanity import check_cost_model
 from bike_router.core.simplify import (
     BikeLeg,
@@ -113,15 +114,20 @@ def _route_node_path(
     start_latlon: tuple[float, float],
     dest_latlon: tuple[float, float],
     params: RoutingParams,
+    modes: tuple[str, ...] | None = None,
+    source_osmid: int | None = None,
+    target_osmid: int | None = None,
 ) -> list[tuple[int, float, float]]:
     """Load the corridor, route on a compact CSR graph, return the path as (osmid, lat, lon).
 
-    Reads ONLY minimal routing columns (no geometry) and routes on a scipy CSR matrix (~12 B/edge vs
-    ~2.8 KB for networkx), freeing corridor tables before return; raises RouteTooLargeError past the cap.
+    ``modes`` restricts the search to those edge modes (rail-only lift / bike-only slope);
+    ``source_osmid``/``target_osmid`` route between explicit nodes instead of snapping latlons.
     """
     nodes_df, edges_df = load_route_tables(
         bike_corridor=bike_corridor, rail_corridor=rail_corridor, graph_dir=graph_dir
     )
+    if modes is not None:
+        edges_df = edges_df[edges_df["mode"].isin(modes)].reset_index(drop=True)
     log_rss(label=f"corridor tables loaded ({len(edges_df)} edges)")
     if len(edges_df) > CorridorConfig.MAX_ROUTE_EDGES:
         raise RouteTooLargeError(
@@ -152,14 +158,65 @@ def _route_node_path(
         cost=cost,
     )
     log_rss(label=f"CSR route graph built ({route_graph.n_edges} edges)")
-    source = route_graph.snap_bike_node(lat=start_latlon[0], lon=start_latlon[1])
-    target = route_graph.snap_bike_node(lat=dest_latlon[0], lon=dest_latlon[1])
+    # Explicit endpoints (station→station lift) route directly; else snap the latlons to bike nodes.
+    source = (
+        source_osmid
+        if source_osmid is not None
+        else route_graph.snap_bike_node(lat=start_latlon[0], lon=start_latlon[1])
+    )
+    target = (
+        target_osmid if target_osmid is not None else route_graph.snap_bike_node(lat=dest_latlon[0], lon=dest_latlon[1])
+    )
     # shortest_path raises NoRouteError itself when unreachable — surfaced straight to the caller.
     node_path = shortest_path(route_graph=route_graph, source_osmid=source, target_osmid=target)
     return [
         (int(n), float(route_graph.lat[route_graph.index[n]]), float(route_graph.lon[route_graph.index[n]]))
         for n in node_path
     ]
+
+
+def route_path_between(
+    *,
+    start_latlon: tuple[float, float],
+    dest_latlon: tuple[float, float],
+    params: RoutingParams,
+    graph_dir: Path = GraphConfig.GRAPH_DIR,
+    modes: tuple[str, ...] | None = None,
+    source_osmid: int | None = None,
+    target_osmid: int | None = None,
+) -> RoutePath:
+    """The reusable SEARCH core: two-corridor load → CSR route → geometry RoutePath.
+    ``modes``/``source_osmid``/``target_osmid`` narrow the search (see _route_node_path).
+    Raises NoRouteError when the endpoints are unreachable.
+    """
+    bike_corridor = build_corridor(
+        start_latlon=start_latlon,
+        dest_latlon=dest_latlon,
+        half_width_km=CorridorConfig.BIKE_HALF_WIDTH_KM,
+        extend_km=CorridorConfig.BIKE_EXTEND_KM,
+    )
+    rail_corridor = build_corridor(
+        start_latlon=start_latlon,
+        dest_latlon=dest_latlon,
+        half_width_km=CorridorConfig.RAIL_HALF_WIDTH_KM,
+        extend_km=CorridorConfig.RAIL_EXTEND_KM,
+    )
+    path_coords = _route_node_path(
+        bike_corridor=bike_corridor,
+        rail_corridor=rail_corridor,
+        graph_dir=graph_dir,
+        start_latlon=start_latlon,
+        dest_latlon=dest_latlon,
+        params=params,
+        modes=modes,
+        source_osmid=source_osmid,
+        target_osmid=target_osmid,
+    )
+    logger.info(f"Route: {len(path_coords)} nodes")
+    # Re-read only the chosen path's edges WITH geometry (same cheapest parallel edge per hop).
+    route = load_path_edges(path_nodes=path_coords, params=params, graph_dir=graph_dir)
+    log_rss(label="path edges loaded (corridor freed)")
+    return route
 
 
 def plan_route(
@@ -199,36 +256,9 @@ def plan_route(
         )
 
     _assert_within_coverage(start_latlon=start_latlon, dest_latlon=dest_latlon, graph_dir=graph_dir)
-    bike_corridor = build_corridor(
-        start_latlon=start_latlon,
-        dest_latlon=dest_latlon,
-        half_width_km=CorridorConfig.BIKE_HALF_WIDTH_KM,
-        extend_km=CorridorConfig.BIKE_EXTEND_KM,
-    )
-    rail_corridor = build_corridor(
-        start_latlon=start_latlon,
-        dest_latlon=dest_latlon,
-        half_width_km=CorridorConfig.RAIL_HALF_WIDTH_KM,
-        extend_km=CorridorConfig.RAIL_EXTEND_KM,
-    )
 
-    # Load the corridor, route on a compact CSR graph, resolve the node path (memory-lean:
-    # no geometry, no networkx). Returns the path as (osmid, lat, lon) for the geometry re-read.
-    path_coords = _route_node_path(
-        bike_corridor=bike_corridor,
-        rail_corridor=rail_corridor,
-        graph_dir=graph_dir,
-        start_latlon=start_latlon,
-        dest_latlon=dest_latlon,
-        params=params,
-    )
-    logger.info(f"Route: {len(path_coords)} nodes")
-
-    # The route is an ultra-small subset (hundreds of edges); re-read those edges WITH geometry
-    # into an ordered RoutePath — no networkx. The big corridor tables were already freed inside
-    # _route_node_path. The re-read picks the SAME cheapest parallel edge per hop (same params).
-    route = load_path_edges(path_nodes=path_coords, params=params, graph_dir=graph_dir)
-    log_rss(label="path edges loaded (corridor freed)")
+    # The single reusable search core: two-corridor load → CSR route → geometry RoutePath.
+    route = route_path_between(start_latlon=start_latlon, dest_latlon=dest_latlon, params=params, graph_dir=graph_dir)
 
     track = build_track(route=route)
     # Expand to the full real 2D polyline; elevation stays LINEAR node-to-node (edge_vertices_3d),
@@ -242,7 +272,7 @@ def plan_route(
 
     gpx_path, png_path = route_output_paths(origin=origin, destination=destination, params=params)
     gpx_path.parent.mkdir(parents=True, exist_ok=True)
-    gpx_path.write_text(build_gpx(track=track))
+    gpx_path.write_text(build_gpx(track=track, track_name=gpx_path.stem))
     logger.info(f"Wrote {gpx_path} ({len(track.points)} trackpoints)")
 
     # Train rides first (boarding + alighting station per ride) — they both label the bike

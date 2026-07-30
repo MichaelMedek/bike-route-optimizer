@@ -27,6 +27,7 @@ from bike_router.core.graph_store import (
     download_graph_from_hf,
     load_meta,
     load_path_edges,
+    load_region_tables,
     load_route_tables,
     snap_to_node,
     tile_index,
@@ -147,6 +148,21 @@ def test_load_route_tables(roundtrip_store: Path):
     far = box(20.0, 60.0, 20.1, 60.1)  # no tiles there
     with pytest.raises(AssertionError, match="bike corridor is outside"):
         load_route_tables(bike_corridor=far, rail_corridor=far, graph_dir=store)
+
+
+def test_load_region_tables(roundtrip_store: Path):
+    # A bbox load reads BOTH node types over the covering rectangle and keeps only in-bbox nodes +
+    # edges with both endpoints inside; the FULL schema (geometry_wkt, station_name) comes through.
+    store = roundtrip_store
+    nodes_df, edges_df = load_region_tables(bbox=(7.9, 47.9, 8.2, 48.1), graph_dir=store)
+    assert {NodeType.BIKE, NodeType.RAIL} <= set(nodes_df["node_type"])
+    assert "geometry_wkt" in edges_df.columns and "station_name" in nodes_df.columns
+    inside = set(nodes_df["osmid"].astype(int))
+    assert edges_df["from_node"].astype(int).isin(inside).all() and edges_df["to_node"].astype(int).isin(inside).all()
+
+    far = (20.0, 60.0, 20.1, 60.1)  # no tiles there → out of coverage
+    with pytest.raises(AssertionError, match="outside the prebuilt graph coverage"):
+        load_region_tables(bbox=far, graph_dir=store)
 
 
 # --- final-path re-read ------------------------------------------------------

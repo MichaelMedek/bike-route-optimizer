@@ -32,6 +32,26 @@ def compute_bbox(nodes_df: pd.DataFrame) -> tuple[float, float, float, float]:
     )
 
 
+def undirected_graph_from_edges(*, edges_df: pd.DataFrame, weight_col: str | None = None) -> nx.Graph:
+    """Undirected nx.Graph from an edge table's endpoint columns — the ONE endpoint→graph build.
+
+    Shared by component pruning and the ski-resort station adjacency. ``weight_col`` (when given)
+    stores that column as the edge ``weight`` attribute; parallel edges collapse.
+
+    Args:
+        edges_df: table with ``from_node``/``to_node`` (and ``weight_col`` if requested).
+        weight_col: edge column to store as ``weight``, or None for an unweighted graph.
+    """
+    graph = nx.Graph()
+    if weight_col is None:
+        graph.add_edges_from(zip(edges_df["from_node"], edges_df["to_node"], strict=True))
+    else:
+        graph.add_weighted_edges_from(
+            zip(edges_df["from_node"], edges_df["to_node"], edges_df[weight_col], strict=True)
+        )
+    return graph
+
+
 def write_graph_parquet(
     nodes_df: pd.DataFrame, edges_df: pd.DataFrame, meta: dict[str, Any], out_dir: Path, compression: str = "snappy"
 ) -> None:

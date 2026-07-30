@@ -84,6 +84,7 @@ module = [
     "altair.*",
     "scipy.*",
     "psutil.*",
+    "plotly.*",
 ]
 ignore_missing_imports = true
 

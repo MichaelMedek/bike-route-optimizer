@@ -13,13 +13,13 @@ import gpxpy.gpx
 from bike_router.core.track import Track
 
 
-def build_gpx(track: Track, start_time: _dt.datetime | None = None, track_name: str = "Optimized bike route") -> str:
+def build_gpx(track: Track, track_name: str, start_time: _dt.datetime | None = None) -> str:
     """Build GPX XML from a computed Track.
 
     Args:
         track: The route track (points carry elevation + cumulative elapsed time).
+        track_name: GPX track name (the output file stem — never hardcoded).
         start_time: Track start (defaults to now, UTC).
-        track_name: GPX track name.
 
     Returns:
         GPX document as an XML string.

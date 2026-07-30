@@ -17,7 +17,7 @@ import pandas as pd
 
 from bike_router.core.constants import GraphConfig, Mode, NodeType
 from bike_router.preprocessing.builder import dedup_by_geometry, reindex_region, remap_contiguous
-from bike_router.preprocessing.graph_writer import compute_bbox, read_region_tables
+from bike_router.preprocessing.graph_writer import compute_bbox, read_region_tables, undirected_graph_from_edges
 
 logger = logging.getLogger(__name__)
 
@@ -217,13 +217,11 @@ def prune_components(*, nodes_df: pd.DataFrame, edges_df: pd.DataFrame) -> tuple
         raise ValueError("prune: no rail edges in the merged graph — corrupt build (rail network missing).")
 
     # RAIL: largest weakly-connected component only.
-    gr = nx.Graph()
-    gr.add_edges_from(zip(rail_e["from_node"], rail_e["to_node"], strict=True))
+    gr = undirected_graph_from_edges(edges_df=rail_e)
     keep_rail = max(nx.connected_components(gr), key=len) if gr.number_of_nodes() else set()
 
     # BIKE: every weakly-connected component with total length ≥ threshold.
-    gb = nx.Graph()
-    gb.add_weighted_edges_from(zip(bike_e["from_node"], bike_e["to_node"], bike_e["length_m"], strict=True))
+    gb = undirected_graph_from_edges(edges_df=bike_e, weight_col="length_m")
     keep_bike: set[int] = set()
     kept_comps = dropped_comps = 0
     for comp in nx.connected_components(gb):

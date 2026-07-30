@@ -12,10 +12,11 @@ import matplotlib.pyplot as plt
 
 from bike_router.core.constants import Mode, PlotConfig
 from bike_router.core.plotting import (
-    _draw_route_overlay,
+    _draw_routes,
     _figsize_for_route,
     _marker_node_indices,
     _prefs_text,
+    plot_resort,
     plot_route_debug,
 )
 from bike_router.core.track import build_track
@@ -45,16 +46,31 @@ def test_figsize_for_route():
     assert w > 0 and h > 0 and map_h > 0
 
 
-def test_draw_route_overlay():
+def test_draw_routes():
     # Draws one coloured polyline per edge; each condition label appears at most once (one legend
     # entry each) — a mixed bike+rail route yields distinct "good"/"train" legend labels.
     route = make_mixed_mode_route([(1, 2, Mode.BIKE), (2, 3, Mode.STATION), (3, 4, Mode.RAIL)])
     _figure, axes = plt.subplots()
     try:
-        _draw_route_overlay(axes=axes, route=route)
+        _draw_routes(axes=axes, routes=[route])
         labels = [t for t in axes.get_legend_handles_labels()[1]]
         assert len(labels) == len(set(labels))  # each condition labelled once, no duplicate legend rows
         assert len(axes.lines) == 3  # one polyline per edge
+    finally:
+        plt.close(_figure)
+
+
+def test_draw_routes_dedups_labels_across_routes():
+    # The shared seen-labels set spans ALL routes: two same-condition bike routes yield ONE legend
+    # entry, not one per route, while still drawing every edge as its own polyline.
+    route_a = make_mixed_mode_route([(1, 2, Mode.BIKE)])
+    route_b = make_mixed_mode_route([(3, 4, Mode.BIKE)])
+    _figure, axes = plt.subplots()
+    try:
+        _draw_routes(axes=axes, routes=[route_a, route_b])
+        labels = [t for t in axes.get_legend_handles_labels()[1]]
+        assert len(labels) == 1  # one legend entry total across both same-condition routes
+        assert len(axes.lines) == 2  # still one polyline per edge
     finally:
         plt.close(_figure)
 
@@ -79,3 +95,16 @@ def test_plot_route_debug(tmp_path: Path):
     flat_path = tmp_path / "flat.png"
     plot_route_debug(route=flat, track=build_track(route=flat), params=DEFAULT_PARAMS, out_path=str(flat_path), dpi=50)
     assert flat_path.exists()
+
+
+def test_plot_resort(tmp_path: Path):
+    # Renders the resort PNG from several routes (lifts + slopes) reusing the debug PNG's drawing;
+    # covers both the with-stations and the no-stations (uniform-elevation) branches.
+    routes = [make_mixed_mode_route([(1, 2, Mode.RAIL)]), make_line_route()]
+    out_path = tmp_path / "resort.png"
+    plot_resort(routes=routes, out_path=str(out_path), stations=[(48.0, 8.0, 300.0), (48.01, 8.01, 700.0)], dpi=50)
+    assert out_path.exists() and out_path.stat().st_size > 0
+
+    bare_path = tmp_path / "resort_bare.png"
+    plot_resort(routes=[make_line_route()], out_path=str(bare_path), stations=None, dpi=50)  # no stations
+    assert bare_path.exists()

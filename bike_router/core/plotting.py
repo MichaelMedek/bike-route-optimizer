@@ -65,28 +65,33 @@ def _figsize_for_route(*, route_lons: list[float], route_lats: list[float]) -> t
     return map_w + PlotConfig.SIDE_MARGIN_IN, map_h + PlotConfig.STATS_HEIGHT_IN, map_h
 
 
-def _draw_route_overlay(*, axes: Axes, route: RoutePath) -> None:
-    """Draw each route edge along its real polyline, coloured by condition (one legend entry each)."""
+def _draw_routes(*, axes: Axes, routes: list[RoutePath]) -> None:
+    """Draw every route's edges along their real polylines, coloured by condition.
+
+    Shared by the single-route debug PNG and the ski-resort PNG (many lifts + slopes). One
+    ``seen_labels`` set spans ALL routes so each condition contributes ONE legend entry total.
+    """
     seen_labels: set[str] = set()
-    for node_a, node_b, edge in route.iter_edges():
-        surface_bad, road_bad, _speed = edge_condition_speed(
-            edge=edge, elev_source=node_a.elevation_m, elev_target=node_b.elevation_m
-        )
-        rgb = segment_color(mode=edge.mode, surface_bad=surface_bad, road_bad=road_bad)
-        color = (rgb[0] / 255, rgb[1] / 255, rgb[2] / 255)
-        edge_label = classify_condition(mode=edge.mode, surface_bad=surface_bad, road_bad=road_bad)
-        label = edge_label if edge_label not in seen_labels else None
-        seen_labels.add(edge_label)
-        verts = edge_vertices_3d(node_a=node_a, node_b=node_b, edge=edge)
-        axes.plot(
-            [lon for lon, _lat, _elev in verts],
-            [lat for _lon, lat, _elev in verts],
-            color=color,
-            linewidth=3.0,
-            alpha=0.95,
-            zorder=5,
-            label=label,
-        )
+    for route in routes:
+        for node_a, node_b, edge in route.iter_edges():
+            surface_bad, road_bad, _speed = edge_condition_speed(
+                edge=edge, elev_source=node_a.elevation_m, elev_target=node_b.elevation_m
+            )
+            rgb = segment_color(mode=edge.mode, surface_bad=surface_bad, road_bad=road_bad)
+            color = (rgb[0] / 255, rgb[1] / 255, rgb[2] / 255)
+            edge_label = classify_condition(mode=edge.mode, surface_bad=surface_bad, road_bad=road_bad)
+            label = edge_label if edge_label not in seen_labels else None
+            seen_labels.add(edge_label)
+            verts = edge_vertices_3d(node_a=node_a, node_b=node_b, edge=edge)
+            axes.plot(
+                [lon for lon, _lat, _elev in verts],
+                [lat for _lon, lat, _elev in verts],
+                color=color,
+                linewidth=3.0,
+                alpha=0.95,
+                zorder=5,
+                label=label,
+            )
 
 
 def _marker_node_indices(*, route: RoutePath, marker_points: list[tuple[float, float]]) -> list[int]:
@@ -145,7 +150,7 @@ def plot_route_debug(
     axes.set_aspect("equal", adjustable="box")
 
     # The route line itself is drawn in routing/condition colours (same source as the 3D ribbon).
-    _draw_route_overlay(axes=axes, route=route)
+    _draw_routes(axes=axes, routes=[route])
 
     # ONLY the special points get an elevation-coloured dot: the interior waypoints + the train
     # board/alight stations, projected to their nearest route node for the elevation value.
@@ -205,3 +210,62 @@ def plot_route_debug(
     figure.savefig(out_path, dpi=dpi, facecolor="white", bbox_inches="tight", pad_inches=0.3)
     plt.close(figure)
     logger.info(f"Wrote debug route PNG to {out_path}")
+
+
+def plot_resort(
+    *,
+    routes: list[RoutePath],
+    out_path: str,
+    stations: list[tuple[float, float, float]] | None = None,
+    title: str = "Ski resort — lifts (purple) + slopes",
+    cmap_name: str = PlotConfig.CMAP,
+    dpi: int = PlotConfig.DPI,
+) -> None:
+    """Save the ski-resort PNG: every lift + slope route drawn by the SAME ``_draw_routes`` the
+    debug PNG uses (lifts purple via rail colour, slopes graded); stations get elevation-coloured
+    dots. Reuses ``_figsize_for_route`` over all routes' vertices for the geographic aspect.
+    """
+    assert routes, "resort must have at least one route to plot"
+    lons = np.array([node.lon for route in routes for node in route.nodes], dtype=float)
+    lats = np.array([node.lat for route in routes for node in route.nodes], dtype=float)
+    station_elevs = np.array([e for _lat, _lon, e in stations or []], dtype=float)
+    elev_lo = float(station_elevs.min()) if station_elevs.size else 0.0
+    elev_hi = float(station_elevs.max()) if station_elevs.size else 1.0
+    if elev_lo == elev_hi:
+        elev_hi = elev_lo + 1.0
+    norm = Normalize(vmin=elev_lo, vmax=elev_hi)
+    cmap = matplotlib.colormaps[cmap_name]
+
+    fig_w, fig_h, _map_h = _figsize_for_route(route_lons=lons.tolist(), route_lats=lats.tolist())
+    figure, mosaic = plt.subplot_mosaic(
+        [["map", "cbar"]], gridspec_kw={"width_ratios": [1.0, 0.04]}, figsize=(fig_w, fig_h), layout="constrained"
+    )
+    figure.set_facecolor("white")
+    axes, cbar_ax = mosaic["map"], mosaic["cbar"]
+    axes.set_aspect("equal", adjustable="box")
+
+    _draw_routes(axes=axes, routes=routes)
+    if stations:
+        s_lons = [lon for _lat, lon, _e in stations]
+        s_lats = [lat for lat, _lon, _e in stations]
+        axes.scatter(
+            s_lons, s_lats, c=station_elevs, cmap=cmap, norm=norm, s=90, zorder=7, edgecolors="black", linewidths=0.8
+        )
+
+    pad = max(lons.max() - lons.min(), lats.max() - lats.min()) * PlotConfig.ROUTE_ZOOM_MARGIN or 0.001
+    axes.set_xlim(lons.min() - pad, lons.max() + pad)
+    axes.set_ylim(lats.min() - pad, lats.max() + pad)
+    axes.set_title(title, fontsize=13, weight="bold")
+
+    mappable = cm.ScalarMappable(norm=norm, cmap=cmap)
+    mappable.set_array([])
+    colorbar = figure.colorbar(mappable, cax=cbar_ax)
+    colorbar.set_label("Station elevation (m)", fontsize=11, weight="bold", labelpad=10)
+    colorbar.ax.yaxis.set_major_locator(MaxNLocator(nbins=8))
+
+    handles, labels = axes.get_legend_handles_labels()
+    axes.legend(handles, labels, loc="upper right", fontsize=9, framealpha=0.95, facecolor="white", edgecolor="#999999")
+
+    figure.savefig(out_path, dpi=dpi, facecolor="white", bbox_inches="tight", pad_inches=0.3)
+    plt.close(figure)
+    logger.info(f"Wrote ski-resort PNG to {out_path} ({len(routes)} routes, {len(stations or [])} stations)")

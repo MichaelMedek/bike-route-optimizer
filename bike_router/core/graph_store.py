@@ -243,6 +243,41 @@ def load_route_tables(
     return nodes_df, edges_df
 
 
+def load_region_tables(
+    *,
+    bbox: tuple[float, float, float, float],
+    graph_dir: Path = GraphConfig.GRAPH_DIR,
+    node_columns: list[str] = _NODE_COLS,
+    edge_columns: list[str] = _EDGE_COLS,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """All nodes + edges of the prebuilt graph inside a rectangular bbox (both modes).
+
+    Reads the whole bbox rectangle (_covering_tiles, margin=1) with FULL schemas; nodes masked to the
+    bbox, edges kept only when both endpoints are inside. Fails loud if the bbox is outside coverage.
+
+    Args:
+        bbox: (west, south, east, north) in WGS84 degrees.
+        graph_dir: prebuilt-graph dir.
+        node_columns: node columns to read (default full schema).
+        edge_columns: edge columns to read (default full schema).
+    """
+    west, south, east, north = bbox
+    assert west < east and south < north, "bbox must be (west, south, east, north) with west<east, south<north"
+    tile_deg = load_meta(graph_dir=graph_dir)["tile_deg"]
+    tiles = _covering_tiles(bounds=bbox, tile_deg=tile_deg, margin=1)
+    nodes_df = _read_tiles(directory=graph_dir / GraphConfig.NODES_SUBDIR, columns=node_columns, tiles=tiles)
+    inside = covers(
+        box(west, south, east, north), points(nodes_df["lon"].to_numpy(float), nodes_df["lat"].to_numpy(float))
+    )
+    nodes_df = nodes_df[inside].reset_index(drop=True)
+    assert not nodes_df.empty, "bbox is outside the prebuilt graph coverage (no nodes)"
+    inside_ids = set(nodes_df["osmid"].astype(int))
+    edges_df = _read_tiles(directory=graph_dir / GraphConfig.EDGES_SUBDIR, columns=edge_columns, tiles=tiles)
+    from_in, to_in = edges_df["from_node"].astype(int), edges_df["to_node"].astype(int)
+    edges_df = edges_df[from_in.isin(inside_ids) & to_in.isin(inside_ids)].reset_index(drop=True)
+    return nodes_df, edges_df
+
+
 def load_path_edges(
     *, path_nodes: list[tuple[int, float, float]], params: RoutingParams, graph_dir: Path = GraphConfig.GRAPH_DIR
 ) -> RoutePath:
