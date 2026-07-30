@@ -10,6 +10,7 @@ highway, mode, geometry_wkt (WKT LINESTRING; null for straight rail/station hops
 time is NOT stored — derived from length_m + rail constants at route time.
 """
 
+import io
 import json
 import logging
 import math
@@ -103,8 +104,15 @@ def download_graph_from_hf(target_dir: Path = GraphConfig.GRAPH_DIR, progress: P
     class _ProgressTqdm(hf_tqdm):  # type: ignore[misc]  # hf_tqdm is untyped (Any)
         """Forward HF's own download progress to ``progress``.
 
-        ``n``/``total`` are set even on the DISABLED bars a headless host (Streamlit Cloud) builds.
+        Force-enabled (HF passes ``disable=None`` → tqdm auto-disables off-TTY, and a disabled bar
+        never increments ``n``, so a headless host like Streamlit Cloud would sit at 0%). Its own
+        textual output goes to a throwaway buffer; only ``progress`` is user-visible.
         """
+
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            kwargs["disable"] = False  # keep n counting even off-TTY
+            kwargs.setdefault("file", io.StringIO())  # swallow the terminal bar
+            super().__init__(*args, **kwargs)
 
         def update(self, n: float | None = 1) -> bool | None:
             result: bool | None = super().update(n)

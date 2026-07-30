@@ -222,9 +222,10 @@ def test_snap_to_node():
 
 
 def test_download_graph_from_hf(tmp_path: Path, monkeypatch):
-    # Idempotent: meta.json present → skipped entirely, no snapshot_download. When missing, it calls
-    # snapshot_download with the repo/dataset/max_workers args and forwards HF's own n/total progress;
-    # a DISABLED bar (headless host, no `unit`) must not crash; any download failure propagates.
+    # Idempotent: meta.json present → skipped, no snapshot_download. When missing, it calls
+    # snapshot_download with the repo/dataset/max_workers args and forwards HF's n/total progress.
+    # HF passes disable=None (→ off-TTY auto-disable, n frozen at 0); our subclass force-enables so
+    # progress still MOVES on a headless host. Any download failure propagates.
     present = tmp_path / "present"
     present.mkdir()
     (present / GraphConfig.META_FILENAME).write_text("{}")
@@ -238,9 +239,9 @@ def test_download_graph_from_hf(tmp_path: Path, monkeypatch):
 
     def _fake_download(*, repo_id, repo_type, local_dir, max_workers, tqdm_class):
         args_seen.update(repo_id=repo_id, repo_type=repo_type, max_workers=max_workers)
-        disabled = tqdm_class(total=3, disable=True)  # headless host (no TTY): bar has no `unit`
-        disabled.update(1)  # regression: must NOT raise AttributeError on missing `unit`
-        bar = tqdm_class(total=3)  # HF's progress bar — forwarded as-is
+        zero = tqdm_class(total=0, disable=None)  # HF's byte bars init at total=0 → must NOT forward
+        zero.update(1)
+        bar = tqdm_class(total=3, disable=None)  # HF's own call: disable=None → off-TTY would freeze n
         for _ in range(3):
             bar.update(1)
         Path(local_dir, GraphConfig.META_FILENAME).write_text("{}")
@@ -254,8 +255,7 @@ def test_download_graph_from_hf(tmp_path: Path, monkeypatch):
         "repo_type": "dataset",
         "max_workers": GraphConfig.HF_MAX_WORKERS,
     }
-    assert seen and seen[-1] == (3, 3)  # HF progress forwarded, reached total
-    assert [d for d, _t in seen] == sorted(d for d, _t in seen)  # monotonic
+    assert seen == [(1, 3), (2, 3), (3, 3)]  # force-enabled → real movement, reaches total (not stuck at 0)
 
     def _boom(**_kwargs):
         raise OSError("network died mid-download")
