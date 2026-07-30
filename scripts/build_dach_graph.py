@@ -50,12 +50,12 @@ from shapely import from_wkt, get_coordinates  # noqa: E402
 from bike_router.core.constants import DEMConfig, GraphConfig, Mode, Palette
 from bike_router.preprocessing.builder import (
     build_region_graph_clipped,
+    remap_contiguous,
     stage_pbf,
 )
 from bike_router.preprocessing.elevation import DEMService
 from bike_router.preprocessing.graph_writer import (
     graph_to_tables,
-    remap_contiguous,
     write_graph_parquet,
 )
 from bike_router.preprocessing.regions import (
