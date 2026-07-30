@@ -171,8 +171,7 @@ def nearest_place_name(*, lat: float, lon: float, http_get: HttpGetter = _defaul
         "lon": lon,
         "lang": PhotonConfig.LANG,
         "osm_tag": PhotonConfig.PLACE_OSM_TAG,
-        "radius": PhotonConfig.REVERSE_RADIUS_KM,  # widen so a waypoint far from any village still resolves one
-        "limit": 1,
+        "limit": 1,  # Photon returns the NEAREST place; no radius cap needed
     }
     reverse_url = PhotonConfig.BASE_URL.removesuffix("/api") + "/reverse"
     try:
