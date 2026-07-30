@@ -354,17 +354,9 @@ class GradeConfig:
 
 
 class SkiResortConfig:
-    """Ski-resort extraction thresholds (build-time; scripts/build_ski_resort.py).
+    """Ski-resort extraction (build-time; scripts/build_ski_resort.py). Slopes use ONLY GradeConfig.MARGIN."""
 
-    Prominence-based gates separating real lifts (monotonic rail climbs) and slopes (bike
-    descents) from trivial noise, per the peak-detection literature.
-    """
-
-    LIFT_PROMINENCE_M = 40.0  # min prominence for a station to count as a peak (TOP) / pit (BOTTOM)
-    LIFT_MIN_CLIMB_M = 80.0  # min net gain bottom→top for a monotone rail segment to be a lift
-    LIFT_DIP_TOLERANCE_M = 15.0  # max mid-climb counter-drop tolerated before the ascent splits in two
-    SLOPE_MAX_PAIR_KM = 12.0  # spatial gate on candidate (top, bottom) slope pairs
-    SLOPE_MIN_DROP_M = 40.0  # min top−bottom elevation for a slope search to be attempted
+    LIFT_MIN_GAIN_M = 200.0  # a lift must gain at least this much bottom→top, else it is invalid/dropped
 
 
 class SpeedConfig:
