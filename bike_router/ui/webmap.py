@@ -152,7 +152,7 @@ class RibbonSegment:
     tooltip: str
 
 
-# The two ribbon colour scales the radio button toggles between.
+# The two route colour scales the radio button toggles between.
 QUALITY_SCALE = "quality"  # blue good / orange unpaved / red main road
 GRADE_SCALE = "grade"  # blue flat / red uphill / green downhill
 
@@ -164,7 +164,7 @@ def _point_color(*, point: TrackPoint, scale: str) -> list[int]:
     elif scale == GRADE_SCALE:
         return grade_color(mode=point.mode, grade=point.grade)
     else:
-        raise ValueError(f"unknown ribbon colour scale: {scale!r}")
+        raise ValueError(f"unknown route colour scale: {scale!r}")
 
 
 def _segment_tooltip(point: TrackPoint) -> str:
@@ -364,7 +364,7 @@ def map_remount_key(*, camera_epoch: int) -> str:
 
 
 def scale_label(scale: str) -> str:
-    """Human label for a ribbon colour scale (the radio's format_func)."""
+    """Human label for a route colour scale (the radio's format_func)."""
     return (
         "Road quality (good / unpaved / main road)"
         if scale == QUALITY_SCALE

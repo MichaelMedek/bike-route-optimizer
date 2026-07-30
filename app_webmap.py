@@ -270,12 +270,12 @@ def _render_map(*, origin: str, destination: str) -> None:
         origin=origin,
         destination=destination,
     )
-    # Ribbon colour scale: a radio ABOVE the map so its value flows straight into the ribbon build.
+    # Route colour scale: a radio ABOVE the map so its value flows straight into the ribbon build.
     result = st.session_state.result
     color_scale = QUALITY_SCALE
     if result is not None:
         color_scale = st.radio(
-            "Ribbon colour",
+            "Route colour",
             options=(QUALITY_SCALE, GRADE_SCALE),
             format_func=scale_label,
             key="color_scale",

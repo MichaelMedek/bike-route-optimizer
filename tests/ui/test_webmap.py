@@ -133,7 +133,7 @@ def test_point_color():
         mode=pt.mode, surface_bad=pt.surface_bad, road_bad=pt.road_bad
     )
     assert _point_color(point=pt, scale=GRADE_SCALE) == grade_color(mode=pt.mode, grade=pt.grade)
-    with pytest.raises(ValueError, match="unknown ribbon colour scale"):
+    with pytest.raises(ValueError, match="unknown route colour scale"):
         _point_color(point=pt, scale="rainbow")
 
 
@@ -262,7 +262,7 @@ def test_map_remount_key():
 
 
 def test_scale_label():
-    # Human label for each ribbon colour scale (the radio's format_func).
+    # Human label for each route colour scale (the radio's format_func).
     assert "quality" in scale_label(scale=QUALITY_SCALE).lower()
     assert "grade" in scale_label(scale=GRADE_SCALE).lower()
 
