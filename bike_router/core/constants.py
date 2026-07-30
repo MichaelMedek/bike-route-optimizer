@@ -411,7 +411,6 @@ class PhotonConfig:
     LIMIT = 3  # max autocomplete suggestions shown under a place box
     PLACE_OSM_TAG = "place"  # settlements, not POIs
     TIMEOUT_S = 3.0
-    REVERSE_RADIUS_KM = 10.0  # reverse search so a waypoint far from any village still names one
 
 
 class GpxConfig:

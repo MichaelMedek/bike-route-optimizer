@@ -176,7 +176,9 @@ def test_nearest_place_name():
     ok = MagicMock(return_value=payload)
     assert nearest_place_name(lat=48.5, lon=8.37, http_get=ok) == "Baiersbronn"
     assert ok.call_args.kwargs["url"].endswith("/reverse")  # reverse endpoint, not /api
-    assert ok.call_args.kwargs["params"]["radius"] == PhotonConfig.REVERSE_RADIUS_KM  # widened search radius
+    params = ok.call_args.kwargs["params"]
+    assert "radius" not in params  # no radius cap — Photon returns the nearest place by default
+    assert params["osm_tag"] == PhotonConfig.PLACE_OSM_TAG and params["limit"] == 1
 
     assert nearest_place_name(lat=0.0, lon=0.0, http_get=MagicMock(return_value={"features": []})) is None
     blank = MagicMock(return_value={"features": [_photon_feature(name="", lon=0.0, lat=0.0)]})
