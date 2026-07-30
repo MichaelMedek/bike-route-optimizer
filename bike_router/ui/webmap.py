@@ -356,6 +356,15 @@ SET_LABEL = "📍 Set start & end"
 COMPUTE_LABEL = "🧭 Compute route"
 
 
+def _waypoint_label(*, index: int, lat: float, lon: float, village_of: "Callable[[float, float], str | None]") -> str:
+    """A gmaps waypoint's name: its village (reverse-geocoded) else ``Waypoint #N`` (1-indexed).
+
+    Never None — an unnamed waypoint is KEPT with its number so the map, the elevation profile, and
+    the Google-Maps legs always show the EXACT same interior points (one fell out before when unnamed).
+    """
+    return village_of(lat, lon) or f"Waypoint #{index}"
+
+
 def compute_gate(
     *, start_latlon: object, origin: str, destination: str, start_resolved: object, end_resolved: object
 ) -> tuple[bool, str]:
@@ -447,14 +456,17 @@ def profile_markers(
 ) -> list[tuple[float, float, str]]:
     """(distance_km, elevation_m, label) for every named marker on the elevation profile.
 
-    Endpoints use the typed names, stations their names, interior waypoints their nearest-village
-    via ``village_of`` (None drops it); projected onto the track so profile + map agree.
+    Endpoints use the typed names, stations their names; EVERY interior gmaps waypoint is kept
+    (village_of name, else the WAYPOINT_FALLBACK) so profile/map/Maps show the SAME points.
     """
     from bike_router.core.track import project_markers_onto_track
 
     markers = [(start_latlon[0], start_latlon[1], start_name), (end_latlon[0], end_latlon[1], end_name)]
     markers += [(lat, lon, label) for lat, lon, _elev, label in _station_marker_points(result=result)]
-    markers += [(lat, lon, name) for lat, lon in result.waypoints if (name := village_of(lat, lon))]
+    markers += [
+        (lat, lon, _waypoint_label(index=i, lat=lat, lon=lon, village_of=village_of))
+        for i, (lat, lon) in enumerate(result.waypoints, start=1)
+    ]
     return project_markers_onto_track(track=result.track, markers=markers)
 
 
@@ -470,17 +482,15 @@ def map_waypoint_markers(
 ) -> list[tuple[float, float, float, str]]:
     """(lat, lon, elevation_m, label) for every INTERMEDIATE map marker — stations + gmaps waypoints.
 
-    The SAME points the profile shows minus endpoints: each station plus interior waypoints named
-    via ``village_of`` (None drops it), elevation snapped to the nearest track point for the hover.
+    EVERY interior gmaps waypoint is kept (village_of name, else WAYPOINT_FALLBACK) so the map shows
+    the SAME points as the profile AND the Google-Maps legs; elevation snaps to the nearest track point.
     """
     markers = list(_station_marker_points(result=result))
     points = result.track.points
     plats = np.array([p.lat for p in points], dtype=np.float64)
     plons = np.array([p.lon for p in points], dtype=np.float64)
-    for lat, lon in result.waypoints:
-        name = village_of(lat, lon)
-        if name is None:  # no village found → no unnamed marker (mirrors profile_markers)
-            continue
+    for i, (lat, lon) in enumerate(result.waypoints, start=1):
+        name = _waypoint_label(index=i, lat=lat, lon=lon, village_of=village_of)
         idx = int(haversine_vec(lat_a=lat, lon_a=lon, lat_b=plats, lon_b=plons).argmin())
         elev = points[idx].elevation_m
         markers.append((lat, lon, elev, place_label(name=name, elevation_m=elev)))

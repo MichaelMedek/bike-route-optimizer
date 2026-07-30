@@ -24,6 +24,7 @@ from bike_router.ui.webmap import (
     _point_color,
     _segment_tooltip,
     _station_marker_points,
+    _waypoint_label,
     composition_donut,
     compute_gate,
     condition_km,
@@ -320,7 +321,8 @@ def test_output_donuts():
 
 
 def test_profile_markers():
-    # Labels endpoints from the typed names + each waypoint via village_of; a None village drops it.
+    # Labels endpoints from the typed names + each waypoint via village_of; a None village keeps the
+    # point with the WAYPOINT_FALLBACK label so profile/map/Maps show the SAME interior points.
     result = SimpleNamespace(track=_line_track(), rail_legs=[], waypoints=[(48.0, 8.01)])
     named = profile_markers(
         result=result,
@@ -332,7 +334,7 @@ def test_profile_markers():
     )
     assert [lab for _d, _e, lab in named] == ["Freudenstadt", "Pforzheim", "Baiersbronn"]
 
-    dropped = profile_markers(
+    kept = profile_markers(
         result=result,
         start_latlon=(48.0, 8.0, 100.0),
         end_latlon=(48.0, 8.02, 100.0),
@@ -340,7 +342,7 @@ def test_profile_markers():
         end_name="B",
         village_of=lambda lat, lon: None,
     )
-    assert [lab for _d, _e, lab in dropped] == ["A", "B"]  # unnamed waypoint dropped
+    assert [lab for _d, _e, lab in kept] == ["A", "B", "Waypoint #1"]  # unnamed waypoint KEPT + numbered
 
 
 def test_station_marker_points():
@@ -358,18 +360,18 @@ def test_station_marker_points():
 
 
 def test_map_waypoint_markers():
-    # The map's intermediate markers = stations + named gmaps waypoints as (lat, lon, elev, label).
-    # A waypoint's elevation snaps to its nearest track point; village_of None drops it; each label
-    # is the shared "Name (elev m)". A pure-bike route (no rail legs) yields just the named waypoints.
+    # The map's intermediate markers = stations + gmaps waypoints as (lat, lon, elev, label). A
+    # waypoint's elevation snaps to its nearest track point; EVERY waypoint is kept (village name,
+    # else "Waypoint #N"); each label is the shared "Name (elev m)".
     track = _line_track()  # nodes at lon 8.00/8.01/8.02, elevations 100/130/100 m
     result = SimpleNamespace(track=track, rail_legs=[], waypoints=[(48.0, 8.01), (48.0, 8.02)])
     markers = map_waypoint_markers(result=result, village_of=lambda lat, lon: "Baiersbronn" if lon == 8.01 else None)
-    assert len(markers) == 1  # the 8.02 waypoint (village_of → None) is dropped
-    lat, lon, elev, label = markers[0]
-    assert (lat, lon) == (48.0, 8.01) and elev == pytest.approx(130.0)  # snapped to node 2's elevation
-    assert label == "Baiersbronn (130 m)"  # shared place_label format, elevation from the track
+    assert len(markers) == 2  # BOTH kept — the unnamed 8.02 waypoint is numbered, not dropped
+    assert markers[0][:2] == (48.0, 8.01) and markers[0][2] == pytest.approx(130.0)  # snapped to node 2
+    assert markers[0][3] == "Baiersbronn (130 m)"  # named village
+    assert markers[1][3] == "Waypoint #2 (100 m)"  # unnamed → numbered by its interior position
 
-    # stations come first (from _station_marker_points), then the named waypoints
+    # stations come first (from _station_marker_points), then the waypoints
     from bike_router.core.simplify import RailLeg, Station
 
     leg = RailLeg(
@@ -379,3 +381,12 @@ def test_map_waypoint_markers():
     with_rail = SimpleNamespace(track=track, rail_legs=[leg], waypoints=[(48.0, 8.01)])
     labels = [lab for _lat, _lon, _e, lab in map_waypoint_markers(result=with_rail, village_of=lambda lat, lon: "V")]
     assert labels == ["A (100 m)", "B (100 m)", "V (130 m)"]  # stations, then the waypoint
+
+
+def test_waypoint_label():
+    # A gmaps waypoint's label = its village (reverse-geocoded) else "Waypoint #N" (1-indexed);
+    # NEVER None, so the point is kept across map/profile/Maps.
+    named = _waypoint_label(index=3, lat=48.0, lon=8.0, village_of=lambda lat, lon: "Baiersbronn")
+    assert named == "Baiersbronn"
+    numbered = _waypoint_label(index=2, lat=48.0, lon=8.0, village_of=lambda lat, lon: None)
+    assert numbered == "Waypoint #2"
