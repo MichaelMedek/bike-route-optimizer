@@ -160,6 +160,30 @@ def _fill_box(*, field: str, value: str) -> None:
     st.session_state[field] = value
 
 
+def _set_endpoints() -> None:
+    """Set-button callback: geocode the box texts, mark them resolved, recenter the map.
+
+    Runs as an on_click callback (BEFORE the top-to-bottom rerun, like _fill_box), so marking the
+    boxes resolved clears their suggestion proposals the instant Set is pressed. Recentering lives
+    ONLY here (camera_epoch).
+    """
+    origin, destination = st.session_state.start_box, st.session_state.end_box
+    # Always resolve the boxes to their current text (clears suggestions), whatever the geocode outcome.
+    st.session_state.update(start_box_resolved=origin, end_box_resolved=destination)
+    try:
+        start, end = resolve_endpoints(origin=origin, destination=destination)
+    except BikeRouterError as error:
+        st.toast(str(error), icon="⚠️")
+        return
+    st.session_state.update(
+        start_latlon=start,  # (lat, lon, elevation_m)
+        end_latlon=end,
+        result=None,  # stale route from the previous endpoints
+        view=route_view_state(start_latlon=start[:2], end_latlon=end[:2]),
+        camera_epoch=st.session_state.camera_epoch + 1,
+    )
+
+
 def main() -> None:
     st.set_page_config(page_title="Bike Route Optimizer", layout="centered")
     _download_graph_with_bar()
@@ -186,27 +210,10 @@ def main() -> None:
     with col_end:
         destination = _place_input(field="end_box", label="End", placeholder="End location", bbox=bbox)
 
-    # 2. Set start & end: resolve_endpoints geocodes the box texts + snaps to the graph;
-    # we mark them on the map and recenter. Recentering lives ONLY here (camera_epoch).
-    if st.button(
-        SET_LABEL,
-        width="stretch",
-        help="Geocode the Start/End places",
-    ):
-        try:
-            with st.spinner("Looking up places…"):
-                start, end = resolve_endpoints(origin=origin, destination=destination)
-            st.session_state.update(
-                start_latlon=start,  # (lat, lon, elevation_m)
-                end_latlon=end,
-                start_box_resolved=origin,  # suppress suggestions until the box is edited again
-                end_box_resolved=destination,
-                result=None,  # stale route from the previous endpoints
-                view=route_view_state(start_latlon=start[:2], end_latlon=end[:2]),
-                camera_epoch=st.session_state.camera_epoch + 1,
-            )
-        except BikeRouterError as error:
-            st.toast(str(error), icon="⚠️")
+    # 2. Set start & end: geocode the box texts + snap to the graph, mark them on the map, recenter.
+    # An on_click callback (runs before the rerun) so the suggestion proposals clear the instant Set
+    # is pressed — the boxes above re-render with typed == resolved.
+    st.button(SET_LABEL, width="stretch", help="Geocode the Start/End places", on_click=_set_endpoints)
 
     # The currently-marked endpoints (colors match the map markers and the PNG).
     if st.session_state.start_latlon is not None:
