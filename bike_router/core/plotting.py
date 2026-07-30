@@ -140,7 +140,9 @@ def plot_route_debug(
     )
     figure.set_facecolor("white")
     axes, cbar_ax, stats_ax = mosaic["map"], mosaic["cbar"], mosaic["stats"]
-    axes.set_aspect("equal", adjustable="datalim")
+    # adjustable="box" keeps our explicit x/y limits (set below) AND equal aspect by fitting the
+    # axes box — "datalim" would instead override those limits (matplotlib warns + ignores them).
+    axes.set_aspect("equal", adjustable="box")
 
     # The route line itself is drawn in routing/condition colours (same source as the 3D ribbon).
     _draw_route_overlay(axes=axes, route=route)
