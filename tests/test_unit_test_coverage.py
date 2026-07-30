@@ -14,6 +14,7 @@ import ast
 import pathlib
 
 import pytest
+from docstring_parser import DocstringStyle, parse
 
 from bike_router.core.constants import PROJECT_ROOT
 
@@ -61,6 +62,16 @@ def _test_files() -> list[tuple[str, pathlib.Path]]:
 
 _TEST_FILE_IDS = [f"{lay}/{p.name}" for lay, p in _test_files()]
 
+_DEF = (*_FUNC_TYPES, ast.ClassDef)  # every documentable production symbol
+# (layer, module_path, node) for every production function/class → one docstring check each.
+_SYMBOL_NODES = [
+    (lay, p, node)
+    for lay, p in _production_modules()
+    for node in ast.parse(p.read_text()).body
+    if isinstance(node, _DEF)
+]
+_SYMBOL_IDS = [f"{lay}/{p.stem}::{node.name}" for lay, p, node in _SYMBOL_NODES]
+
 
 @pytest.mark.parametrize(("layer", "path", "func"), _FUNCTIONS, ids=_FN_IDS)
 def test_every_production_function_has_a_unit_test(layer: str, path: pathlib.Path, func: str) -> None:
@@ -104,4 +115,26 @@ def test_tests_outnumber_production_symbols() -> None:
     assert tests >= prod * 1.4, (
         f"only {tests} test funcs+classes for {prod} production ones (ratio {tests / prod:.2f}); "
         f"need ≥{prod * 1.4:.0f} (1.4×)"
+    )
+
+
+@pytest.mark.parametrize(("layer", "path", "node"), _SYMBOL_NODES, ids=_SYMBOL_IDS)
+def test_docstring_is_terse_with_valid_google_args(layer: str, path: pathlib.Path, node: ast.AST) -> None:
+    """Every production symbol: 1–3 description lines, plus (optional) a valid Google-style Args block.
+
+    Uses docstring_parser: description = short + long, so Args/Returns/
+    Raises sections are naturally excluded from the line budget; an ``Args:`` header that yields no
+    parsed params is malformed and fails.
+    """
+    raw = ast.get_docstring(node, clean=True)
+    assert raw, f"{layer}/{path.name}::{node.name} has no docstring (need 1–3 description lines)"
+    parsed = parse(raw, style=DocstringStyle.GOOGLE)
+    desc = "\n".join(part for part in (parsed.short_description, parsed.long_description) if part)
+    n_lines = len(desc.splitlines())
+    assert 1 <= n_lines <= 3, (
+        f"{layer}/{path.name}::{node.name} docstring has {n_lines} description lines; max 3 "
+        f"(Args/Returns/Raises don't count)"
+    )
+    assert not ("Args:" in raw and not parsed.params), (
+        f"{layer}/{path.name}::{node.name} has an 'Args:' header but no valid Google-style params under it"
     )
