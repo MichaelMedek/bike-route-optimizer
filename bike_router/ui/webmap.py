@@ -24,6 +24,7 @@ from bike_router.core.track import (
     TrackPoint,
     classify_condition,
     classify_grade,
+    cumulative_km,
     grade_color,
     segment_color,
 )
@@ -115,24 +116,20 @@ def composition_donut(title: str, by_km: dict[str, float], colors: dict[str, str
     return chart
 
 
-def elevation_profile_chart(track: Track) -> go.Figure:
+def elevation_profile_chart(track: Track, markers: list[tuple[float, float, str]] | None = None) -> go.Figure:
     """Plotly elevation profile: x = distance (km), y = elevation (m); line coloured bike vs train.
 
-    A Plotly figure (Altair collapsed to a flat line inside the expander). One Scatter per
-    contiguous MODE run, coloured bike-route blue / train-path purple with the SAME
-    MODE_DONUT_COLORS as the "By mode" donut (station hops count as bike). Consecutive runs share
-    their boundary point so the line stays continuous. Distance is the cumulative haversine gap.
+    One Scatter per contiguous MODE run, coloured bike-route blue / train-path purple with the
+    SAME MODE_DONUT_COLORS as the "By mode" donut. ``markers`` (distance_km, elevation_m, label)
+    from project_markers_onto_track — the SAME named points the map shows (start/end, stations,
+    waypoints) — are overlaid so the profile and map agree. Distance is the shared cumulative_km.
     """
 
     def _label(mode: str) -> str:
         rail, bike = WebMapConfig.MODE_DONUT_LABELS[Mode.RAIL], WebMapConfig.MODE_DONUT_LABELS[Mode.BIKE]
         return rail if mode == str(Mode.RAIL) else bike
 
-    # Cumulative distance (vectorized) + per-point mode label + elevation.
-    lats = np.array([p.lat for p in track.points], dtype=np.float64)
-    lons = np.array([p.lon for p in track.points], dtype=np.float64)
-    step_km = haversine_vec(lat_a=lats[:-1], lon_a=lons[:-1], lat_b=lats[1:], lon_b=lons[1:]) / 1000.0
-    dists = np.concatenate(([0.0], np.cumsum(step_km)))
+    dists = cumulative_km(points=track.points)
     elevs = [p.elevation_m for p in track.points]
     labels = [_label(mode=p.mode) for p in track.points]
 
@@ -158,6 +155,21 @@ def elevation_profile_chart(track: Track) -> go.Figure:
             )
             seen_legend.add(label)
             run_start = i
+
+    if markers:
+        # The named waypoints/stations/endpoints, at their correct distance + elevation on the line.
+        fig.add_trace(
+            go.Scatter(
+                x=[d for d, _e, _lab in markers],
+                y=[e for _d, e, _lab in markers],
+                text=[lab for _d, _e, lab in markers],
+                mode="markers+text",
+                textposition="top center",
+                marker={"size": 8, "color": _hex(rgb=WebMapConfig.RAIL_COLOR)},
+                name="waypoints",
+                hovertemplate="%{text}<br>%{x:.1f} km · %{y:.0f} m<extra></extra>",
+            )
+        )
 
     lo, hi = min(elevs), max(elevs)
     pad = max((hi - lo) * 0.1, 5.0)  # headroom so the line isn't glued to the axes
@@ -423,3 +435,33 @@ def output_donuts(result: "RouteResult") -> tuple[tuple[str, dict[str, float], d
         ("By grade", grade_km(track=track), GRADE_DONUT_COLORS),
         ("By mode", result.composition.by_mode_km, MODE_DONUT_COLORS),
     )
+
+
+def profile_markers(
+    *,
+    result: "RouteResult",
+    start_latlon: tuple[float, float, float],
+    end_latlon: tuple[float, float, float],
+    start_name: str,
+    end_name: str,
+    village_of: "Callable[[float, float], str | None]",
+) -> list[tuple[float, float, str]]:
+    """(distance_km, elevation_m, label) for every named marker on the elevation profile.
+
+    Endpoints use the typed start/end names, stations their station names, and each interior
+    gmaps waypoint its nearest-village name via ``village_of`` (a reverse-geocoder; a None result
+    drops that marker). Projected onto the track so profile + map agree — one shared assembler.
+    """
+    from bike_router.core.track import project_markers_onto_track
+
+    markers = [(start_latlon[0], start_latlon[1], start_name), (end_latlon[0], end_latlon[1], end_name)]
+    markers += [(lat, lon, label) for lat, lon, _elev, label in _station_marker_points(result=result)]
+    markers += [(lat, lon, name) for lat, lon in result.waypoints if (name := village_of(lat, lon))]
+    return project_markers_onto_track(track=result.track, markers=markers)
+
+
+def _station_marker_points(*, result: "RouteResult") -> list[tuple[float, float, float, str]]:
+    """Station markers for the route (delegates to the core single source)."""
+    from bike_router.core.simplify import route_station_markers
+
+    return route_station_markers(rail_legs=result.rail_legs)

@@ -90,6 +90,37 @@ class Track:
     total: RouteStats
 
 
+def cumulative_km(points: "list[TrackPoint]") -> "np.ndarray":
+    """Cumulative great-circle distance (km) at each track point — the ONE distance axis.
+
+    Shared by the elevation profile (x-axis) and marker projection so both read the same
+    km. Vectorized haversine over consecutive points; point 0 is at 0 km.
+    """
+    lats = np.array([p.lat for p in points], dtype=np.float64)
+    lons = np.array([p.lon for p in points], dtype=np.float64)
+    step_km = haversine_vec(lat_a=lats[:-1], lon_a=lons[:-1], lat_b=lats[1:], lon_b=lons[1:]) / 1000.0
+    return np.concatenate(([0.0], np.cumsum(step_km)))
+
+
+def project_markers_onto_track(
+    *, track: "Track", markers: list[tuple[float, float, str]]
+) -> list[tuple[float, float, str]]:
+    """Place each (lat, lon, label) marker on the route at its nearest track point.
+
+    Returns (distance_km, elevation_m, label) so the SAME named markers the map shows
+    (start/end, stations, gmaps waypoints) also appear on the elevation profile at the
+    correct position + height. Nearest by great-circle distance to the densified track.
+    """
+    dists = cumulative_km(points=track.points)
+    plats = np.array([p.lat for p in track.points], dtype=np.float64)
+    plons = np.array([p.lon for p in track.points], dtype=np.float64)
+    placed: list[tuple[float, float, str]] = []
+    for lat, lon, label in markers:
+        idx = int(haversine_vec(lat_a=lat, lon_a=lon, lat_b=plats, lon_b=plons).argmin())
+        placed.append((float(dists[idx]), track.points[idx].elevation_m, label))
+    return placed
+
+
 def climb_totals(deltas: list[float]) -> tuple[float, float]:
     """(ascent, descent) in metres from per-edge Δelevations: gross up- vs down-sum.
 

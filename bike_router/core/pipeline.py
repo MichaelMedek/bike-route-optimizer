@@ -69,6 +69,7 @@ class RouteResult:
     bike_legs: list[BikeLeg]  # one pedalled leg (Maps URL + from/to place names); trains split the route
     rail_legs: list[RailLeg]  # boarding + alighting station per train ride (empty = no train)
     composition: RouteComposition
+    waypoints: list[tuple[float, float]]  # (lat, lon) interior gmaps waypoints — named for the map/profile
 
 
 def _geocode_both(*, origin: str, destination: str) -> tuple[tuple[float, float], tuple[float, float]]:
@@ -245,17 +246,6 @@ def plan_route(
     gpx_path.write_text(build_gpx(track=track))
     logger.info(f"Wrote {gpx_path} ({len(track.points)} trackpoints)")
 
-    png_path.parent.mkdir(parents=True, exist_ok=True)
-    plot_route_debug(
-        route=route,
-        track=track,
-        params=params,
-        out_path=str(png_path),
-        origin=origin,
-        destination=destination,
-        composition=composition,
-    )
-
     # Train rides first (boarding + alighting station per ride) — they both label the bike
     # legs and let the rider look the actual train up in a railway app. Empty for pure bike.
     rail_legs = split_rail_legs(route=route)
@@ -266,21 +256,38 @@ def plan_route(
     leg_paths = split_bike_legs(route=route)
     endpoints = bike_leg_endpoints(route=route, leg_paths=leg_paths, origin=origin, destination=destination)
     position = {osmid: index for index, osmid in enumerate(route.osmids)}
-    bike_legs = [
-        BikeLeg(
-            url=build_gmaps_url(
-                waypoints_latlon=select_waypoints(
-                    line=route_to_linestring(
-                        route=route.subpath(start_index=position[leg[0]], end_index=position[leg[-1]])
-                    ),
-                    count=GmapsConfig.N_WAYPOINTS,
-                )
-            ),
-            from_place=from_place,
-            to_place=to_place,
+    # Waypoints per leg once: the URL uses ALL of them; the map/profile name only the INTERIOR
+    # ones (leg endpoints already carry origin/destination/station names). (lat, lon) each.
+    leg_waypoints = [
+        select_waypoints(
+            line=route_to_linestring(route=route.subpath(start_index=position[leg[0]], end_index=position[leg[-1]])),
+            count=GmapsConfig.N_WAYPOINTS,
         )
-        for leg, (from_place, to_place) in zip(leg_paths, endpoints, strict=True)
+        for leg in leg_paths
     ]
+    bike_legs = [
+        BikeLeg(url=build_gmaps_url(waypoints_latlon=wps), from_place=from_place, to_place=to_place)
+        for wps, (from_place, to_place) in zip(leg_waypoints, endpoints, strict=True)
+    ]
+    waypoints = [wp for wps in leg_waypoints for wp in wps[1:-1]]  # interior only; ends are already named
+
+    # Debug PNG: route line in routing colours; ONLY the special points (interior waypoints +
+    # board/alight stations, plus start/end) get the elevation-coloured dots — same points the
+    # Streamlit elevation profile marks.
+    station_points = [(leg.board.lat, leg.board.lon) for leg in rail_legs] + [
+        (leg.alight.lat, leg.alight.lon) for leg in rail_legs
+    ]
+    png_path.parent.mkdir(parents=True, exist_ok=True)
+    plot_route_debug(
+        route=route,
+        track=track,
+        params=params,
+        out_path=str(png_path),
+        marker_points=waypoints + station_points,
+        origin=origin,
+        destination=destination,
+        composition=composition,
+    )
     assert gpx_path.exists() and png_path.exists(), "GPX and PNG must be written"
 
     return RouteResult(
@@ -290,4 +297,5 @@ def plan_route(
         bike_legs=bike_legs,
         rail_legs=rail_legs,
         composition=composition,
+        waypoints=waypoints,
     )

@@ -163,3 +163,24 @@ def photon_autocomplete(
         return []
     features = payload["features"]  # type: ignore[index]  # a well-formed Photon reply always has it
     return [photon_label(properties=feature["properties"]) for feature in features]
+
+
+def nearest_place_name(*, lat: float, lon: float, http_get: HttpGetter = _default_http_get) -> str | None:
+    """Nearest settlement NAME to (lat, lon) via Photon reverse geocoding — village, not address.
+
+    Returns just the place ``name`` (e.g. "Baiersbronn"), never a full street address. Any
+    network/parse error or an empty result returns None (the caller drops the marker's label),
+    so a weak connection never crashes the render. Used to name the in-between gmaps waypoints.
+    """
+    params: HttpParams = {"lat": lat, "lon": lon, "lang": PhotonConfig.LANG, "osm_tag": PhotonConfig.PLACE_OSM_TAG}
+    reverse_url = PhotonConfig.BASE_URL.removesuffix("/api") + "/reverse"
+    try:
+        payload = http_get(url=reverse_url, params=params, timeout=PhotonConfig.TIMEOUT_S)
+    except requests.RequestException as exc:
+        logger.info(f"Photon reverse lookup failed at ({lat:.4f}, {lon:.4f}) — no name ({exc})")
+        return None
+    features = payload["features"]  # type: ignore[index]
+    if not features:
+        return None
+    name = str(features[0]["properties"].get("name") or "").strip()
+    return name or None

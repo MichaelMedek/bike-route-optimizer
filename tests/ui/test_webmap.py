@@ -21,6 +21,7 @@ from bike_router.ui.webmap import (
     ViewState,
     default_view_state,
     elevation_profile_chart,
+    profile_markers,
     ribbon_width_m,
     route_ribbon_segments,
     route_view_state,
@@ -156,6 +157,47 @@ def test_elevation_profile_chart_distance_elevation_line_coloured_by_mode():
     assert trace.x[0] == pytest.approx(0.0) and trace.x[-1] > 0  # cumulative distance
     lo, hi = fig.layout.yaxis.range
     assert lo < 100.0 and hi > 130.0  # padded elevation range (not a flat/auto axis)
+
+
+def test_elevation_profile_overlays_markers():
+    """Given projected markers, the profile adds a labelled scatter trace at their dist/elev."""
+    track = _line_track()
+    fig = elevation_profile_chart(track=track, markers=[(0.0, 100.0, "Start"), (1.6, 100.0, "End")])
+    marker_trace = next(t for t in fig.data if t.mode and "markers" in t.mode)
+    assert list(marker_trace.text) == ["Start", "End"]
+    assert marker_trace.x[0] == pytest.approx(0.0) and marker_trace.x[-1] == pytest.approx(1.6)
+
+
+def test_profile_markers_names_endpoints_stations_and_villages():
+    """profile_markers labels endpoints from the typed text and each waypoint via village_of."""
+    from types import SimpleNamespace
+
+    result = SimpleNamespace(track=_line_track(), rail_legs=[], waypoints=[(48.0, 8.01)])
+    placed = profile_markers(
+        result=result,
+        start_latlon=(48.0, 8.0, 100.0),
+        end_latlon=(48.0, 8.02, 100.0),
+        start_name="Freudenstadt",
+        end_name="Pforzheim",
+        village_of=lambda lat, lon: "Baiersbronn",
+    )
+    assert [lab for _d, _e, lab in placed] == ["Freudenstadt", "Pforzheim", "Baiersbronn"]
+
+
+def test_profile_markers_drops_waypoint_with_no_village():
+    """A waypoint whose reverse lookup returns None is dropped (no unnamed marker)."""
+    from types import SimpleNamespace
+
+    result = SimpleNamespace(track=_line_track(), rail_legs=[], waypoints=[(48.0, 8.01)])
+    placed = profile_markers(
+        result=result,
+        start_latlon=(48.0, 8.0, 100.0),
+        end_latlon=(48.0, 8.02, 100.0),
+        start_name="A",
+        end_name="B",
+        village_of=lambda lat, lon: None,
+    )
+    assert [lab for _d, _e, lab in placed] == ["A", "B"]  # waypoint dropped
 
 
 def test_default_view_state_is_dach_overview():

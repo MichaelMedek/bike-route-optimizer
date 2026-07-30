@@ -135,8 +135,9 @@ def test_every_import_is_a_declared_requirement(layer: str, path: pathlib.Path) 
 
 
 def test_test_files_are_organized_into_layer_folders() -> None:
-    """Only conftest.py + this file may sit at tests/ root; every other test lives in a layer folder."""
-    stray = sorted(p.name for p in _TESTS_DIR.glob("test_*.py") if p.name != "test_import_boundaries.py")
+    """Only the two cross-layer meta-tests may sit at tests/ root; every other test lives in a layer folder."""
+    _ROOT_META = {"test_import_boundaries.py", "test_unit_test_coverage.py"}
+    stray = sorted(p.name for p in _TESTS_DIR.glob("test_*.py") if p.name not in _ROOT_META)
     assert not stray, f"test files must live in tests/(core|ui|preprocessing)/, found at root: {stray}"
     assert all((_TESTS_DIR / layer).is_dir() for layer in _LAYERS), "missing a tests/<layer>/ folder"
 

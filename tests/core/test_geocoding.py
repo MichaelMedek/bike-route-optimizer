@@ -9,6 +9,7 @@ from bike_router.core.geocoding import (
     _GEOCODE_CACHE,
     geocode,
     geocode_endpoint,
+    nearest_place_name,
     photon_autocomplete,
     photon_label,
 )
@@ -167,4 +168,23 @@ def test_photon_autocomplete_passes_bbox_and_center_params():
 def test_photon_label_formats_name_city_state():
     assert photon_label(properties={"name": "Baiersbronn", "city": "Baiersbronn", "state": "BW"}) == "Baiersbronn, BW"
     assert photon_label(properties={"name": "Pforzheim", "state": "BW"}) == "Pforzheim, BW"
+
+
+def test_nearest_place_name_returns_just_the_name():
+    """Reverse geocoding returns ONLY the settlement name (village), never a full address."""
+    payload = {"features": [_photon_feature(name="Baiersbronn", lon=8.37, lat=48.5, city="Freudenstadt")]}
+    fake_get = MagicMock(return_value=payload)
+    assert nearest_place_name(lat=48.5, lon=8.37, http_get=fake_get) == "Baiersbronn"
+    assert fake_get.call_args.kwargs["url"].endswith("/reverse")  # reverse endpoint, not /api
+
+
+def test_nearest_place_name_empty_or_error_returns_none():
+    """No feature, a blank name, or a network error → None (the caller drops that marker)."""
+    import requests
+
+    assert nearest_place_name(lat=0.0, lon=0.0, http_get=MagicMock(return_value={"features": []})) is None
+    blank = MagicMock(return_value={"features": [_photon_feature(name="", lon=0.0, lat=0.0)]})
+    assert nearest_place_name(lat=0.0, lon=0.0, http_get=blank) is None
+    boom = MagicMock(side_effect=requests.RequestException("timeout"))
+    assert nearest_place_name(lat=0.0, lon=0.0, http_get=boom) is None
     assert photon_label(properties={"name": "Nowhere"}) == "Nowhere"  # no trailing commas

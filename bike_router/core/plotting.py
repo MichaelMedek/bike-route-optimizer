@@ -1,8 +1,8 @@
 """Debug visualization: the route drawn on a plain map, coloured for quick verification.
 
 For DEBUG only — uses what inference already has (the confirmed edge list + track), no ox,
-no corridor backdrop, no clever logic. Nodes are scatter-coloured by elevation and each edge
-is drawn along its real polyline coloured by condition, with a stats panel beneath.
+no corridor backdrop, no clever logic. The route line uses its routing/condition colours; only
+the special points (waypoints + train stations + start/end) get elevation-coloured dots.
 """
 
 import logging
@@ -20,6 +20,7 @@ from matplotlib.ticker import MaxNLocator  # noqa: E402
 
 from bike_router.core.composition import RouteComposition, format_composition  # noqa: E402
 from bike_router.core.constants import Palette, PlotConfig, RoutingParams  # noqa: E402
+from bike_router.core.geo import haversine_vec  # noqa: E402
 from bike_router.core.route_path import RoutePath  # noqa: E402
 from bike_router.core.track import (  # noqa: E402
     Track,
@@ -88,22 +89,39 @@ def _draw_route_overlay(*, axes: Axes, route: RoutePath) -> None:
         )
 
 
+def _marker_node_indices(*, route: RoutePath, marker_points: list[tuple[float, float]]) -> list[int]:
+    """Nearest route-node index for each (lat, lon) marker — so its dot takes that node's elevation.
+
+    Always includes the start (0) and end (last) node; the given points are the interior
+    waypoints + train stations. Nearest by great-circle distance (the shared haversine).
+    """
+    plats = np.array([n.lat for n in route.nodes], dtype=np.float64)
+    plons = np.array([n.lon for n in route.nodes], dtype=np.float64)
+    idxs = {0, len(route.nodes) - 1}
+    for lat, lon in marker_points:
+        idxs.add(int(haversine_vec(lat_a=lat, lon_a=lon, lat_b=plats, lon_b=plons).argmin()))
+    return sorted(idxs)
+
+
 def plot_route_debug(
     *,
     route: RoutePath,
     track: Track,
     params: RoutingParams,
     out_path: str,
+    marker_points: list[tuple[float, float]] | None = None,
     origin: str = "Start",
     destination: str = "End",
     composition: RouteComposition | None = None,
     cmap_name: str = PlotConfig.CMAP,
     dpi: int = PlotConfig.DPI,
 ) -> None:
-    """Save a debug PNG: route nodes coloured by elevation, edges coloured by condition.
+    """Save a debug PNG: the route line in ROUTING colours; only special points elevation-coloured.
 
-    One solid-white page: the route (nodes by elevation, edges by condition, ends marked), an
-    elevation colorbar down the right, and a condensed stats panel (prefs · totals · km) below.
+    The route follows its condition colours (blue good / orange unpaved / red main / purple rail —
+    same as the Streamlit ribbon). ONLY ``marker_points`` (waypoints + train board/alight stations)
+    plus the start/end get the elevation-colormapped dots (the colorbar). One solid-white page with
+    a stats panel beneath. Elevation range is taken over the whole route so the scale is meaningful.
     """
     lons = np.array([node.lon for node in route.nodes], dtype=float)
     lats = np.array([node.lat for node in route.nodes], dtype=float)
@@ -127,8 +145,24 @@ def plot_route_debug(
     axes, cbar_ax, stats_ax = mosaic["map"], mosaic["cbar"], mosaic["stats"]
     axes.set_aspect("equal", adjustable="datalim")
 
+    # The route line itself is drawn in routing/condition colours (same source as the 3D ribbon).
     _draw_route_overlay(axes=axes, route=route)
-    axes.scatter(lons, lats, c=elevations, cmap=cmap, norm=norm, s=12, zorder=6, edgecolors="none")
+
+    # ONLY the special points get an elevation-coloured dot: the interior waypoints + the train
+    # board/alight stations, projected to their nearest route node for the elevation value.
+    pts = _marker_node_indices(route=route, marker_points=marker_points or [])
+    if pts:
+        axes.scatter(
+            lons[pts],
+            lats[pts],
+            c=elevations[pts],
+            cmap=cmap,
+            norm=norm,
+            s=60,
+            zorder=6,
+            edgecolors="black",
+            linewidths=0.6,
+        )
 
     pad = max(lons.max() - lons.min(), lats.max() - lats.min()) * PlotConfig.ROUTE_ZOOM_MARGIN or 0.001
     axes.set_xlim(lons.min() - pad, lons.max() + pad)

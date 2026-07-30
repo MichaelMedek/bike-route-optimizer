@@ -12,7 +12,7 @@ from streamlit_deckgl import st_deckgl
 
 from bike_router.core.constants import PARAM_SPECS, RoutingDefaults, RoutingParams, WebMapConfig
 from bike_router.core.errors import BikeRouterError
-from bike_router.core.geocoding import photon_autocomplete
+from bike_router.core.geocoding import nearest_place_name, photon_autocomplete
 from bike_router.core.graph_store import download_graph_from_hf, load_meta
 from bike_router.core.pipeline import RouteResult, plan_route, resolve_endpoints
 from bike_router.core.simplify import (
@@ -34,6 +34,7 @@ from bike_router.ui.webmap import (
     map_remount_key,
     output_donuts,
     output_stat_rows,
+    profile_markers,
     route_ribbon_segments,
     route_view_state,
     scale_label,
@@ -58,6 +59,12 @@ def _suggest(term: str, bbox: tuple[float, float, float, float]) -> list[str]:
     return photon_autocomplete(term=term, bbox=bbox)
 
 
+@st.cache_data(ttl=3600)  # type: ignore[misc]  # untyped external decorator; cached — one lookup per point
+def _waypoint_village(lat: float, lon: float) -> str | None:
+    """Nearest village name to a gmaps waypoint (reverse-geocoded, cached)."""
+    return nearest_place_name(lat=lat, lon=lon)
+
+
 def _render_route_output(result: RouteResult) -> None:
     """Route output: stats + donuts in a collapsible box; trains, links, downloads always shown."""
     track = result.track
@@ -74,8 +81,17 @@ def _render_route_output(result: RouteResult) -> None:
         for col, (title, by_km, colors) in zip(st.columns(3), output_donuts(result), strict=True):
             col.altair_chart(composition_donut(title=title, by_km=by_km, colors=colors), width="stretch")
 
-        # Below the donuts: the elevation profile (distance × elevation), line coloured by mode.
-        st.plotly_chart(elevation_profile_chart(track=track), width="stretch")
+        # Below the donuts: the elevation profile with the SAME named markers the map shows —
+        # assembled + projected by the tested core/ui helpers (endpoints, stations, villages).
+        markers = profile_markers(
+            result=result,
+            start_latlon=st.session_state.start_latlon,
+            end_latlon=st.session_state.end_latlon,
+            start_name=st.session_state.start_box_resolved,
+            end_name=st.session_state.end_box_resolved,
+            village_of=_waypoint_village,
+        )
+        st.plotly_chart(elevation_profile_chart(track=track, markers=markers), width="stretch")
 
     # Always visible: which trains to catch, the bike-leg Maps links, and the downloads —
     # the actionable output the rider actually leaves with.

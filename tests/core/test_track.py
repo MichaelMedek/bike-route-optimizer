@@ -1,8 +1,34 @@
 """Track-builder tests — geometry, elevation, adaptive timing, rolled-up totals."""
 
+import pytest
+
 from bike_router.core.constants import GpxConfig, SpeedConfig
-from bike_router.core.track import RouteStats, build_track, climb_totals
+from bike_router.core.track import (
+    RouteStats,
+    build_track,
+    climb_totals,
+    cumulative_km,
+    project_markers_onto_track,
+)
 from tests.conftest import make_line_route
+
+
+def test_cumulative_km_starts_at_zero_and_increases():
+    track = build_track(route=make_line_route())
+    dists = cumulative_km(points=track.points)
+    assert dists[0] == 0.0
+    assert all(b >= a for a, b in zip(dists[:-1], dists[1:], strict=True))  # monotonic
+    assert dists[-1] > 0.0  # the route has length
+
+
+def test_project_markers_onto_track_snaps_to_nearest_point_dist_and_elev():
+    # A marker at node 2's coords (8.01, 48.0, 130 m) must land at that node's distance + elevation.
+    track = build_track(route=make_line_route())
+    placed = project_markers_onto_track(track=track, markers=[(48.0, 8.01, "mid")])
+    dist_km, elev_m, label = placed[0]
+    assert label == "mid"
+    assert elev_m == pytest.approx(130.0)  # node 2 elevation
+    assert dist_km == pytest.approx(cumulative_km(points=track.points)[1])  # node 2 distance
 
 
 def test_climb_totals_reports_gross_not_net_over_a_hill():
