@@ -4,6 +4,7 @@ import pytest
 
 from bike_router.core.errors import (
     BikeRouterError,
+    EmptyResortError,
     GeocodeConnectionError,
     GeocodeNotFoundError,
     NoRouteError,
@@ -25,6 +26,7 @@ _SUBCLASSES = [
     NoRouteError,
     RouteTooLargeError,
     ParamOutOfRangeError,
+    EmptyResortError,
 ]
 
 
@@ -88,3 +90,8 @@ class TestRouteTooLargeError:
 class TestParamOutOfRangeError:
     def test_raises_and_is_base(self):
         _raises_own_type(exc_type=ParamOutOfRangeError)
+
+
+class TestEmptyResortError:
+    def test_raises_and_is_base(self):
+        _raises_own_type(exc_type=EmptyResortError)

@@ -29,6 +29,7 @@ from bike_router.core.constants import (
     RoutingParams,
     RoutingParamSpec,
     SanityConfig,
+    SkiResortConfig,
     SpeedConfig,
     SurfaceConfig,
     WebMapConfig,
@@ -163,6 +164,14 @@ class TestCostConfig:
 class TestGradeConfig:
     def test_margin_is_a_meaningful_positive_grade(self):
         assert 0 < GradeConfig.MARGIN < 1
+
+
+class TestSkiResortConfig:
+    def test_thresholds_are_internally_consistent(self):
+        # A lift must climb at least its prominence; all gates are positive; dip tolerance ≥ 0.
+        assert SkiResortConfig.LIFT_MIN_CLIMB_M >= SkiResortConfig.LIFT_PROMINENCE_M > 0
+        assert SkiResortConfig.LIFT_DIP_TOLERANCE_M >= 0
+        assert SkiResortConfig.SLOPE_MAX_PAIR_KM > 0 and SkiResortConfig.SLOPE_MIN_DROP_M > 0
 
 
 class TestSpeedConfig:

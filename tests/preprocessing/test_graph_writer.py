@@ -23,6 +23,7 @@ from bike_router.preprocessing.graph_writer import (
     graph_to_tables,
     read_full_graph,
     read_region_tables,
+    undirected_graph_from_edges,
     write_graph_parquet,
 )
 from tests.conftest import FIXTURE_ROUNDTRIP_STORE, make_store_roundtrip_graph, write_store_roundtrip_fixture
@@ -64,6 +65,15 @@ def test_compute_bbox():
     # (west, south, east, north) bounds of a node table.
     nodes_df = pd.DataFrame({"lon": [8.0, 8.2, 8.1], "lat": [48.0, 48.3, 48.1]})
     assert compute_bbox(nodes_df=nodes_df) == (8.0, 48.0, 8.2, 48.3)
+
+
+def test_undirected_graph_from_edges():
+    # Endpoint columns → undirected graph; weight_col stores the column as edge 'weight'.
+    edges = pd.DataFrame({"from_node": [1, 2], "to_node": [2, 3], "length_m": [100.0, 200.0]})
+    plain = undirected_graph_from_edges(edges_df=edges)
+    assert plain.number_of_nodes() == 3 and plain.has_edge(1, 2) and plain.has_edge(2, 3)
+    weighted = undirected_graph_from_edges(edges_df=edges, weight_col="length_m")
+    assert weighted[1][2]["weight"] == 100.0 and weighted[2][3]["weight"] == 200.0
 
 
 def test_scalar():
