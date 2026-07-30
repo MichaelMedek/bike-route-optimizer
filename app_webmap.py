@@ -7,6 +7,9 @@ bike_router (what the CLI calls); this file only wires widgets and renders outpu
 Run:  streamlit run app_webmap.py
 """
 
+from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
+
 import streamlit as st
 from streamlit_deckgl import st_deckgl
 
@@ -59,10 +62,22 @@ def _suggest(term: str, bbox: tuple[float, float, float, float]) -> list[str]:
     return photon_autocomplete(term=term, bbox=bbox)
 
 
-@st.cache_data(ttl=3600)  # type: ignore[misc]  # untyped external decorator; cached — one lookup per point
-def _waypoint_village(lat: float, lon: float) -> str | None:
-    """Nearest village name to a gmaps waypoint (reverse-geocoded, cached)."""
-    return nearest_place_name(lat=lat, lon=lon)
+@st.cache_data(ttl=3600)  # type: ignore[misc]  # untyped external decorator; one cached batch per route
+def _village_names(waypoints: tuple[tuple[float, float], ...]) -> dict[tuple[float, float], str | None]:
+    """Reverse-geocode every gmaps waypoint to its village name CONCURRENTLY (one Photon call each).
+
+    Serial lookups cost ~1 round-trip per waypoint; a thread pool collapses them to ~1 total. Returns
+    a {(lat, lon): name|None} map so callers name points with a pure dict lookup, no network in loops.
+    """
+    with ThreadPoolExecutor(max_workers=max(1, len(waypoints))) as pool:
+        names = pool.map(lambda ll: nearest_place_name(lat=ll[0], lon=ll[1]), waypoints)
+    return dict(zip(waypoints, names, strict=True))
+
+
+def _village_lookup(result: RouteResult) -> Callable[[float, float], str | None]:
+    """A village_of(lat, lon) callable backed by the concurrently-prefetched, cached name map."""
+    names = _village_names(tuple(result.waypoints))
+    return lambda lat, lon: names.get((lat, lon))
 
 
 def _render_route_output(result: RouteResult) -> None:
@@ -89,7 +104,7 @@ def _render_route_output(result: RouteResult) -> None:
             end_latlon=st.session_state.end_latlon,
             start_name=st.session_state.start_box_resolved,
             end_name=st.session_state.end_box_resolved,
-            village_of=_waypoint_village,
+            village_of=_village_lookup(result),
         )
         st.plotly_chart(elevation_profile_chart(track=track, markers=markers), width="stretch")
 
@@ -297,7 +312,7 @@ def _render_map(*, origin: str, destination: str) -> None:
     )
     # Intermediate map markers = board/alight stations + named gmaps waypoints (the SAME points the
     # elevation profile shows). All blue + round + smaller than the endpoints; stations no longer purple.
-    waypoints = map_waypoint_markers(result=result, village_of=_waypoint_village) if result is not None else None
+    waypoints = map_waypoint_markers(result=result, village_of=_village_lookup(result)) if result is not None else None
     deck = build_deck(
         view=st.session_state.view,
         ribbon_segments=ribbon,
