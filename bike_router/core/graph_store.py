@@ -10,16 +10,16 @@ highway, mode, geometry_wkt (WKT LINESTRING; null for straight rail/station hops
 time is NOT stored — derived from length_m + rail constants at route time.
 """
 
-import io
 import json
 import logging
 import math
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any
 
 import pandas as pd
-from huggingface_hub import snapshot_download
-from huggingface_hub.utils import tqdm as hf_tqdm
+from huggingface_hub import hf_hub_download, list_repo_files
+from huggingface_hub.utils.tqdm import disable_progress_bars
 from shapely import covers, from_wkt, points
 from shapely.geometry import Polygon, box
 
@@ -91,8 +91,9 @@ def _intersecting_tiles(*, corridor: Polygon, tile_deg: float) -> list[tuple[int
 def download_graph_from_hf(target_dir: Path = GraphConfig.GRAPH_DIR, progress: ProgressFn = null_progress) -> Path:
     """Download the prebuilt DACH graph artifact from Hugging Face if missing.
 
-    Concurrent snapshot_download (``HF_MAX_WORKERS``) pulls the ~630-file artifact fast; ``progress``
-    forwards the main-thread "Fetching N files" bar. Idempotent: skips once meta.json is present.
+    Lists the repo files, then downloads them concurrently (``HF_MAX_WORKERS``) reporting
+    ``progress(done, total)`` from the main thread as each finishes. Idempotent: skips once
+    meta.json is present.
     """
     meta_path = target_dir / GraphConfig.META_FILENAME
     if meta_path.exists():
@@ -101,32 +102,23 @@ def download_graph_from_hf(target_dir: Path = GraphConfig.GRAPH_DIR, progress: P
     target_dir.mkdir(parents=True, exist_ok=True)
     logger.info(f"Downloading DACH graph from HF {GraphConfig.HF_REPO_ID} …")
 
-    class _ProgressTqdm(hf_tqdm):  # type: ignore[misc]  # hf_tqdm is untyped (Any)
-        """Forward HF's own download progress to ``progress``.
-
-        Force-enabled (HF passes ``disable=None`` → tqdm auto-disables off-TTY, and a disabled bar
-        never increments ``n``, so a headless host like Streamlit Cloud would sit at 0%). Its own
-        textual output goes to a throwaway buffer; only ``progress`` is user-visible.
-        """
-
-        def __init__(self, *args: object, **kwargs: object) -> None:
-            kwargs["disable"] = False  # keep n counting even off-TTY
-            kwargs.setdefault("file", io.StringIO())  # swallow the terminal bar
-            super().__init__(*args, **kwargs)
-
-        def update(self, n: float | None = 1) -> bool | None:
-            result: bool | None = super().update(n)
-            if self.total:
-                progress(int(self.n), int(self.total))
-            return result
-
-    snapshot_download(
-        repo_id=GraphConfig.HF_REPO_ID,
-        repo_type="dataset",
-        local_dir=str(target_dir),
-        max_workers=GraphConfig.HF_MAX_WORKERS,
-        tqdm_class=_ProgressTqdm,
-    )
+    files = list_repo_files(repo_id=GraphConfig.HF_REPO_ID, repo_type="dataset")
+    total = len(files)
+    # disable_progress_bars() as a CM silences HF's own per-file byte bars (auto-restored); we own progress.
+    with disable_progress_bars(), ThreadPoolExecutor(max_workers=GraphConfig.HF_MAX_WORKERS) as pool:
+        futures = [
+            pool.submit(
+                hf_hub_download,
+                repo_id=GraphConfig.HF_REPO_ID,
+                repo_type="dataset",
+                filename=name,
+                local_dir=str(target_dir),
+            )
+            for name in files
+        ]
+        for done, future in enumerate(as_completed(futures), start=1):
+            future.result()  # re-raise any download failure
+            progress(done, total)  # main thread: safe for st.progress
     assert meta_path.exists(), "download did not produce meta.json"
     return target_dir
 

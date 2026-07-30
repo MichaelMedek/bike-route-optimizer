@@ -1,8 +1,8 @@
 """graph_store tests — tile grid math, windowed corridor load, path re-read, snapping.
 
-One test_<fn> per production symbol (exact-name mirror). A tiny fixture store is written to
-tmp_path with the build-time writer, then the runtime read side is exercised end to end. The
-graph_writer symbols this file used to also cover now live in tests/preprocessing/test_graph_writer.py.
+One test_<fn> per production symbol (exact-name mirror). Reads the committed FIXTURE_ROUNDTRIP_STORE
+(no build stack), then exercises the runtime read side end to end. The graph_writer symbols this file
+used to also cover now live in tests/preprocessing/test_graph_writer.py.
 """
 
 from pathlib import Path
@@ -222,45 +222,40 @@ def test_snap_to_node():
 
 
 def test_download_graph_from_hf(tmp_path: Path, monkeypatch):
-    # Idempotent: meta.json present → skipped, no snapshot_download. When missing, it calls
-    # snapshot_download with the repo/dataset/max_workers args and forwards HF's n/total progress.
-    # HF passes disable=None (→ off-TTY auto-disable, n frozen at 0); our subclass force-enables so
-    # progress still MOVES on a headless host. Any download failure propagates.
+    # Idempotent: meta.json present → skipped, no network. When missing, it lists the repo files and
+    # downloads each concurrently, reporting progress(done, total) from the main thread (safe for
+    # st.progress). Any per-file failure propagates.
     present = tmp_path / "present"
     present.mkdir()
     (present / GraphConfig.META_FILENAME).write_text("{}")
     called = MagicMock()
-    monkeypatch.setattr(graph_store, "snapshot_download", called)
+    monkeypatch.setattr(graph_store, "list_repo_files", called)
     assert download_graph_from_hf(target_dir=present) == present
     called.assert_not_called()  # already present → no network
 
     fresh = tmp_path / "fresh"
-    args_seen: dict = {}
+    repo_files = ["meta.json", "nodes/tile_0_0.parquet", "edges/tile_0_0.parquet"]
+    monkeypatch.setattr(graph_store, "list_repo_files", lambda **_kwargs: repo_files)
 
-    def _fake_download(*, repo_id, repo_type, local_dir, max_workers, tqdm_class):
-        args_seen.update(repo_id=repo_id, repo_type=repo_type, max_workers=max_workers)
-        zero = tqdm_class(total=0, disable=None)  # HF's byte bars init at total=0 → must NOT forward
-        zero.update(1)
-        bar = tqdm_class(total=3, disable=None)  # HF's own call: disable=None → off-TTY would freeze n
-        for _ in range(3):
-            bar.update(1)
-        Path(local_dir, GraphConfig.META_FILENAME).write_text("{}")
+    dl_args: list[str] = []
 
-    monkeypatch.setattr(graph_store, "snapshot_download", _fake_download)
+    def _fake_hf_hub_download(*, repo_id, repo_type, filename, local_dir):
+        dl_args.append(filename)
+        Path(local_dir, filename).parent.mkdir(parents=True, exist_ok=True)
+        Path(local_dir, filename).write_text("{}")
+
+    monkeypatch.setattr(graph_store, "hf_hub_download", _fake_hf_hub_download)
     seen: list[tuple[int, int]] = []
     result = download_graph_from_hf(target_dir=fresh, progress=lambda d, t: seen.append((d, t)))
     assert result == fresh and (fresh / GraphConfig.META_FILENAME).exists()
-    assert args_seen == {
-        "repo_id": GraphConfig.HF_REPO_ID,
-        "repo_type": "dataset",
-        "max_workers": GraphConfig.HF_MAX_WORKERS,
-    }
-    assert seen == [(1, 3), (2, 3), (3, 3)]  # force-enabled → real movement, reaches total (not stuck at 0)
+    assert set(dl_args) == set(repo_files)  # every file downloaded
+    assert len(seen) == 3 and seen[-1] == (3, 3)  # progress reaches (total, total)
+    assert [d for d, _t in seen] == [1, 2, 3] and all(t == 3 for _d, t in seen)  # monotonic, correct total
 
     def _boom(**_kwargs):
         raise OSError("network died mid-download")
 
-    monkeypatch.setattr(graph_store, "snapshot_download", _boom)
+    monkeypatch.setattr(graph_store, "hf_hub_download", _boom)
     with pytest.raises(OSError, match="network died"):
         download_graph_from_hf(target_dir=tmp_path / "boom")
 
