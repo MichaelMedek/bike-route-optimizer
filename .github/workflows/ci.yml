@@ -13,6 +13,8 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # Full suite + all gates: install runtime + build stack (preprocessing reqs pull in
+  # runtime via `-r requirements.txt`), lint/type/hygiene, coverage gate over everything.
   ci:
     runs-on: ubuntu-latest
     steps:
@@ -30,8 +32,25 @@ jobs:
       # mypy (pinned v1.13.0). Fails CI if any hook errors OR modifies a file.
       - name: Pre-commit
         run: pre-commit run --all-files --show-diff-on-failure
-      # addopts injects --cov=bike_router --cov-report=term-missing --cov-fail-under=95,
-      # so plain pytest enforces coverage and the 95% gate. Tests use the committed
-      # Schwarzwald fixture — no network or DEM download needed.
+      # addopts injects --cov so plain pytest enforces coverage and the gate.
+      # Tests use the committed Schwarzwald fixture — no network or DEM download needed.
       - name: Pytest (coverage gate)
         run: pytest
+
+  # Guards the runtime/preprocessing dependency split: install ONLY requirements.txt
+  # and prove core + ui run self-sufficiently.
+  runtime-only:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install runtime deps only
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+      # No coverage gate here (partial suite); build-stack-dependent fixtures skip cleanly.
+      - name: Pytest core + ui (no build stack)
+        run: pytest tests/core tests/ui --no-cov
