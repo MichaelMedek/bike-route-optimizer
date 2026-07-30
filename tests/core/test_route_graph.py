@@ -9,9 +9,9 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from bike_router.core.errors import NoRouteError
 from bike_router.core.constants import Mode, NodeType
 from bike_router.core.cost import edge_cost_array
+from bike_router.core.errors import NoRouteError
 from bike_router.core.route_graph import RouteGraph, shortest_path
 from tests.conftest import DEFAULT_PARAMS, ZERO_PARAMS, make_choice_edges, make_line_edges, zero_params
 
