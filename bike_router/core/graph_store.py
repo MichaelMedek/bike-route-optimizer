@@ -100,17 +100,15 @@ def download_graph_from_hf(target_dir: Path = GraphConfig.GRAPH_DIR, progress: P
     target_dir.mkdir(parents=True, exist_ok=True)
     logger.info(f"Downloading DACH graph from HF {GraphConfig.HF_REPO_ID} …")
 
-    class _FileCountTqdm(hf_tqdm):  # type: ignore[misc]  # hf_tqdm is untyped (Any)
-        """Forward ONLY the main-thread 'Fetching N files' bar to ``progress``.
+    class _ProgressTqdm(hf_tqdm):  # type: ignore[misc]  # hf_tqdm is untyped (Any)
+        """Forward HF's own download progress to ``progress``.
 
-        snapshot_download also creates two byte bars (unit='B') updated from worker threads;
-        those are skipped so st.progress is only ever touched on the main thread (off-thread
-        st.progress calls silently no-op).
+        ``n``/``total`` are set even on the DISABLED bars a headless host (Streamlit Cloud) builds.
         """
 
         def update(self, n: float | None = 1) -> bool | None:
             result: bool | None = super().update(n)
-            if self.unit != "B" and self.total:
+            if self.total:
                 progress(int(self.n), int(self.total))
             return result
 
@@ -119,7 +117,7 @@ def download_graph_from_hf(target_dir: Path = GraphConfig.GRAPH_DIR, progress: P
         repo_type="dataset",
         local_dir=str(target_dir),
         max_workers=GraphConfig.HF_MAX_WORKERS,
-        tqdm_class=_FileCountTqdm,
+        tqdm_class=_ProgressTqdm,
     )
     assert meta_path.exists(), "download did not produce meta.json"
     return target_dir

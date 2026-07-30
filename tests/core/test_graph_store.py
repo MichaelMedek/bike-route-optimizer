@@ -223,9 +223,8 @@ def test_snap_to_node():
 
 def test_download_graph_from_hf(tmp_path: Path, monkeypatch):
     # Idempotent: meta.json present → skipped entirely, no snapshot_download. When missing, it calls
-    # snapshot_download with the repo/dataset/max_workers args and forwards ONLY the main-thread
-    # file-count bar (monotonic, reaching the total) to progress — byte bars (unit='B') are ignored;
-    # any download failure propagates.
+    # snapshot_download with the repo/dataset/max_workers args and forwards HF's own n/total progress;
+    # a DISABLED bar (headless host, no `unit`) must not crash; any download failure propagates.
     present = tmp_path / "present"
     present.mkdir()
     (present / GraphConfig.META_FILENAME).write_text("{}")
@@ -239,11 +238,11 @@ def test_download_graph_from_hf(tmp_path: Path, monkeypatch):
 
     def _fake_download(*, repo_id, repo_type, local_dir, max_workers, tqdm_class):
         args_seen.update(repo_id=repo_id, repo_type=repo_type, max_workers=max_workers)
-        bar = tqdm_class(total=3)  # the main-thread file-count bar
+        disabled = tqdm_class(total=3, disable=True)  # headless host (no TTY): bar has no `unit`
+        disabled.update(1)  # regression: must NOT raise AttributeError on missing `unit`
+        bar = tqdm_class(total=3)  # HF's progress bar — forwarded as-is
         for _ in range(3):
             bar.update(1)
-        byte_bar = tqdm_class(total=1000, unit="B")  # off-thread byte bar — must NOT forward
-        byte_bar.update(500)
         Path(local_dir, GraphConfig.META_FILENAME).write_text("{}")
 
     monkeypatch.setattr(graph_store, "snapshot_download", _fake_download)
@@ -255,9 +254,8 @@ def test_download_graph_from_hf(tmp_path: Path, monkeypatch):
         "repo_type": "dataset",
         "max_workers": GraphConfig.HF_MAX_WORKERS,
     }
-    assert seen and seen[-1] == (3, 3)  # file-count forwarded, reached total
+    assert seen and seen[-1] == (3, 3)  # HF progress forwarded, reached total
     assert [d for d, _t in seen] == sorted(d for d, _t in seen)  # monotonic
-    assert all(t == 3 for _d, t in seen)  # only the 3-file bar, never the 1000-byte one
 
     def _boom(**_kwargs):
         raise OSError("network died mid-download")
