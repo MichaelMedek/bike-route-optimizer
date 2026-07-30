@@ -1,46 +1,44 @@
-# Dependencies live here ONLY (single source of truth). setup.py reads this file
-# into install_requires; pyproject.toml holds tooling config, not dependencies.
+# RUNTIME dependencies ONLY (inference + web UI). The dataset-preprocessing stack
+# (osmnx/pyrosm/geopandas/rasterio/…) lives in requirements-preprocessing.txt, which
+# adds on top of this file. setup.py reads this into install_requires (single source).
+# Each line notes whether CORE (inference) or UI (web app) needs it.
 
 # Install the package itself (editable), so `bike_router` is importable in CI/dev.
 -e .
 
 # Geocoding
-geopy>=2.4.0
+geopy>=2.4.0  # CORE: Nominatim geocode of place strings
 
-# Geospatial processing
-shapely>=2.0.0
-rasterio>=1.3.0
-pyproj>=3.6.0
+# Geospatial + routing
+shapely>=2.0.0  # CORE: corridor polygons + edge geometry
+scipy>=1.11.0  # CORE: sparse CSR Dijkstra routing engine
+pyarrow>=14.0.0  # CORE: pandas parquet engine, pushdown filters
+numpy>=1.24.0  # CORE: vectorized cost + haversine math
+pandas>=2.0.0  # CORE: node/edge tables, vectorized cost
 
-# OSM graph + routing
-osmnx>=2.0.0
-networkx>=3.0
-scikit-learn>=1.3.0  # osmnx.distance.nearest_nodes needs it for unprojected graphs
-pyrosm>=0.6.0  # fast local .osm.pbf reader for the offline country-graph builder
-geopandas>=0.14.0  # GeoDataFrames from pyrosm; node/edge tables
-pyarrow>=14.0.0  # tiled GeoParquet artifact read/write
-
-# GPX + numerics + visualization
-gpxpy>=1.6.0
-numpy>=1.24.0
-matplotlib>=3.7.0
-tqdm>=4.60.0  # CLI progress bar
+# GPX + debug PNG
+gpxpy>=1.6.0  # CORE: write the route GPX
+matplotlib>=3.7.0  # CORE: headless debug route PNG
+tqdm>=4.60.0  # CORE: CLI download progress bar
+psutil>=5.9.0  # CORE: process RSS memory-guard logging
 
 # Web viewer (Streamlit 3D map). st_deckgl (not the built-in st.pydeck_chart) because st.pydeck_chart
 # keeps the panned camera, so "Set start & end" could never re-zoom.
-streamlit>=1.36.0
-pydeck>=0.9.0
-streamlit-deckgl>=0.5.0
-plotly>=5.18.0  # elevation-profile line chart
+streamlit>=1.36.0  # UI: the web app shell
+pydeck>=0.9.0  # UI: deck.gl terrain + route layers
+streamlit-deckgl>=0.5.0  # UI: remountable deck component, re-zoom
+plotly>=5.18.0  # UI: interactive elevation-profile chart
+altair>=5.0.0  # UI: composition + grade donuts
 
-# DEM hosting / paths
-huggingface_hub>=0.20.0
-requests>=2.28.0
+# Artifact hosting / paths
+huggingface_hub>=0.20.0  # CORE: download prebuilt graph artifact
+requests>=2.28.0  # CORE: Photon autocomplete HTTP calls
 
 # Testing + tooling
-pytest>=8.0.0
-pytest-cov>=5.0.0
-ruff>=0.9.0
-mypy>=1.13.0
-types-requests>=2.28.0
-pre-commit>=3.5.0
+pytest>=8.0.0  # DEV: test runner
+pytest-cov>=5.0.0  # DEV: coverage gate measurement
+ruff>=0.9.0  # DEV: lint, import-sort, format
+mypy>=1.13.0  # DEV: static type checking
+types-requests>=2.28.0  # DEV: requests stubs for mypy
+pre-commit>=3.5.0  # DEV: run gates pre-commit
+docstring-parser>=0.16  # DEV: validate terse Google-style docstrings in the strictness test

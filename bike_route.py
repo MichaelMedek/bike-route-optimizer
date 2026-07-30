@@ -9,18 +9,16 @@ GPX + debug PNG. The prebuilt DACH bike+rail graph (downloaded from Hugging Face
 first run) bakes in elevation, so NO DEM is used at inference.
 
 Thin CLI shell only: arg parsing + calling package functions; pipeline logic lives
-in bike_router.pipeline.
+in bike_router.core.pipeline.
 """
 
 import argparse
 import logging
 
-from bike_router.composition import format_composition
-from bike_router.constants import PARAM_SPECS, RoutingParams
-from bike_router.graph_store import download_graph_from_hf
-from bike_router.pipeline import plan_route
-from bike_router.progress import tqdm_progress
-from bike_router.simplify import format_bike_legs, format_rail_legs
+from bike_router.core.constants import PARAM_SPECS, RoutingParams
+from bike_router.core.graph_store import download_graph_from_hf
+from bike_router.core.pipeline import format_cli_report, plan_route
+from bike_router.core.progress import tqdm_progress
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -42,28 +40,8 @@ def main(argv: list[str] | None = None) -> int:
     download_graph_from_hf(progress=tqdm_progress(desc="Downloading graph"))
     # Expected failures raise a BikeRouterError — its class name + message already explain.
     params = RoutingParams(**{spec.field: getattr(arguments, spec.field) for spec in PARAM_SPECS})
-    result = plan_route(
-        origin=arguments.origin,
-        destination=arguments.destination,
-        params=params,
-    )
-
-    track = result.track
-    print(f"\nTotal (bike + train): {track.total.oneline}")
-    print(f"Bike only:            {track.bike.oneline}")
-    print(format_composition(comp=result.composition))
-    print(f"GPX: {result.gpx_path}")
-    print(f"Heatmap: {result.png_path}")
-    # Train rides: boarding + alighting station per ride, to look up in a railway app.
-    if result.rail_legs:
-        print("Trains to catch:")
-        for line in format_rail_legs(rail_legs=result.rail_legs):
-            print(f"  {line}")
-    # One Google Maps bicycling link per pedalled leg, each labelled by its real endpoints
-    # (origin/destination at the ends, station names where a train ride abuts the leg).
-    print("Bike legs in Google Maps (one link per leg):")
-    for label, leg in zip(format_bike_legs(bike_legs=result.bike_legs), result.bike_legs, strict=True):
-        print(f"  {label}: {leg.url}")
+    result = plan_route(origin=arguments.origin, destination=arguments.destination, params=params)
+    print(format_cli_report(result=result))  # the whole stdout block is assembled + tested in core
     return 0
 
 
