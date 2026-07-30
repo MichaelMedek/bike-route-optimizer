@@ -214,6 +214,21 @@ class TestRouteResult:
         assert isinstance(result.waypoints, list)
 
 
+def test_format_cli_report(tmp_path: Path, monkeypatch):
+    # The CLI's whole stdout block, assembled in core so bike_route.py stays a pure I/O shell:
+    # bike-vs-total stats, composition, GPX/PNG paths, and one Maps link per pedalled leg. A pure-bike
+    # route has NO "Trains to catch" section; a train route lists it.
+    nodes_df, edges_df = _line_tables()
+    _wire_offline(monkeypatch, tmp_path, nodes_df=nodes_df, edges_df=edges_df, route=make_line_route())
+    result = pipeline.plan_route(origin="Start", destination="End", params=DEFAULT_PARAMS)
+    report = pipeline.format_cli_report(result=result)
+    assert "Total (bike + train):" in report and "Bike only:" in report
+    assert "Mode:" in report  # the composition summary is embedded
+    assert str(result.gpx_path) in report and str(result.png_path) in report
+    assert "Bike legs in Google Maps" in report and result.bike_legs[0].url in report
+    assert "Trains to catch:" not in report  # pure-bike line route → no train section
+
+
 def test_geocode_both(monkeypatch):
     # ONE rate-limited geocode fn resolves both endpoints to (lat, lon); a bad Start fails fast.
     monkeypatch.setattr(pipeline, "make_geocode_fn", lambda: lambda place: None)

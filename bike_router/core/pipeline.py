@@ -11,7 +11,7 @@ from pathlib import Path
 
 from shapely.geometry import Polygon
 
-from bike_router.core.composition import RouteComposition, route_composition
+from bike_router.core.composition import RouteComposition, format_composition, route_composition
 from bike_router.core.constants import CorridorConfig, GmapsConfig, GpxConfig, GraphConfig, RoutingParams
 from bike_router.core.corridor import build_corridor
 from bike_router.core.cost import edge_cost_array
@@ -35,6 +35,8 @@ from bike_router.core.simplify import (
     BikeLeg,
     RailLeg,
     bike_leg_endpoints,
+    format_bike_legs,
+    format_rail_legs,
     route_to_linestring,
     select_waypoints,
     split_bike_legs,
@@ -299,3 +301,30 @@ def plan_route(
         composition=composition,
         waypoints=waypoints,
     )
+
+
+def format_cli_report(result: RouteResult) -> str:
+    """The CLI's full stdout block for a computed route (stats, composition, files, legs).
+
+    All the text the CLI prints lives HERE (tested), so bike_route.py stays a pure I/O shell:
+    the bike-vs-total stat lines, the composition summary, GPX/PNG paths, trains to catch, and
+    one Google-Maps link per pedalled leg. Trains section is omitted for a pure-bike route.
+    """
+    track = result.track
+    lines = [
+        f"\nTotal (bike + train): {track.total.oneline}",
+        f"Bike only:            {track.bike.oneline}",
+        format_composition(comp=result.composition),
+        f"GPX: {result.gpx_path}",
+        f"Heatmap: {result.png_path}",
+    ]
+    if result.rail_legs:  # boarding + alighting station per ride, to look up in a railway app
+        lines.append("Trains to catch:")
+        lines += [f"  {line}" for line in format_rail_legs(rail_legs=result.rail_legs)]
+    # One Google Maps bicycling link per pedalled leg, labelled by its real endpoints.
+    lines.append("Bike legs in Google Maps (one link per leg):")
+    lines += [
+        f"  {label}: {leg.url}"
+        for label, leg in zip(format_bike_legs(bike_legs=result.bike_legs), result.bike_legs, strict=True)
+    ]
+    return "\n".join(lines)
