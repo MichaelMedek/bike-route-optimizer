@@ -1,4 +1,8 @@
-"""Sanity-check tests (spec §5) — cost-model + simplify-shrink checks on edge arrays."""
+"""Sanity-check tests (spec §5) — cost-model + simplify-shrink checks on edge arrays.
+
+One test_<fn> per production function; each folds ALL its scenarios (pass, the skip cases,
+and the raise case) into a single exact-name test so every original assertion is preserved.
+"""
 
 import numpy as np
 import pytest
@@ -14,26 +18,24 @@ def _line_bike_edges(*, params):
     return args["from_osmid"], args["to_osmid"], np.array([Mode.BIKE] * len(args["cost"]), dtype=object), args["cost"]
 
 
-def test_edge_cost_array_is_asymmetric_uphill_costlier():
-    # 1→2 climbs (100→130), 2→1 descends → uphill costs more (default params penalise uphill).
-    frm, to, _mode, cost = _line_bike_edges(params=DEFAULT_PARAMS)
-    by_pair = {(int(u), int(v)): float(c) for u, v, c in zip(frm, to, cost, strict=True)}
-    assert by_pair[(1, 2)] > by_pair[(2, 1)]
-
-
-def test_check_simplify_shrunk_pass_and_fail():
+def test_check_simplify_shrunk():
+    # >50% shrink passes; a <50% shrink fails loud; a below-threshold raw graph is too small to
+    # meaningfully judge, so the check is skipped (no assertion) rather than failing.
     check_simplify_shrunk(nodes_before=100, nodes_after=40)  # >50% shrink → OK
     with pytest.raises(AssertionError):
-        check_simplify_shrunk(nodes_before=100, nodes_after=80)
+        check_simplify_shrunk(nodes_before=100, nodes_after=80)  # <50% → fail loud
+    check_simplify_shrunk(nodes_before=10, nodes_after=10)  # tiny raw graph → skipped, no assertion
 
 
-def test_check_simplify_shrunk_skips_tiny_graph():
-    check_simplify_shrunk(nodes_before=10, nodes_after=10)  # too small → no assertion
+def test_check_cost_model():
+    # Sanity 2: on the steepest bidirectional BIKE edge, uphill must cost more than downhill.
+    # This one exact-name test walks every scenario the check must handle.
 
-
-def test_check_cost_model_passes_on_uphill_costlier():
+    # (a) real costed line graph: 1↔2 is the steepest pair and its cost array is asymmetric
+    # (uphill 1→2 dearer than downhill 2→1), so the check passes.
     frm, to, mode, cost = _line_bike_edges(params=DEFAULT_PARAMS)
-    # steepest bidirectional bike edge is 1↔2 (100↔130); uphill 1→2 costs more → passes.
+    by_pair = {(int(u), int(v)): float(c) for u, v, c in zip(frm, to, cost, strict=True)}
+    assert by_pair[(1, 2)] > by_pair[(2, 1)]  # the asymmetry the check relies on
     check_cost_model(
         from_osmid=frm,
         to_osmid=to,
@@ -43,42 +45,36 @@ def test_check_cost_model_passes_on_uphill_costlier():
         params=DEFAULT_PARAMS,
     )
 
-
-def test_check_cost_model_skipped_when_penalty_disabled():
-    params = RoutingParams(
+    # (b) uphill penalty disabled → both directions cost the same → the check is skipped, not failed.
+    no_uphill = RoutingParams(
         extra_km_per_uphill_100m=0.0,
         extra_km_per_unpaved_km=1.0,
         extra_km_per_main_road_km=1.0,
         extra_km_per_rail_km=0.0,
         extra_km_per_boarding=0.0,
     )
-    frm, to, mode, cost = _line_bike_edges(params=params)
-    # uphill penalty 0 → both directions equal → check must skip, not fail.
+    frm0, to0, mode0, cost0 = _line_bike_edges(params=no_uphill)
     check_cost_model(
-        from_osmid=frm,
-        to_osmid=to,
-        mode=mode,
-        cost=cost,
+        from_osmid=frm0,
+        to_osmid=to0,
+        mode=mode0,
+        cost=cost0,
         elev_by_osmid={1: 100.0, 2: 130.0, 3: 100.0},
-        params=params,
+        params=no_uphill,
     )
 
+    # (c) REGRESSION: the steepest bidirectional edge here is RAIL (900 m Δelev, terrain-blind
+    # symmetric cost) — the check must consider only BIKE edges, so it passes on the bike 1↔2.
+    check_cost_model(
+        from_osmid=np.array([1, 2, 2, 3], dtype="int64"),
+        to_osmid=np.array([2, 1, 3, 2], dtype="int64"),
+        mode=np.array([Mode.BIKE, Mode.BIKE, Mode.RAIL, Mode.RAIL], dtype=object),
+        cost=np.array([150.0, 100.0, 100.0, 100.0], dtype=float),
+        elev_by_osmid={1: 100.0, 2: 140.0, 3: 1000.0},
+        params=DEFAULT_PARAMS,
+    )
 
-def test_check_cost_model_ignores_rail_uses_bike_edge():
-    """Regression: the steepest bidirectional edge may be RAIL (terrain-blind cost → up==down),
-    which would spuriously fail. The check must consider only BIKE edges.
-    """
-    # 1↔2 bike (40 m climb, asymmetric cost); 2↔3 rail (900 m Δelev but symmetric terrain-blind cost).
-    frm = np.array([1, 2, 2, 3], dtype="int64")
-    to = np.array([2, 1, 3, 2], dtype="int64")
-    mode = np.array([Mode.BIKE, Mode.BIKE, Mode.RAIL, Mode.RAIL], dtype=object)
-    cost = np.array([150.0, 100.0, 100.0, 100.0], dtype=float)
-    elev = {1: 100.0, 2: 140.0, 3: 1000.0}
-    check_cost_model(from_osmid=frm, to_osmid=to, mode=mode, cost=cost, elev_by_osmid=elev, params=DEFAULT_PARAMS)
-
-
-def test_check_cost_model_skipped_when_no_bidirectional_bike_edge():
-    # Only a one-way bike edge → no bidirectional pair → skip (legitimate, not a failure).
+    # (d) only a one-way bike edge → no bidirectional pair to compare → skipped (legitimate).
     check_cost_model(
         from_osmid=np.array([1], dtype="int64"),
         to_osmid=np.array([2], dtype="int64"),
@@ -88,9 +84,7 @@ def test_check_cost_model_skipped_when_no_bidirectional_bike_edge():
         params=DEFAULT_PARAMS,
     )
 
-
-def test_check_cost_model_raises_when_uphill_not_costlier():
-    # A broken cost model where uphill (1→2) is CHEAPER than downhill (2→1) must fail loud.
+    # (e) a broken cost model where uphill (1→2) is CHEAPER than downhill (2→1) must fail loud.
     with pytest.raises(AssertionError, match="Sanity 2 failed"):
         check_cost_model(
             from_osmid=np.array([1, 2], dtype="int64"),

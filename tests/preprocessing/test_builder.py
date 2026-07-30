@@ -114,27 +114,22 @@ def _empty_rail_graph() -> nx.MultiDiGraph:
     return nx.MultiDiGraph(crs="EPSG:4326")
 
 
-def test_build_region_graph_shim_and_modes():
+def test_build_region_graph():
     # The real committed fixture is a full bike+rail region (the toy pbf has no usable rail). Every
-    # node has baked elevation + coords + a node_type; every edge a mode in {bike, rail, station}.
+    # node has baked elevation + coords + a node_type; every edge a mode in {bike, rail, station};
+    # and it has ZERO dangling nodes — one strongly-connected component even after station wiring.
     graph = read_full_graph(graph_dir=FIXTURE_GRAPH_DIR)
     assert graph.number_of_nodes() > 0 and graph.number_of_edges() > 0
     assert all("elevation" in d and "x" in d and "y" in d for _n, d in graph.nodes(data=True))
     assert all(d["node_type"] in {NodeType.BIKE, NodeType.RAIL} for _n, d in graph.nodes(data=True))
     modes = {d["mode"] for _u, _v, _k, d in graph.edges(keys=True, data=True)}
     assert modes == {Mode.BIKE, Mode.RAIL, Mode.STATION}  # a real region exercises all three
-
-
-def test_build_region_graph_no_dangling_nodes():
-    # The per-region artifact has ZERO dangling nodes — every node is in the single strongly-connected
-    # component, even after station wiring (the SCC filter runs AFTER the merge in build_region_graph).
-    graph = read_full_graph(graph_dir=FIXTURE_GRAPH_DIR)
     assert nx.is_strongly_connected(graph)  # no node unreachable to/from the rest
 
 
-def test_remap_contiguous_then_reindex_two_regions_disjoint():
+def test_remap_contiguous():
     # Regression for the node-id COLLISION bug: two regions each remapped to 0..N-1 (which would
-    # collide), then reindexed with a running offset → globally disjoint, collision-free ids.
+    # collide) then reindexed with a running offset → globally disjoint ids. Schema preserved.
     from bike_router.preprocessing.graph_writer import read_region_tables
 
     tables = read_region_tables(region_dir=FIXTURE_GRAPH_DIR)
@@ -143,19 +138,40 @@ def test_remap_contiguous_then_reindex_two_regions_disjoint():
     assert set(a_nodes["osmid"]) == set(b_nodes["osmid"])  # both start 0..N-1 → would collide
     b_nodes, b_edges = reindex_region(nodes_df=b_nodes, edges_df=b_edges, offset=len(a_nodes))
     assert set(a_nodes["osmid"]).isdisjoint(set(b_nodes["osmid"]))  # after offset: no overlap
-    # schema preserved end-to-end
     assert {"osmid", "lat", "lon", "elevation_m", "node_type", "station_name"} == set(a_nodes.columns)
-    assert {
-        "from_node",
-        "to_node",
-        "key",
-        "length_m",
-        "height_diff_m",
-        "surface",
-        "highway",
-        "mode",
-        "geometry_wkt",
-    } == set(a_edges.columns)
+    assert set(_EDGE_COLS) == set(a_edges.columns)
+
+    # osmnx leaves gapped 0-based ids + our station code adds negatives; remap → dense 0..N-1, and
+    # edges follow the SAME mapping (-2→0, 0→1, 5→2, 40→3).
+    gapped_nodes = gpd.GeoDataFrame(
+        {
+            "osmid": [-2, 0, 5, 40],  # gapped + negative
+            "lat": [48.0, 48.1, 48.2, 48.3],
+            "lon": [8.0, 8.1, 8.2, 8.3],
+            "elevation_m": [0.0, 0.0, 0.0, 0.0],
+            "node_type": ["rail", "bike", "bike", "bike"],
+            "station_name": ["S", None, None, None],
+        }
+    )
+    gapped_edges = gpd.GeoDataFrame({"from_node": [-2, 5], "to_node": [0, 40]})
+    n2, e2 = remap_contiguous(nodes_df=gapped_nodes, edges_df=gapped_edges)
+    assert sorted(n2["osmid"]) == [0, 1, 2, 3]  # dense, contiguous, no negatives
+    assert n2["osmid"].max() == len(n2) - 1  # n_nodes == max_id + 1
+    assert list(e2["from_node"]) == [0, 2] and list(e2["to_node"]) == [1, 3]
+
+
+def test_reindex_region():
+    # Shifts EVERY node id and edge endpoint by a fixed offset (so a second region can't collide);
+    # nothing else changes — counts and schema intact.
+    from bike_router.preprocessing.graph_writer import read_region_tables
+
+    nodes_df, edges_df = read_region_tables(region_dir=FIXTURE_GRAPH_DIR)
+    base_nodes, base_edges = remap_contiguous(nodes_df=nodes_df, edges_df=edges_df)
+    offset = 10_000
+    shifted_nodes, shifted_edges = reindex_region(nodes_df=base_nodes, edges_df=base_edges, offset=offset)
+    assert list(shifted_nodes["osmid"]) == [i + offset for i in base_nodes["osmid"]]
+    assert set(shifted_edges["from_node"]) == {i + offset for i in base_edges["from_node"]}
+    assert len(shifted_edges) == len(base_edges)  # only the ids shifted
 
 
 _NODE_COLS = ["osmid", "lat", "lon", "elevation_m", "node_type", "station_name"]
@@ -179,8 +195,8 @@ def _edges(rows: list[tuple]) -> gpd.GeoDataFrame:  # noqa: ANN001
     )
 
 
-def test_dedup_no_duplicates_is_identity():
-    # Distinct nodes + distinct edges → nothing dropped, ids unchanged.
+def test_dedup_by_geometry():
+    # Distinct nodes + distinct edges → nothing dropped, ids unchanged (the identity baseline).
     nodes = _nodes([(0, 48.0, 8.0), (1, 48.1, 8.1), (2, 48.2, 8.2)])
     edges = _edges([(0, 1, 0, "bike", None), (1, 2, 0, "bike", None)])
     kn, ke = dedup_by_geometry(nodes_df=nodes, edges_df=edges)
@@ -324,7 +340,7 @@ def test_dedup_preserves_rail_station_types_through_graph_rebuild():
     assert graph.number_of_nodes() == 3 and graph.number_of_edges() == 4
 
 
-def test_tag_layer_bike_and_rail():
+def test_tag_layer():
     # _tag_layer stamps mode + node_type for EITHER layer (single tagging source, both modes).
     g = nx.MultiDiGraph()
     g.add_node(1, x=0.0, y=0.0)
@@ -352,26 +368,64 @@ def _bike_graph(nodes: list[tuple[int, float, float]], edges: list[tuple[int, in
 # ============================= ONE shared builder: bike + rail =============================
 
 
-def test_layer_specs_differ_only_in_declared_config():
-    # The whole point of the refactor: bike and rail are ONE pipeline; only LayerSpec fields differ.
-    assert BIKE_LAYER.custom_filter is None and BIKE_LAYER.surface_allowlist is True
-    assert (
-        RAIL_LAYER.custom_filter == '["railway"~"^(rail|light_rail|narrow_gauge)$"]'
-        and RAIL_LAYER.surface_allowlist is False
+class TestLayerSpec:
+    def test_specs_differ_only_in_declared_config(self):
+        # The whole point of the refactor: bike and rail are ONE pipeline; only LayerSpec fields differ.
+        assert BIKE_LAYER.custom_filter is None and BIKE_LAYER.surface_allowlist is True
+        assert (
+            RAIL_LAYER.custom_filter == '["railway"~"^(rail|light_rail|narrow_gauge)$"]'
+            and RAIL_LAYER.surface_allowlist is False
+        )
+        assert BIKE_LAYER.mode == Mode.BIKE and BIKE_LAYER.node_type == NodeType.BIKE
+        assert RAIL_LAYER.mode == Mode.RAIL and RAIL_LAYER.node_type == NodeType.RAIL
+
+
+def test_network_graph():
+    # THE filter proof, on RAW tags (before tagging overwrites mode): the rail filter yields ONLY
+    # railway=rail ways (never a highway road — the OOM regression); the bike preset yields ONLY
+    # highway roads (never a railway). Symmetric, inspecting the actual OSM tags the query returned.
+    osm = _open_osm(pbf_path=_TEST_PBF)
+    rail_raw = _network_graph(
+        osm=osm, custom_filter='["railway"~"^(rail|light_rail|narrow_gauge)$"]', filter_type="keep"
     )
-    assert BIKE_LAYER.mode == Mode.BIKE and BIKE_LAYER.node_type == NodeType.BIKE
-    assert RAIL_LAYER.mode == Mode.RAIL and RAIL_LAYER.node_type == NodeType.RAIL
+    rail_vals = {d.get("railway") for _u, _v, _k, d in rail_raw.edges(keys=True, data=True)}
+    assert rail_vals == {"rail"}, f"rail filter must return ONLY railway=rail, got {rail_vals}"
+    assert all(d.get("highway") is None for _u, _v, _k, d in rail_raw.edges(keys=True, data=True))  # no roads
+
+    bike_raw = _network_graph(osm=osm, custom_filter=None, filter_type=None)
+    assert bike_raw.number_of_edges() > 0
+    assert all(d.get("highway") is not None for _u, _v, _k, d in bike_raw.edges(keys=True, data=True))  # all roads
+    assert all(d.get("railway") is None for _u, _v, _k, d in bike_raw.edges(keys=True, data=True))  # no rail
 
 
-def test_build_layer_graph_bike_is_roads_only_all_components_kept():
-    # BIKE via the shared build_layer_graph: only highway edges (zero railway), tagged BIKE. It keeps
-    # ALL components (a region is a clip — connectivity truncation is global, in Phase 3), so >1 is fine.
+def test_open_osm():
+    # Opens a pbf into a pyrosm OSM handle usable by the network/data queries.
+    osm = _open_osm(pbf_path=_TEST_PBF)
+    assert osm is not None
+    assert osm.get_network(network_type="cycling", custom_filter=None, filter_type=None, nodes=True) is not None
+
+
+def test_build_layer_graph():
+    # BIKE via the shared build_layer_graph: only highway edges (zero railway), tagged BIKE, ALL
+    # components kept (a region is a clip); every edge bidirectional; BOTH layers go through the SAME
+    # get_network(nodes=True) path with force_bidirectional=True, differing only by the LayerSpec filter.
     g = build_layer_graph(osm=_open_osm(pbf_path=_TEST_PBF), layer=BIKE_LAYER, tolerance_m=25.0)
     assert g.number_of_edges() > 0
     assert all(d["mode"] == Mode.BIKE for _u, _v, _k, d in g.edges(keys=True, data=True))
     assert all(d["node_type"] == NodeType.BIKE for _n, d in g.nodes(data=True))
     assert all(d.get("railway") is None for _u, _v, _k, d in g.edges(keys=True, data=True))  # no rail leaked
     assert nx.number_weakly_connected_components(g) >= 1  # NOT truncated per-region anymore
+    directed = set(g.edges())
+    assert directed and all((v, u) in directed for u, v in directed)  # every bike edge bidirectional
+
+    spy = _SpyOSM()
+    build_layer_graph(osm=spy, layer=BIKE_LAYER, tolerance_m=25.0)
+    build_layer_graph(osm=spy, layer=RAIL_LAYER, tolerance_m=25.0)
+    assert spy.network_calls == [
+        ("cycling", None, None),  # bike: preset selects ways
+        ("cycling", '["railway"~"^(rail|light_rail|narrow_gauge)$"]', "keep"),  # rail: bracket filter selects ways
+    ]
+    assert spy.to_graph_bidirectional == [True, True]  # both forced bidirectional
 
 
 def test_rail_layer_forms_one_connected_network_on_real_fixture():
@@ -387,57 +441,15 @@ def test_rail_layer_forms_one_connected_network_on_real_fixture():
     assert nx.number_connected_components(rail) == 1  # one rail network, no islands
 
 
-def test_filter_proof_rail_only_rail_bike_only_roads_on_raw_tags():
-    # THE filter proof, on RAW tags (before tagging overwrites mode): the rail filter yields ONLY
-    # railway=rail ways (never a highway road — the OOM regression); the bike preset yields ONLY
-    # highway roads (never a railway). Symmetric, and inspects the actual OSM tags the query returned.
-    osm = _open_osm(pbf_path=_TEST_PBF)
-    rail_raw = _network_graph(
-        osm=osm, custom_filter='["railway"~"^(rail|light_rail|narrow_gauge)$"]', filter_type="keep"
-    )
-    rail_vals = {d.get("railway") for _u, _v, _k, d in rail_raw.edges(keys=True, data=True)}
-    assert rail_vals == {"rail"}, f"rail filter must return ONLY railway=rail, got {rail_vals}"
-    assert all(d.get("highway") is None for _u, _v, _k, d in rail_raw.edges(keys=True, data=True))  # no roads
-
-    bike_raw = _network_graph(osm=osm, custom_filter=None, filter_type=None)
-    assert bike_raw.number_of_edges() > 0
-    assert all(d.get("highway") is not None for _u, _v, _k, d in bike_raw.edges(keys=True, data=True))  # all roads
-    assert all(d.get("railway") is None for _u, _v, _k, d in bike_raw.edges(keys=True, data=True))  # no rail
-
-
-def test_build_layer_graph_scopes_via_spy_one_shared_path():
-    # PROOF both layers go through the SAME get_network(nodes=True) path with force_bidirectional=True,
-    # differing only by the filter the LayerSpec carries.
-    spy = _SpyOSM()
-    build_layer_graph(osm=spy, layer=BIKE_LAYER, tolerance_m=25.0)
-    build_layer_graph(osm=spy, layer=RAIL_LAYER, tolerance_m=25.0)
-    assert spy.network_calls == [
-        ("cycling", None, None),  # bike: preset selects ways
-        ("cycling", '["railway"~"^(rail|light_rail|narrow_gauge)$"]', "keep"),  # rail: bracket filter selects ways
-    ]
-    assert spy.to_graph_bidirectional == [True, True]  # both forced bidirectional
-
-
-def test_build_layer_graph_bike_edges_all_bidirectional():
-    # force_bidirectional: every bike edge has its reverse (ride any road up OR down).
-    g = build_layer_graph(osm=_open_osm(pbf_path=_TEST_PBF), layer=BIKE_LAYER, tolerance_m=25.0)
-    directed = set(g.edges())
-    assert directed and all((v, u) in directed for u, v in directed)
-
-
-def test_station_points_queries_only_station_tags():
-    # PROOF the station extractor pulls ONLY railway in STATION_TAGS via get_data_by_custom_criteria.
+def test_station_points():
+    # Pulls ONLY railway in STATION_TAGS via get_data_by_custom_criteria (never the network builder);
+    # reads each station's name + centroid; an unnamed station falls back to "station"; empty → [].
     spy = _SpyOSM()
     _station_points(osm=spy)
     assert spy.data_filters == [{"railway": list(RailConfig.STATION_TAGS)}]  # exactly one query, stations only
     assert spy.network_calls == []  # stations never go through the network builder
 
-
-def test_station_points_none_when_empty():
     assert _station_points(_FakeOSM(stations=None)) == []
-
-
-def test_station_points_reads_names_and_centroids():
     stations = gpd.GeoDataFrame(
         {"name": ["Freudenstadt", None]},
         geometry=[Point(8.41, 48.46), Point(8.70, 48.89)],
@@ -465,7 +477,7 @@ def _svg_invariant_holds(graph: nx.MultiDiGraph) -> bool:
     return True
 
 
-def test_merge_wires_station_edges_and_keeps_rail_bidirectional():
+def test_merge_bike_rail():
     # SVG contract: independent bike graph + rail track graph merged only at stations. Station is a
     # SEPARATE rail node; bike entrance ↔ station is a STATION edge; track stays RAIL↔RAIL bidirectional.
     bike = _bike_graph([(100, 48.0, 8.001), (101, 48.0, 8.051)], [])  # a bike node near EACH station A, B
@@ -593,7 +605,7 @@ def test_station_edges_touch_bike_nodes_not_each_other():
         assert 500 in (u, v), f"station edge {u}->{v} does not touch the bike node"
 
 
-def test_station_entrances_empty_bike_graph_returns_none():
+def test_station_entrances():
     # Edge case: a station with ZERO candidate bike nodes (empty arrays) must return [] cleanly.
     empty = np.array([], dtype=np.float64)
     got = _station_entrances(node_ids=np.array([], dtype=np.int64), node_lats=empty, node_lons=empty, lat=48.0, lon=8.0)
@@ -644,6 +656,22 @@ def test_merge_drops_station_off_rail_and_counts_only_kept():
     assert n == 1  # only OnRail wired
     names = {d["station_name"] for _n, d in bike.nodes(data=True) if d.get("station_name")}
     assert names == {"OnRail"} and "OffRail" not in names  # OffRail dropped entirely
+
+
+def test_nearest_tracks():
+    # Snaps a point to its nearest track EDGE (projected graph): a point on the line midway between
+    # two far nodes has line_dist≈0 but a large node_dist, and returns a real endpoint node. Full
+    # offset/endpoint/vectorized cases live in TestNearestTracks below.
+    import osmnx as ox
+
+    rail = _synth_rail_graph([[(48.0, 8.00), (48.0, 8.02)]])  # ~1.5 km segment, two nodes
+    proj = ox.projection.project_graph(rail)
+    node, node_dist, line_dist = _nearest_tracks(
+        rail_graph=rail, rail_proj=proj, lats=np.array([48.0]), lons=np.array([8.01])
+    )[0]
+    assert line_dist < 5.0  # on the line
+    assert 600 < node_dist < 900  # ~half of ~1.5 km to the nearer endpoint
+    assert node in rail.nodes
 
 
 class TestNearestTracks:
@@ -701,7 +729,7 @@ class TestNearestTracks:
         assert [b[0] for b in batch] == [e[0] for e in each]  # same endpoint nodes
 
 
-def test_stage_pbf_no_bbox_copies_verbatim(tmp_path):
+def test_stage_pbf(tmp_path):
     # bbox=None (whole region) → plain byte-for-byte copy into staging_dir, no osmium needed.
     raw = tmp_path / "raw.osm.pbf"
     raw.write_bytes(b"\x00PBF-BYTES\x01")
@@ -738,7 +766,7 @@ def test_stage_pbf_bbox_really_restricts_output_end_to_end(tmp_path):
     assert 0 < staged.stat().st_size < _TEST_PBF.stat().st_size  # osmium clip really shrank the file
 
 
-def test_build_region_graph_clipped_stages_then_builds(monkeypatch, tmp_path):
+def test_build_region_graph_clipped(monkeypatch, tmp_path):
     # The workflow: stage_pbf (into a temp dir) → build_region_graph on the STAGED path. Verify it
     # stages with the given bbox and builds exactly what stage returned, temp dir gone afterward.
     from bike_router.preprocessing import builder

@@ -68,75 +68,74 @@ def arcsecond_dem(tmp_path: Path) -> Path:
     return path
 
 
-def test_reprojection_samples_correct_elevation(arcsecond_dem: Path):
-    dem = DEMService(dem_path=arcsecond_dem)
-    # lat 48.5 → (48.5-48)*1000 = 500 m (± one pixel). Only correct if deg→arcsec
-    # reprojection happened before the array gather.
-    elev = float(dem.get_elevations(lons=[8.5], lats=[48.5])[0])
-    assert abs(elev - 500) <= 12
+class TestDEMService:
+    """The DEM sampler: deg→arcsec reprojection, scalar/vectorized gather, bounds, nodata, singleton."""
+
+    def test_reprojection_samples_correct_elevation(self, arcsecond_dem: Path):
+        dem = DEMService(dem_path=arcsecond_dem)
+        # lat 48.5 → (48.5-48)*1000 = 500 m (± one pixel). Only correct if deg→arcsec
+        # reprojection happened before the array gather.
+        elev = float(dem.get_elevations(lons=[8.5], lats=[48.5])[0])
+        assert abs(elev - 500) <= 12
+
+    def test_vectorized_batch_ramp(self, arcsecond_dem: Path):
+        dem = DEMService(dem_path=arcsecond_dem)
+        batch = dem.get_elevations(lons=[8.2, 8.5, 8.8], lats=[48.2, 48.5, 48.8])
+        # elevation ramps with latitude → strictly increasing across the batch
+        assert batch[0] < batch[1] < batch[2]
+        np.testing.assert_allclose(batch, [200, 500, 800], atol=12)
+
+    def test_bounds_reprojected_to_wgs84(self, arcsecond_dem: Path):
+        dem = DEMService(dem_path=arcsecond_dem)
+        west, south, east, north = dem.bounds
+        assert 7.9 < west < 8.1 and 8.9 < east < 9.1
+        assert 47.9 < south < 48.1 and 48.9 < north < 49.1
+
+    def test_nodata_and_out_of_bounds_are_nan(self, arcsecond_dem: Path):
+        dem = DEMService(dem_path=arcsecond_dem)
+        out = dem.get_elevations(lons=[8.0, 20.0], lats=[49.0, 60.0])
+        # top-left cell is nodata; second point is far outside coverage → both NaN
+        assert np.all(np.isnan(out))
+
+    def test_missing_dem_raises_filenotfound(self, tmp_path: Path):
+        dem = DEMService(dem_path=tmp_path / "absent.tif")
+        with pytest.raises(FileNotFoundError):
+            dem.get_elevations(lons=[8.0], lats=[48.0])
+
+    def test_wgs84_dem_needs_no_reprojection(self, tmp_path: Path):
+        """A plain EPSG:4326 DEM skips the pyproj transform (identity branch)."""
+        transform = Affine.translation(8.0, 49.0) * Affine.scale(0.01, -0.01)
+        data = np.arange(100, dtype=np.int16).reshape(10, 10)
+        path = tmp_path / "wgs84.tif"
+        with rasterio.open(
+            path,
+            "w",
+            driver="GTiff",
+            height=10,
+            width=10,
+            count=1,
+            dtype="int16",
+            crs=CRS.from_epsg(4326),
+            transform=transform,
+            nodata=-1,
+        ) as dst:
+            dst.write(data, 1)
+
+        dem = DEMService(dem_path=path)
+        west, south, east, north = dem.bounds
+        assert abs(west - 8.0) < 1e-9 and abs(north - 49.0) < 1e-9  # identity bounds
+        value = float(dem.get_elevations(lons=[8.05], lats=[48.95])[0])
+        assert np.isfinite(value)
+
+    def test_singleton_resets_on_new_path(self, arcsecond_dem: Path, tmp_path: Path):
+        first = DEMService(dem_path=arcsecond_dem)
+        second = DEMService(dem_path=tmp_path / "other.tif")
+        assert first is not second  # a different path forces a fresh instance
 
 
-def test_vectorized_batch_ramp(arcsecond_dem: Path):
-    dem = DEMService(dem_path=arcsecond_dem)
-    batch = dem.get_elevations(lons=[8.2, 8.5, 8.8], lats=[48.2, 48.5, 48.8])
-    # elevation ramps with latitude → strictly increasing across the batch
-    assert batch[0] < batch[1] < batch[2]
-    np.testing.assert_allclose(batch, [200, 500, 800], atol=12)
-
-
-def test_bounds_reprojected_to_wgs84(arcsecond_dem: Path):
-    dem = DEMService(dem_path=arcsecond_dem)
-    west, south, east, north = dem.bounds
-    assert 7.9 < west < 8.1 and 8.9 < east < 9.1
-    assert 47.9 < south < 48.1 and 48.9 < north < 49.1
-
-
-def test_nodata_and_out_of_bounds_are_nan(arcsecond_dem: Path):
-    dem = DEMService(dem_path=arcsecond_dem)
-    out = dem.get_elevations(lons=[8.0, 20.0], lats=[49.0, 60.0])
-    # top-left cell is nodata; second point is far outside coverage → both NaN
-    assert np.all(np.isnan(out))
-
-
-def test_spec_vectorized_wrapper(arcsecond_dem: Path):
+def test_get_elevations_from_raster(arcsecond_dem: Path):
+    # The spec (lat, lng) wrapper: vectorized sample from a raster path → one elevation per point,
+    # ramping with latitude (matches the DEMService gather it delegates to).
     arr = get_elevations_from_raster(lats=[48.2, 48.8], lngs=[8.2, 8.8], raster_path=str(arcsecond_dem))
     assert arr.shape == (2,)
     np.testing.assert_allclose(arr, [200, 800], atol=12)  # ramp: (lat-48)*1000
-
-
-def test_missing_dem_raises_filenotfound(tmp_path: Path):
-    dem = DEMService(dem_path=tmp_path / "absent.tif")
-    with pytest.raises(FileNotFoundError):
-        dem.get_elevations(lons=[8.0], lats=[48.0])
-
-
-def test_wgs84_dem_needs_no_reprojection(tmp_path: Path):
-    """A plain EPSG:4326 DEM skips the pyproj transform (identity branch)."""
-    transform = Affine.translation(8.0, 49.0) * Affine.scale(0.01, -0.01)
-    data = np.arange(100, dtype=np.int16).reshape(10, 10)
-    path = tmp_path / "wgs84.tif"
-    with rasterio.open(
-        path,
-        "w",
-        driver="GTiff",
-        height=10,
-        width=10,
-        count=1,
-        dtype="int16",
-        crs=CRS.from_epsg(4326),
-        transform=transform,
-        nodata=-1,
-    ) as dst:
-        dst.write(data, 1)
-
-    dem = DEMService(dem_path=path)
-    west, south, east, north = dem.bounds
-    assert abs(west - 8.0) < 1e-9 and abs(north - 49.0) < 1e-9  # identity bounds
-    value = float(dem.get_elevations(lons=[8.05], lats=[48.95])[0])
-    assert np.isfinite(value)
-
-
-def test_singleton_resets_on_new_path(arcsecond_dem: Path, tmp_path: Path):
-    first = DEMService(dem_path=arcsecond_dem)
-    second = DEMService(dem_path=tmp_path / "other.tif")
-    assert first is not second  # a different path forces a fresh instance

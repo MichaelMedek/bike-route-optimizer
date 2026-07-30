@@ -1,11 +1,13 @@
-"""STRICT 1:1 unit-test coverage — every free-floating production symbol has a dedicated test.
+"""STRICT 1:1 test↔production mapping — every symbol is tested, every test file is anchored.
 
 Parses each module under bike_router/{core,ui,preprocessing} (AST, no execution) and asserts,
 for the mirror test file tests/<layer>/test_<module>.py:
   * every module-level function ``foo`` / ``_foo`` has a test function ``test_foo``.
   * every module-level class ``Foo`` has a test class ``TestFoo``.
-Extra integration tests/helpers are allowed; this only enforces the floor of one dedicated
-unit test per production function and class, in the correctly-named file in the right layer.
+  * (reverse) every test file maps 1:1 to a production module in the same layer — NO stray
+    tests/<layer>/test_<x>.py without a bike_router/<layer>/<x>.py behind it.
+Extra unit AND integration tests may pile into a mapped file, but there is no home for a test
+that isn't anchored to one production module — forcing strict 1:1 file adherence.
 """
 
 import ast
@@ -52,6 +54,14 @@ _FN_IDS = [f"{lay}/{p.stem}::{name}" for lay, p, name in _FUNCTIONS]
 _CLS_IDS = [f"{lay}/{p.stem}::{name}" for lay, p, name in _CLASSES]
 
 
+def _test_files() -> list[tuple[str, pathlib.Path]]:
+    """(layer, path) for every test_*.py under tests/{core,ui,preprocessing}."""
+    return [(layer, path) for layer in _LAYERS for path in sorted((_TESTS_DIR / layer).glob("test_*.py"))]
+
+
+_TEST_FILE_IDS = [f"{lay}/{p.name}" for lay, p in _test_files()]
+
+
 @pytest.mark.parametrize(("layer", "path", "func"), _FUNCTIONS, ids=_FN_IDS)
 def test_every_production_function_has_a_unit_test(layer: str, path: pathlib.Path, func: str) -> None:
     """Free-floating ``func``/``_func`` must have a ``test_func`` in tests/<layer>/test_<module>.py."""
@@ -73,4 +83,25 @@ def test_every_production_class_has_a_unit_test(layer: str, path: pathlib.Path, 
     assert expected in have, (
         f"{layer}/{path.name}::{cls} has no dedicated test class — "
         f"expected a class '{expected}' in tests/{layer}/{test_file.name}"
+    )
+
+
+@pytest.mark.parametrize(("layer", "path"), _test_files(), ids=_TEST_FILE_IDS)
+def test_test_file_maps_to_a_production_module(layer: str, path: pathlib.Path) -> None:
+    """No stray tests: tests/<layer>/test_<x>.py requires bike_router/<layer>/<x>.py behind it."""
+    module = _PKG / layer / path.name[len("test_") :]
+    assert module.exists(), (
+        f"tests/{layer}/{path.name} maps to no production module — "
+        f"expected {module.relative_to(PROJECT_ROOT)}. Fold its cases into the matching "
+        f"test_<module>.py; integration tests must live in a mapped file too."
+    )
+
+
+def test_tests_outnumber_production_symbols() -> None:
+    """Total test funcs+classes ≥ 1.4× production funcs+classes — a real testing surplus, not parity."""
+    prod = sum(len(_module_defs(p, _FUNC_TYPES + (ast.ClassDef,))) for _, p in _production_modules())
+    tests = sum(len(_module_defs(p, _FUNC_TYPES + (ast.ClassDef,))) for _, p in _test_files())
+    assert tests >= prod * 1.4, (
+        f"only {tests} test funcs+classes for {prod} production ones (ratio {tests / prod:.2f}); "
+        f"need ≥{prod * 1.4:.0f} (1.4×)"
     )

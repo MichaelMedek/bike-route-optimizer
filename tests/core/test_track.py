@@ -1,97 +1,393 @@
-"""Track-builder tests — geometry, elevation, adaptive timing, rolled-up totals."""
+"""track tests — the ONE per-point time/elevation/colour structure: geometry, timing, densify.
 
+One test_<fn> per production symbol (exact-name mirror) and a TestFoo per dataclass. Folds the
+former test_track_rail.py: bike timing, rail/station ride time + boarding wait, condition/grade
+classification, both colour scales, and the 3D densify. Every original assertion is preserved.
+"""
+
+import numpy as np
 import pytest
 
-from bike_router.core.constants import GpxConfig, SpeedConfig
+from bike_router.core.constants import GpxConfig, GradeConfig, Mode, NodeType, Palette, RailConfig, SpeedConfig
+from bike_router.core.route_path import RouteEdge, RouteNode, RoutePath
 from bike_router.core.track import (
     RouteStats,
+    Track,
+    TrackPoint,
+    _track_point,
     build_track,
+    classify_condition,
+    classify_grade,
     climb_totals,
     cumulative_km,
+    densify_track,
+    edge_condition_speed,
+    edge_grade,
+    edge_vertices_3d,
+    grade_color,
     project_markers_onto_track,
+    segment_color,
 )
-from tests.conftest import make_line_route
+from tests.conftest import (
+    make_condition_route,
+    make_densify_detour_route,
+    make_exchange_rail_route,
+    make_line_route,
+    make_rail_route,
+)
 
 
-def test_cumulative_km_starts_at_zero_and_increases():
+def _rail_ride_s(*, rail_m: float) -> float:
+    """Expected train ride time (s) for a rail distance — one source for the timing asserts."""
+    return rail_m / (RailConfig.RAIL_SPEED_KMH * GpxConfig.METERS_PER_KM / GpxConfig.SECONDS_PER_HOUR)
+
+
+def _bike_edge(*, surface: str, highway: str, length_m: float = 800.0) -> RouteEdge:
+    """One bike RouteEdge with the given surface/road for the condition/speed contracts."""
+    return RouteEdge(
+        from_node=1, to_node=2, mode=Mode.BIKE, length_m=length_m, surface=surface, highway=highway, geometry=None
+    )
+
+
+# --- dataclasses -------------------------------------------------------------
+
+
+class TestTrackPoint:
+    def test_carries_position_time_and_edge_condition(self):
+        pt = TrackPoint(
+            lat=48.0,
+            lon=8.0,
+            elevation_m=100.0,
+            elapsed_s=12.0,
+            mode=Mode.BIKE,
+            surface_bad=True,
+            road_bad=False,
+            grade=0.05,
+            speed_kmh=18.0,
+        )
+        assert (pt.lat, pt.lon, pt.elevation_m, pt.elapsed_s) == (48.0, 8.0, 100.0, 12.0)
+        assert pt.mode == Mode.BIKE and pt.surface_bad is True and pt.road_bad is False
+        assert pt.grade == 0.05 and pt.speed_kmh == 18.0
+
+    def test_is_frozen(self):
+        pt = TrackPoint(
+            lat=48.0,
+            lon=8.0,
+            elevation_m=0.0,
+            elapsed_s=0.0,
+            mode=Mode.BIKE,
+            surface_bad=False,
+            road_bad=False,
+            grade=0.0,
+            speed_kmh=1.0,
+        )
+        with pytest.raises(AttributeError):
+            pt.elapsed_s = 1.0  # type: ignore[misc]
+
+
+class TestRouteStats:
+    def test_format_strings_are_single_source(self):
+        # The CLI, Streamlit metrics, and PNG overlay all render via these properties, so
+        # the format specs (and the unicode minus U+2212) live in ONE place.
+        stats = RouteStats(distance_km=7.04, duration_min=23.6, ascent_m=218.4, descent_m=26.7)
+        assert stats.distance_str == "7.0 km"
+        assert stats.duration_str == "24 min"
+        assert stats.ascent_str == "+218 m"
+        assert stats.descent_str == "−27 m"  # unicode minus, rounded
+        assert stats.oneline == "7.0 km · 24 min · +218 m / −27 m"
+        assert stats.metric_pairs(duration_label="Ride time") == (
+            ("Distance", "7.0 km"),
+            ("Ride time", "24 min"),
+            ("Ascent", "+218 m"),
+            ("Descent", "−27 m"),
+        )
+
+    def test_is_frozen(self):
+        with pytest.raises(AttributeError):
+            RouteStats(distance_km=1.0, duration_min=1.0, ascent_m=0.0, descent_m=0.0).ascent_m = 9.0  # type: ignore[misc]
+
+
+class TestTrack:
+    def test_splits_bike_only_from_whole_journey(self):
+        # A pure-bike route: the pedalled-only stats equal the whole-journey stats.
+        track = build_track(route=make_line_route())
+        assert track.bike == track.total
+        assert len(track.points) == len(make_line_route().nodes)
+
+
+# --- distance / climb --------------------------------------------------------
+
+
+def test_cumulative_km():
+    # The ONE distance axis: starts at 0, monotonic non-decreasing, ends positive for a real route.
     track = build_track(route=make_line_route())
     dists = cumulative_km(points=track.points)
     assert dists[0] == 0.0
-    assert all(b >= a for a, b in zip(dists[:-1], dists[1:], strict=True))  # monotonic
-    assert dists[-1] > 0.0  # the route has length
+    assert all(b >= a for a, b in zip(dists[:-1], dists[1:], strict=True))
+    assert dists[-1] > 0.0
 
 
-def test_project_markers_onto_track_snaps_to_nearest_point_dist_and_elev():
-    # A marker at node 2's coords (8.01, 48.0, 130 m) must land at that node's distance + elevation.
+def test_project_markers_onto_track():
+    # A marker at node 2's coords (8.01, 48.0) snaps to that node's distance + elevation (130 m).
     track = build_track(route=make_line_route())
     placed = project_markers_onto_track(track=track, markers=[(48.0, 8.01, "mid")])
     dist_km, elev_m, label = placed[0]
     assert label == "mid"
-    assert elev_m == pytest.approx(130.0)  # node 2 elevation
-    assert dist_km == pytest.approx(cumulative_km(points=track.points)[1])  # node 2 distance
+    assert elev_m == pytest.approx(130.0)
+    assert dist_km == pytest.approx(cumulative_km(points=track.points)[1])
 
 
-def test_climb_totals_reports_gross_not_net_over_a_hill():
-    # Start and end at the SAME elevation but go over a hill: net change is 0, yet the ride
-    # still climbs then descends, so ascent/descent must each report the GROSS hill height.
+def test_climb_totals():
+    # Gross up-/down-sum, NOT net: over a hill (net 0) each still reports the full height; [] → (0,0).
     ascent, descent = climb_totals(deltas=[+30.0, -30.0])  # 100 → 130 → 100 m
-    assert ascent == 30.0 and descent == 30.0  # NOT 0 (a plain sum of deltas would give 0)
-    # rolling hills: +30 −10 +5 −25 → up-sum 35, down-sum 35 (net 0 again)
-    up, down = climb_totals(deltas=[+30.0, -10.0, +5.0, -25.0])
+    assert ascent == 30.0 and descent == 30.0
+    up, down = climb_totals(deltas=[+30.0, -10.0, +5.0, -25.0])  # rolling hills, net 0
     assert up == 35.0 and down == 35.0
-    assert climb_totals(deltas=[]) == (0.0, 0.0)  # empty path → no climb
+    assert climb_totals(deltas=[]) == (0.0, 0.0)
 
 
-def test_route_stats_format_strings_are_single_source():
-    # The CLI, Streamlit metrics, and PNG overlay all render via these properties, so
-    # the format specs (and the unicode minus U+2212) live in ONE place.
-    stats = RouteStats(distance_km=7.04, duration_min=23.6, ascent_m=218.4, descent_m=26.7)
-    assert stats.distance_str == "7.0 km"
-    assert stats.duration_str == "24 min"
-    assert stats.ascent_str == "+218 m"
-    assert stats.descent_str == "−27 m"  # unicode minus, rounded
-    assert stats.oneline == "7.0 km · 24 min · +218 m / −27 m"
-    assert stats.metric_pairs(duration_label="Ride time") == (
-        ("Distance", "7.0 km"),
-        ("Ride time", "24 min"),
-        ("Ascent", "+218 m"),
-        ("Descent", "−27 m"),
+# --- grade / condition / speed (single branch points) ------------------------
+
+
+def test_edge_grade():
+    # Signed rise/run: +uphill, −downhill, 0 flat; length is a baked > 0 invariant.
+    assert edge_grade(elev_source=100.0, elev_target=150.0, length_m=1000.0) == pytest.approx(0.05)
+    assert edge_grade(elev_source=150.0, elev_target=100.0, length_m=1000.0) == pytest.approx(-0.05)
+    assert edge_grade(elev_source=100.0, elev_target=100.0, length_m=500.0) == 0.0
+
+
+def test_edge_condition_speed():
+    # bike: surface_bad iff tier != 0, road_bad iff main road, adaptive speed; rail/station never
+    # bad and ride at fixed RAIL_SPEED / walking pace; an unknown mode fails loud.
+    s_bad, r_bad, speed = edge_condition_speed(
+        edge=_bike_edge(surface="asphalt", highway="residential"), elev_source=100.0, elev_target=100.0
     )
+    assert s_bad is False and r_bad is False and speed == pytest.approx(SpeedConfig.BASE_KMH_BY_TIER[0])
+    s_bad, r_bad, _ = edge_condition_speed(
+        edge=_bike_edge(surface="gravel", highway="primary"), elev_source=100.0, elev_target=100.0
+    )
+    assert s_bad is True and r_bad is True  # unpaved + main road
+
+    rail_edge = RouteEdge(
+        from_node=1, to_node=2, mode=Mode.RAIL, length_m=1.0, surface=None, highway=None, geometry=None
+    )
+    assert edge_condition_speed(edge=rail_edge, elev_source=0.0, elev_target=500.0) == (
+        False,
+        False,
+        RailConfig.RAIL_SPEED_KMH,
+    )
+    station_edge = RouteEdge(
+        from_node=1, to_node=2, mode=Mode.STATION, length_m=1.0, surface=None, highway=None, geometry=None
+    )
+    assert edge_condition_speed(edge=station_edge, elev_source=0.0, elev_target=0.0) == (
+        False,
+        False,
+        SpeedConfig.WALK_KMH,
+    )
+    bad_edge = RouteEdge(from_node=1, to_node=2, mode="fly", length_m=1.0, surface=None, highway=None, geometry=None)
+    with pytest.raises(AssertionError, match="unknown edge mode"):
+        edge_condition_speed(edge=bad_edge, elev_source=0.0, elev_target=0.0)
 
 
-def test_track_points_and_totals():
+def test_classify_condition():
+    # The SINGLE quality branch: train wins; then the four bike combinations of surface/road badness.
+    assert classify_condition(mode=Mode.RAIL, surface_bad=True, road_bad=True) == "train"
+    assert classify_condition(mode=Mode.BIKE, surface_bad=True, road_bad=True) == "main road + unpaved"
+    assert classify_condition(mode=Mode.BIKE, surface_bad=False, road_bad=True) == "main road"
+    assert classify_condition(mode=Mode.BIKE, surface_bad=True, road_bad=False) == "unpaved"
+    assert classify_condition(mode=Mode.BIKE, surface_bad=False, road_bad=False) == "good"
+
+
+def test_classify_grade():
+    # The SINGLE grade branch: a train keeps its own label; else uphill/downhill past ±MARGIN, flat inside.
+    assert classify_grade(mode=Mode.RAIL, grade=0.5) == "train"
+    assert classify_grade(mode=Mode.BIKE, grade=GradeConfig.MARGIN + 0.01) == "uphill"
+    assert classify_grade(mode=Mode.BIKE, grade=-(GradeConfig.MARGIN + 0.01)) == "downhill"
+    assert classify_grade(mode=Mode.BIKE, grade=0.0) == "flat"
+
+
+def test_segment_color():
+    # RGB on the quality scale via classify_condition → Palette.CONDITION_COLORS (label/colour agree).
+    good = segment_color(mode=Mode.BIKE, surface_bad=False, road_bad=False)
+    assert good == list(Palette.hex_to_rgb(hex_color=Palette.CONDITION_COLORS["good"]))
+    train = segment_color(mode=Mode.RAIL, surface_bad=False, road_bad=False)
+    assert train == list(Palette.hex_to_rgb(hex_color=Palette.CONDITION_COLORS["train"]))
+
+
+def test_grade_color():
+    # RGB on the grade scale via classify_grade → Palette.GRADE_COLORS (flat/uphill/downhill/train).
+    downhill = grade_color(mode=Mode.BIKE, grade=-0.5)
+    assert downhill == list(Palette.hex_to_rgb(hex_color=Palette.GRADE_COLORS["downhill"]))
+    train = grade_color(mode=Mode.RAIL, grade=0.0)
+    assert train == list(Palette.hex_to_rgb(hex_color=Palette.GRADE_COLORS["train"]))
+
+
+def test_track_point():
+    # The ONE point builder: carries its node position/elevation + the arriving edge's condition.
+    at = RouteNode(osmid=1, lat=48.0, lon=8.0, elevation_m=100.0, node_type=NodeType.BIKE, station_name=None)
+    edge = _bike_edge(surface="gravel", highway="primary", length_m=1000.0)
+    pt = _track_point(at=at, edge=edge, other_elev=150.0, elapsed_s=42.0)
+    assert (pt.lat, pt.lon, pt.elevation_m, pt.elapsed_s) == (48.0, 8.0, 100.0, 42.0)
+    assert pt.surface_bad is True and pt.road_bad is True  # gravel + primary
+    assert pt.grade == pytest.approx(0.05)  # (150-100)/1000
+
+
+# --- build_track (bike + rail + station timing) ------------------------------
+
+
+def test_build_track():
+    # Bike route: 3 nodes → 3 points, 1.6 km, +30/−30 climb, monotonic zero-based time, uphill slower,
+    # real node elevations, plausible average speed. Rail route: ride time + half-boarding wait, the
+    # whole-journey climb spans the train while bike-only excludes it, and the 80 km/h ride does not
+    # trip the bike avg-speed assert. Exchange trip charges exactly ONE boarding despite the change.
     track = build_track(route=make_line_route())
-    # 3 nodes → 3 points; two 800 m edges → 1.6 km
     assert len(track.points) == 3
-    assert track.total.distance_km == 1.6  # two 800 m edges, exact in float
-    # 100→130→100 → +30 m / -30 m
-    assert track.total.ascent_m == 30.0
-    assert track.total.descent_m == 30.0
-    # pure-bike route: bike stats equal the totals
-    assert track.bike == track.total
-
-
-def test_track_timestamps_monotonic_and_start_zero():
-    track = build_track(route=make_line_route())
-    elapsed = [point.elapsed_s for point in track.points]
-    assert elapsed[0] == 0.0
-    assert elapsed[0] < elapsed[1] < elapsed[2]
+    assert track.total.distance_km == 1.6
+    assert track.total.ascent_m == 30.0 and track.total.descent_m == 30.0
+    assert track.bike == track.total  # pure bike
+    elapsed = [p.elapsed_s for p in track.points]
+    assert elapsed[0] == 0.0 and elapsed[0] < elapsed[1] < elapsed[2]
     assert track.total.duration_min == elapsed[-1] / GpxConfig.SECONDS_PER_HOUR * GpxConfig.MINUTES_PER_HOUR
-
-
-def test_track_uphill_segment_is_slower_than_downhill():
-    track = build_track(route=make_line_route())
-    uphill_s = track.points[1].elapsed_s - track.points[0].elapsed_s  # 1→2 climbs
-    downhill_s = track.points[2].elapsed_s - track.points[1].elapsed_s  # 2→3 descends
-    assert uphill_s > downhill_s  # same length, uphill takes longer
-
-
-def test_track_elevations_are_real_node_values():
-    track = build_track(route=make_line_route())
-    assert [round(point.elevation_m) for point in track.points] == [100, 130, 100]
-
-
-def test_track_average_speed_within_bounds():
-    track = build_track(route=make_line_route())
+    assert (elapsed[1] - elapsed[0]) > (elapsed[2] - elapsed[1])  # uphill 1→2 slower than downhill 2→3
+    assert [round(p.elevation_m) for p in track.points] == [100, 130, 100]
     avg_kmh = track.total.distance_km / (track.total.duration_min / GpxConfig.MINUTES_PER_HOUR)
     assert SpeedConfig.WALK_KMH <= avg_kmh <= max(SpeedConfig.BASE_KMH_BY_TIER.values())
+
+    # rail route: one station edge (board) → half a wait, route ends on the train (no alight hop)
+    rail = build_track(route=make_rail_route())
+    assert rail.points[-1].elapsed_s == 0.5 * RailConfig.BOARDING_WAIT_S + _rail_ride_s(rail_m=7000.0)
+    assert rail.total.ascent_m == pytest.approx(400.0) and rail.total.descent_m == 0.0  # station +5, ride +395
+    assert rail.bike.ascent_m == 0.0 and rail.bike.descent_m == 0.0  # no pedalled edge
+    assert rail.total.ascent_m != rail.bike.ascent_m  # the two rows differ on a train route
+    assert rail.bike.distance_km == 0.0 and rail.total.distance_km == pytest.approx(7.08)
+    assert rail.bike.duration_min < rail.total.duration_min  # 80 km/h ride, no avg-speed assert tripped
+
+    # exchange trip: board at A + alight at C = ONE full wait; the A→B→C rail hop adds none
+    exchange = make_exchange_rail_route()
+    ex_track = build_track(route=exchange)
+    assert ex_track.points[-1].elapsed_s == pytest.approx(
+        RailConfig.BOARDING_WAIT_S + _rail_ride_s(rail_m=4000.0 + 3000.0)
+    )
+    assert exchange.nodes[-1].node_type == NodeType.BIKE
+    assert ex_track.total.ascent_m == 0.0 and ex_track.total.descent_m == 0.0  # flat (all 100 m)
+
+    # condition/speed baked per point: good quiet leg vs main-road leg
+    cond = build_track(route=make_condition_route())
+    assert cond.points[1].surface_bad is False and cond.points[1].road_bad is False
+    assert cond.points[1].speed_kmh == 25.0
+    assert cond.points[2].road_bad is True and cond.points[2].surface_bad is False  # primary, asphalt
+
+
+# --- 3D densify --------------------------------------------------------------
+
+
+def test_edge_vertices_3d():
+    # Real 2D polyline with elevation interpolated LINEARLY node-to-node by along-edge distance;
+    # a geometry-less hop is a straight two-node segment at the node elevations.
+    node_a = RouteNode(osmid=1, lat=48.0, lon=8.0, elevation_m=100.0, node_type=NodeType.BIKE, station_name=None)
+    node_b = RouteNode(osmid=2, lat=48.0, lon=8.02, elevation_m=200.0, node_type=NodeType.BIKE, station_name=None)
+    geom = [(8.0, 48.0), (8.01, 48.0), (8.02, 48.0)]  # straight, midpoint halfway
+    edge = RouteEdge(
+        from_node=1, to_node=2, mode=Mode.BIKE, length_m=1500.0, surface="asphalt", highway="residential", geometry=geom
+    )
+    verts = edge_vertices_3d(node_a=node_a, node_b=node_b, edge=edge)
+    assert [round(z) for _x, _y, z in verts] == [100, 150, 200]  # linear z 100→150→200
+
+    straight = RouteEdge(
+        from_node=1, to_node=2, mode=Mode.RAIL, length_m=1500.0, surface=None, highway=None, geometry=None
+    )
+    assert edge_vertices_3d(node_a=node_a, node_b=node_b, edge=straight) == [
+        (8.0, 48.0, 100.0),
+        (8.02, 48.0, 200.0),
+    ]
+
+
+def test_densify_track():
+    # Detour edge: keeps the real 2D eastward bulge yet interpolates z linearly (no vertex > 140),
+    # spreads timing by distance, and carries stats through unchanged. A geometry-less rail hop
+    # falls back to a straight segment at the two node elevations (still no DEM).
+    route = make_densify_detour_route()
+    stats = RouteStats(distance_km=3.0, duration_min=10.0, ascent_m=40.0, descent_m=0.0)
+    track = Track(
+        points=[
+            TrackPoint(
+                lat=48.00,
+                lon=8.00,
+                elevation_m=100.0,
+                elapsed_s=0.0,
+                mode=Mode.BIKE,
+                surface_bad=False,
+                road_bad=False,
+                grade=0.0,
+                speed_kmh=25.0,
+            ),
+            TrackPoint(
+                lat=48.02,
+                lon=8.00,
+                elevation_m=140.0,
+                elapsed_s=600.0,
+                mode=Mode.BIKE,
+                surface_bad=False,
+                road_bad=False,
+                grade=0.0,
+                speed_kmh=18.0,
+            ),
+        ],
+        bike=stats,
+        total=stats,
+    )
+    dense = densify_track(route=route, track=track)
+    assert len(dense.points) == 3  # three real polyline vertices
+    assert dense.points[0].elapsed_s == 0.0 and dense.points[-1].elapsed_s == 600.0
+    assert dense.total.distance_km == 3.0
+    assert max(p.lon for p in dense.points) > 8.02  # the eastward 2D bulge is present
+    assert max(p.elevation_m for p in dense.points) == pytest.approx(140.0)
+    assert dense.points[0].elevation_m == pytest.approx(100.0)
+    assert all(100.0 - 1e-6 <= p.elevation_m <= 140.0 + 1e-6 for p in dense.points)
+    assert dense.total.ascent_m == pytest.approx(40.0) and dense.total.descent_m == pytest.approx(0.0)
+
+    # geometry-less rail hop → straight segment at node elevations
+    nodes = [
+        RouteNode(osmid=1, lat=48.0, lon=8.0, elevation_m=100.0, node_type=NodeType.RAIL, station_name="A"),
+        RouteNode(osmid=2, lat=48.0, lon=8.1, elevation_m=400.0, node_type=NodeType.RAIL, station_name="B"),
+    ]
+    rail_route = RoutePath(
+        nodes=nodes,
+        edges=[
+            RouteEdge(
+                from_node=1, to_node=2, mode=Mode.RAIL, length_m=8000.0, surface=None, highway=None, geometry=None
+            )
+        ],
+    )
+    rail_stats = RouteStats(distance_km=8.0, duration_min=6.0, ascent_m=0.0, descent_m=0.0)
+    rail_track = Track(
+        points=[
+            TrackPoint(
+                lat=48.0,
+                lon=8.0,
+                elevation_m=100.0,
+                elapsed_s=0.0,
+                mode=Mode.RAIL,
+                surface_bad=False,
+                road_bad=False,
+                grade=0.0,
+                speed_kmh=80.0,
+            ),
+            TrackPoint(
+                lat=48.0,
+                lon=8.1,
+                elevation_m=400.0,
+                elapsed_s=360.0,
+                mode=Mode.RAIL,
+                surface_bad=False,
+                road_bad=False,
+                grade=0.0,
+                speed_kmh=80.0,
+            ),
+        ],
+        bike=rail_stats,
+        total=rail_stats,
+    )
+    rail_dense = densify_track(route=rail_route, track=rail_track)
+    assert [round(p.elevation_m) for p in rail_dense.points] == [100, 400]
+    assert all(np.isfinite(p.elevation_m) for p in rail_dense.points)

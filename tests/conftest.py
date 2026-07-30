@@ -406,6 +406,20 @@ def make_store_roundtrip_graph() -> "object":
     return graph
 
 
+def write_store_roundtrip_fixture(out_dir: "object") -> "object":
+    """Write the round-trip graph as a tiled parquet store under ``out_dir`` (returns it).
+
+    Wraps the preprocessing writer here in shared test infra so LAYER tests (e.g. core/graph_store)
+    can obtain a real on-disk store WITHOUT importing preprocessing themselves (import-boundary safe).
+    """
+    from bike_router.preprocessing.graph_writer import graph_to_tables, write_graph_parquet
+
+    nodes_df, edges_df = graph_to_tables(graph=make_store_roundtrip_graph())
+    meta = {"bbox": [7.9, 47.9, 8.2, 48.1], "tile_deg": 0.5, "tolerance_m": 25.0}
+    write_graph_parquet(nodes_df=nodes_df, edges_df=edges_df, meta=meta, out_dir=out_dir)
+    return out_dir
+
+
 def make_surface_mix_graph() -> "object":
     """A 6-node line spanning both the surface AND highway allowlist boundaries (drop tests).
 

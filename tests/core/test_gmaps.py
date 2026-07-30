@@ -3,7 +3,7 @@
 import pytest
 
 from bike_router.core.constants import GmapsConfig
-from bike_router.core.gmaps import build_gmaps_url
+from bike_router.core.gmaps import _fmt, build_gmaps_url
 
 
 def _waypoints() -> list[tuple[float, float]]:
@@ -11,25 +11,19 @@ def _waypoints() -> list[tuple[float, float]]:
     return [(48.0 + i * 0.1, 8.0 + i * 0.1) for i in range(GmapsConfig.N_WAYPOINTS)]
 
 
-def test_url_structure():
+def test_fmt():
+    # The one coord formatter: "lat,lon" at COORD_PRECISION (6) decimals.
+    assert _fmt(point=(48.5, 8.25)) == "48.500000,8.250000"
+
+
+def test_build_gmaps_url():
+    # Full URL: api=1 + bicycling + origin/destination; interior points pipe-joined (N-2 waypoints
+    # → N-3 encoded pipes). A 2-point leg emits origin+destination, no waypoints; <2 points fails loud.
     url = build_gmaps_url(waypoints_latlon=_waypoints())
     assert url.startswith("https://www.google.com/maps/dir/?api=1")
-    assert "travelmode=bicycling" in url
-    assert "origin=" in url and "destination=" in url
-    assert "waypoints=" in url
-    # origin + destination are separate params, so the pipe-joined intermediates number
-    # N_WAYPOINTS - 2, giving N_WAYPOINTS - 3 separators (URL-encoded pipe %7C).
+    assert "travelmode=bicycling" in url and "origin=" in url and "destination=" in url and "waypoints=" in url
     assert url.count("%7C") == GmapsConfig.N_WAYPOINTS - 3
-
-
-def test_two_points_is_valid_origin_destination_only():
-    # A thinned short leg may reach build_gmaps_url with just origin + destination.
-    url = build_gmaps_url(waypoints_latlon=[(48.0, 8.0), (49.0, 9.0)])
-    assert url.startswith("https://www.google.com/maps/dir/?api=1")
-    assert "origin=" in url and "destination=" in url
-    assert "waypoints=" not in url  # no interior points → no waypoints param
-
-
-def test_too_few_points_raises():
+    two = build_gmaps_url(waypoints_latlon=[(48.0, 8.0), (49.0, 9.0)])
+    assert "origin=" in two and "destination=" in two and "waypoints=" not in two
     with pytest.raises(AssertionError):
-        build_gmaps_url(waypoints_latlon=[(48.0, 8.0)])  # need origin + destination
+        build_gmaps_url(waypoints_latlon=[(48.0, 8.0)])

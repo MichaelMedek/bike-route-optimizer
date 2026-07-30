@@ -12,7 +12,7 @@ import pytest
 from shapely.geometry import box
 
 from bike_router.core import pipeline
-from bike_router.core.constants import CorridorConfig, GeoConfig, Mode, NodeType
+from bike_router.core.constants import CorridorConfig, GeoConfig, GraphConfig, Mode, NodeType
 from bike_router.core.errors import (
     GeocodeConnectionError,
     NoRouteError,
@@ -21,8 +21,17 @@ from bike_router.core.errors import (
     TripTooLongError,
     TripTooShortError,
 )
+from bike_router.core.route_graph import RouteGraph, shortest_path
 from bike_router.core.route_path import RoutePath
-from tests.conftest import DEFAULT_PARAMS, make_line_edges, make_line_route
+from tests.conftest import (
+    DEFAULT_PARAMS,
+    FIXTURE_GRAPH_DIR,
+    make_hill_vs_rail_edges,
+    make_line_edges,
+    make_line_route,
+    params,
+    route_node_types,
+)
 
 _ROUTE_NODE_COLS = ["osmid", "lat", "lon", "elevation_m", "node_type"]
 _ROUTE_EDGE_COLS = ["from_node", "to_node", "length_m", "surface", "highway", "mode"]
@@ -78,7 +87,7 @@ def _wire_offline(monkeypatch, tmp_path, *, nodes_df, edges_df, route: RoutePath
     )
 
 
-def test_plan_route_end_to_end_offline(tmp_path: Path, monkeypatch):
+def test_plan_route(tmp_path: Path, monkeypatch):
     nodes_df, edges_df = _line_tables()
     _wire_offline(monkeypatch, tmp_path, nodes_df=nodes_df, edges_df=edges_df, route=make_line_route())
     result = pipeline.plan_route(origin="Start", destination="End", params=DEFAULT_PARAMS)
@@ -179,7 +188,7 @@ def test_plan_route_rejects_corridor_over_edge_cap(tmp_path: Path, monkeypatch):
         pipeline.plan_route(origin="Start", destination="End", params=DEFAULT_PARAMS)
 
 
-def test_resolve_endpoints_geocodes_box_text_and_snaps(monkeypatch):
+def test_resolve_endpoints(monkeypatch):
     # Whatever text is passed IS what's geocoded (the web app hands the box text here),
     # then each result snaps to the nearest node's (lat, lon, elevation).
     monkeypatch.setattr(pipeline, "make_geocode_fn", lambda: lambda place: None)
@@ -190,3 +199,260 @@ def test_resolve_endpoints_geocodes_box_text_and_snaps(monkeypatch):
     start, end = pipeline.resolve_endpoints(origin="Freudenstadt", destination="Pforzheim")
     assert start == (48.001, 8.001, 200.0)
     assert end == (48.501, 8.501, 200.0)
+
+
+class TestRouteResult:
+    def test_bundles_track_paths_legs_and_composition(self, tmp_path: Path, monkeypatch):
+        # The pipeline's return bundle: track + written artifact paths + bike/rail legs + composition.
+        nodes_df, edges_df = _line_tables()
+        _wire_offline(monkeypatch, tmp_path, nodes_df=nodes_df, edges_df=edges_df, route=make_line_route())
+        result = pipeline.plan_route(origin="Start", destination="End", params=DEFAULT_PARAMS)
+        assert isinstance(result, pipeline.RouteResult)
+        assert result.track is not None and result.composition is not None
+        assert result.gpx_path.exists() and result.png_path.exists()
+        assert result.bike_legs and result.rail_legs == []
+        assert isinstance(result.waypoints, list)
+
+
+def test_geocode_both(monkeypatch):
+    # ONE rate-limited geocode fn resolves both endpoints to (lat, lon); a bad Start fails fast.
+    monkeypatch.setattr(pipeline, "make_geocode_fn", lambda: lambda place: None)
+    monkeypatch.setattr(
+        pipeline, "geocode_endpoint", lambda place, label, geocode_fn: (48.0, 8.0) if label == "Start" else (48.5, 8.5)
+    )
+    start, dest = pipeline._geocode_both(origin="Freudenstadt", destination="Pforzheim")
+    assert start == (48.0, 8.0) and dest == (48.5, 8.5)
+
+    def _boom(place, label, geocode_fn):
+        raise GeocodeConnectionError("no connection")
+
+    monkeypatch.setattr(pipeline, "geocode_endpoint", _boom)
+    with pytest.raises(GeocodeConnectionError):
+        pipeline._geocode_both(origin="X", destination="Y")
+
+
+def test_assert_within_coverage(monkeypatch):
+    # Passes silently inside the bbox; raises OutOfCoverageError for an endpoint outside it.
+    monkeypatch.setattr(pipeline, "load_meta", lambda graph_dir: {"bbox": [8.0, 48.0, 8.5, 48.5]})
+    pipeline._assert_within_coverage(start_latlon=(48.1, 8.1), dest_latlon=(48.4, 8.4), graph_dir=FIXTURE_GRAPH_DIR)
+    with pytest.raises(OutOfCoverageError, match="coverage"):
+        pipeline._assert_within_coverage(
+            start_latlon=(48.1, 8.1), dest_latlon=(52.5, 13.4), graph_dir=FIXTURE_GRAPH_DIR
+        )
+
+
+def test_route_node_path(monkeypatch):
+    # Loads the corridor tables, routes on the CSR graph, returns the path as (osmid, lat, lon);
+    # a corridor over the edge cap raises RouteTooLargeError before building anything.
+    nodes_df, edges_df = _line_tables()
+    monkeypatch.setattr(
+        pipeline, "load_route_tables", lambda bike_corridor, rail_corridor, graph_dir: (nodes_df, edges_df)
+    )
+    corridor = box(7.9, 47.9, 8.3, 48.1)
+    path = pipeline._route_node_path(
+        bike_corridor=corridor,
+        rail_corridor=corridor,
+        graph_dir=FIXTURE_GRAPH_DIR,
+        start_latlon=(48.0, 8.0),
+        dest_latlon=(48.0, 8.2),
+        params=DEFAULT_PARAMS,
+    )
+    assert [osmid for osmid, _lat, _lon in path] == [1, 2, 3]
+    assert all(isinstance(lat, float) and isinstance(lon, float) for _o, lat, lon in path)
+
+    monkeypatch.setattr(CorridorConfig, "MAX_ROUTE_EDGES", 2)  # line graph has 4 edges > 2
+    with pytest.raises(RouteTooLargeError, match="too large"):
+        pipeline._route_node_path(
+            bike_corridor=corridor,
+            rail_corridor=corridor,
+            graph_dir=FIXTURE_GRAPH_DIR,
+            start_latlon=(48.0, 8.0),
+            dest_latlon=(48.0, 8.2),
+            params=DEFAULT_PARAMS,
+        )
+
+
+# --- DEFAULT-params mode choice: synthetic contract + real-route e2e (folded from test_default_params) ---
+
+
+def _uses_train_path(arr, path: list[int]) -> bool:
+    """True iff the route visits a rail-station node (boards a train)."""
+    return NodeType.RAIL in route_node_types(arr=arr, path=path)
+
+
+_VERY_STEEP, _STEEP, _MILD = 400.0, 300.0, 40.0
+# (label, climb_m, rail_alternative, downhill, expect_train) — 10 synthetic scenarios.
+_MODE_CASES = [
+    ("steep uphill, train available → train", _STEEP, True, False, True),
+    ("very steep uphill, train available → train", _VERY_STEEP, True, False, True),
+    ("steep uphill, NO train → bike", _STEEP, False, False, False),
+    ("steep DOWNHILL, train available → bike", _STEEP, True, True, False),
+    ("very steep downhill, train available → bike", _VERY_STEEP, True, True, False),
+    ("mild uphill, train available → bike", _MILD, True, False, False),
+    ("mild uphill, NO train → bike", _MILD, False, False, False),
+    ("mild downhill, train available → bike", _MILD, True, True, False),
+    ("flat, train available → bike", 0.0, True, False, False),
+    ("flat, NO train → bike", 0.0, False, False, False),
+]
+
+
+@pytest.mark.parametrize(
+    ("label", "climb_m", "rail", "downhill", "expect_train"), _MODE_CASES, ids=[c[0] for c in _MODE_CASES]
+)
+def test_default_params_pick_expected_mode(
+    label: str,
+    climb_m: float,
+    rail: bool,  # noqa: FBT001
+    downhill: bool,  # noqa: FBT001
+    expect_train: bool,  # noqa: FBT001
+) -> None:
+    """With the DEFAULT params, the synthetic router bikes or trains as a sensible rider would."""
+    arr = make_hill_vs_rail_edges(climb_m=climb_m, rail_alternative=rail)
+    rg = RouteGraph.from_arrays(**arr.route_graph_args(params=DEFAULT_PARAMS))
+    source, target = (2, 1) if downhill else (1, 2)  # downhill = start at the high end
+    path = shortest_path(route_graph=rg, source_osmid=source, target_osmid=target)
+    assert _uses_train_path(arr=arr, path=path) is expect_train, f"{label}: got path {path}"
+
+
+# GIVEN ground truth (origin, destination, expect_train) — real German towns, both directions.
+_REAL_CASES = [
+    ("Baiersbronn, Germany", "Freudenstadt, Germany", True),
+    ("Freudenstadt, Germany", "Baiersbronn, Germany", False),
+    ("Freudenstadt, Germany", "Pforzheim, Germany", False),
+    ("Pforzheim, Germany", "Freudenstadt, Germany", True),
+    ("Horb am Neckar, Germany", "Freudenstadt, Germany", True),
+    ("Freudenstadt, Germany", "Horb am Neckar, Germany", False),
+    ("Freudenstadt, Germany", "Nagold, Germany", False),
+    ("Nagold, Germany", "Freudenstadt, Germany", True),
+    ("Nagold, Germany", "Calw, Germany", False),
+    ("Calw, Germany", "Nagold, Germany", False),
+    ("Bad Wildbad, Germany", "Pforzheim, Germany", False),
+    ("Pforzheim, Germany", "Bad Wildbad, Germany", True),
+    ("Calw, Germany", "Pforzheim, Germany", False),
+    ("Pforzheim, Germany", "Calw, Germany", False),
+    ("Bad Wildbad, Germany", "Simmersfeld, Germany", False),
+    ("Simmersfeld, Germany", "Bad Wildbad, Germany", False),
+]
+
+
+@pytest.mark.skipif(
+    not (GraphConfig.GRAPH_DIR / GraphConfig.META_FILENAME).exists(),
+    reason="real dataset not present in data/ (only the committed fixture is available)",
+)
+@pytest.mark.parametrize(
+    ("origin", "destination", "expect_train"),
+    _REAL_CASES,
+    ids=[f"{o.split(',')[0]}->{d.split(',')[0]}" for o, d, _ in _REAL_CASES],
+)
+def test_default_params_real_route_mode(origin: str, destination: str, expect_train: bool) -> None:  # noqa: FBT001
+    """FULL e2e: DEFAULT params, real dataset, real OSM geocoding — each route bikes or trains as given."""
+    result = pipeline.plan_route(origin=origin, destination=destination, params=DEFAULT_PARAMS)
+    assert ("train path" in result.composition.by_mode_km) is expect_train
+
+
+# --- FULL e2e against the committed Schwarzwald fixture (folded from test_e2e_fixture) --------
+
+# Two real points inside the fixture coverage (Schwarzwald, ~18 km apart, net downhill).
+_SOUTH = (48.4503, 8.4608)
+_NORTH = (48.5601, 8.3981)
+# Baiersbronn → Freudenstadt: both inside the fixture, on the same rail line ~7 km apart.
+_BAIERSBRONN = (48.5057, 8.3703)
+_FREUDENSTADT = (48.4634, 8.4111)
+
+
+def _stub_fixture_geocode(monkeypatch, start: tuple[float, float], end: tuple[float, float]) -> None:
+    """Stub ONLY the network geocoder; everything else runs for real against the fixture."""
+    monkeypatch.setattr(pipeline, "make_geocode_fn", lambda: lambda place: None)
+    monkeypatch.setattr(
+        pipeline, "geocode_endpoint", lambda place, label, geocode_fn: start if label == "Start" else end
+    )
+
+
+def _plan_fixture(monkeypatch, tmp_path, start, end, **overrides):
+    _stub_fixture_geocode(monkeypatch=monkeypatch, start=start, end=end)
+    monkeypatch.setattr(
+        pipeline, "route_output_paths", lambda origin, destination, params: (tmp_path / "r.gpx", tmp_path / "r.png")
+    )
+    return pipeline.plan_route(
+        origin="Start", destination="End", params=params(**overrides), graph_dir=FIXTURE_GRAPH_DIR
+    )
+
+
+def _rail_ride_count(track) -> int:  # noqa: ANN001 — Track from pipeline
+    """Number of maximal contiguous rail-mode runs (= distinct train rides) in a track."""
+    rides = 0
+    prev_rail = False
+    for point in track.points:
+        is_rail = point.mode == Mode.RAIL
+        if is_rail and not prev_rail:
+            rides += 1
+        prev_rail = is_rail
+    return rides
+
+
+def test_plan_route_e2e_real_route_from_fixture(tmp_path: Path, monkeypatch):
+    """Full pipeline on the real fixture yields a plausible bike route + real artifacts."""
+    result = _plan_fixture(monkeypatch=monkeypatch, tmp_path=tmp_path, start=_SOUTH, end=_NORTH)
+    track = result.track
+    assert result.gpx_path.exists() and result.gpx_path.stat().st_size > 0
+    assert result.png_path.exists() and result.png_path.stat().st_size > 0
+    assert len(result.bike_legs) >= 1
+    assert all(leg.url.startswith("https://www.google.com/maps/dir/?api=1") for leg in result.bike_legs)
+    assert 8.0 < track.total.distance_km < 60.0
+    assert track.total.duration_min > 0
+    assert track.total.ascent_m > 0 and track.total.descent_m > 0
+    assert track.bike.distance_km <= track.total.distance_km
+    assert len(track.points) > 50  # densified along the real 3D polyline
+    assert all(p.elevation_m > 0 for p in track.points)  # baked elevations, no DEM at inference
+    assert sum(result.composition.by_surface_km.values()) == pytest.approx(sum(result.composition.by_road_km.values()))
+    assert result.composition.by_mode_km
+
+
+def test_plan_route_e2e_flat_hater_still_routes(tmp_path: Path, monkeypatch):
+    """A high uphill penalty must still produce a valid (longer/flatter) route."""
+    result = _plan_fixture(
+        monkeypatch=monkeypatch, tmp_path=tmp_path, start=_SOUTH, end=_NORTH, extra_km_per_uphill_100m=50.0
+    )
+    assert result.track.total.distance_km > 0
+    assert result.gpx_path.exists()
+
+
+def test_plan_route_e2e_one_train_two_bike_legs(tmp_path: Path, monkeypatch):
+    """With rail made cheap, the same-line pair rides exactly ONE train, split into TWO bike legs."""
+    result = _plan_fixture(
+        monkeypatch=monkeypatch,
+        tmp_path=tmp_path,
+        start=_BAIERSBRONN,
+        end=_FREUDENSTADT,
+        extra_km_per_boarding=0.2,
+        extra_km_per_rail_km=0.05,
+    )
+    assert _rail_ride_count(track=result.track) == 1
+    assert result.composition.by_mode_km["train path"] > 0
+    assert len(result.bike_legs) == 2
+    assert all(leg.url.startswith("https://www.google.com/maps/dir/?api=1") for leg in result.bike_legs)
+    assert result.bike_legs[0].from_place == "Start"  # _plan_fixture stubs origin="Start"
+    assert result.bike_legs[1].to_place == "End"
+    assert result.bike_legs[0].to_place == result.rail_legs[0].board.name_or_placeholder
+    assert result.bike_legs[1].from_place == result.rail_legs[0].alight.name_or_placeholder
+    assert result.composition.by_mode_km["bike route"] > 0
+    assert "station" not in result.composition.by_mode_km
+
+
+def test_plan_route_e2e_default_sliders_train_uphill_bike_downhill(tmp_path: Path, monkeypatch):
+    """At DEFAULT sliders the tuned rider trains UP the 192 m climb but bikes back DOWN it."""
+    uphill = _plan_fixture(monkeypatch=monkeypatch, tmp_path=tmp_path, start=_BAIERSBRONN, end=_FREUDENSTADT)
+    assert _rail_ride_count(track=uphill.track) == 1
+    assert uphill.composition.by_mode_km["train path"] > 0
+
+    downhill = _plan_fixture(monkeypatch=monkeypatch, tmp_path=tmp_path, start=_FREUDENSTADT, end=_BAIERSBRONN)
+    assert _rail_ride_count(track=downhill.track) == 0
+    assert "train path" not in downhill.composition.by_mode_km
+    assert len(downhill.bike_legs) == 1
+
+
+def test_plan_route_e2e_out_of_coverage_raises(tmp_path: Path, monkeypatch):
+    """Endpoints outside the fixture bbox fail loud (OutOfCoverageError), not silently."""
+    _stub_fixture_geocode(monkeypatch=monkeypatch, start=(52.5, 13.4), end=(52.6, 13.5))  # Berlin — outside fixture
+    with pytest.raises(OutOfCoverageError, match="coverage"):
+        pipeline.plan_route(origin="Start", destination="End", params=params(), graph_dir=FIXTURE_GRAPH_DIR)
