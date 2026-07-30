@@ -13,13 +13,13 @@ time is NOT stored — derived from length_m + rail constants at route time.
 import json
 import logging
 import math
-from concurrent.futures import ThreadPoolExecutor, as_completed
+import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 
 import pandas as pd
-from huggingface_hub import hf_hub_download, list_repo_files
-from huggingface_hub.utils.tqdm import disable_progress_bars
+from huggingface_hub import list_repo_files, snapshot_download
 from shapely import covers, from_wkt, points
 from shapely.geometry import Polygon, box
 
@@ -31,6 +31,8 @@ from bike_router.core.progress import ProgressFn, null_progress
 from bike_router.core.route_path import RouteEdge, RouteNode, RoutePath
 
 logger = logging.getLogger(__name__)
+
+_DOWNLOAD_POLL_S = 0.5  # how often the main thread samples on-disk file count for progress
 
 _NODE_COLS = ["osmid", "lat", "lon", "elevation_m", "node_type", "station_name"]
 _EDGE_COLS = [
@@ -91,8 +93,8 @@ def _intersecting_tiles(*, corridor: Polygon, tile_deg: float) -> list[tuple[int
 def download_graph_from_hf(target_dir: Path = GraphConfig.GRAPH_DIR, progress: ProgressFn = null_progress) -> Path:
     """Download the prebuilt DACH graph artifact from Hugging Face if missing.
 
-    Lists the repo files, downloads them concurrently (``HF_MAX_WORKERS``) reporting
-    ``progress(done, total)`` on the main thread as each finishes. Idempotent via meta.json.
+    snapshot_download (HF's xet-coordinated fetch) runs in a worker thread while the main
+    thread polls the on-disk file count for progress. Idempotent via meta.json.
     """
     meta_path = target_dir / GraphConfig.META_FILENAME
     if meta_path.exists():
@@ -101,23 +103,22 @@ def download_graph_from_hf(target_dir: Path = GraphConfig.GRAPH_DIR, progress: P
     target_dir.mkdir(parents=True, exist_ok=True)
     logger.info(f"Downloading DACH graph from HF {GraphConfig.HF_REPO_ID} …")
 
-    files = list_repo_files(repo_id=GraphConfig.HF_REPO_ID, repo_type="dataset")
-    total = len(files)
-    # disable_progress_bars() as a CM silences HF's own per-file byte bars (auto-restored); we own progress.
-    with disable_progress_bars(), ThreadPoolExecutor(max_workers=GraphConfig.HF_MAX_WORKERS) as pool:
-        futures = [
-            pool.submit(
-                hf_hub_download,
-                repo_id=GraphConfig.HF_REPO_ID,
-                repo_type="dataset",
-                filename=name,
-                local_dir=str(target_dir),
-            )
-            for name in files
-        ]
-        for done, future in enumerate(as_completed(futures), start=1):
-            future.result()  # re-raise any download failure
+    repo_files = list_repo_files(repo_id=GraphConfig.HF_REPO_ID, repo_type="dataset")
+    total = len(repo_files)
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        future = pool.submit(
+            snapshot_download,
+            repo_id=GraphConfig.HF_REPO_ID,
+            repo_type="dataset",
+            local_dir=str(target_dir),
+            max_workers=GraphConfig.HF_MAX_WORKERS,
+        )
+        while not future.done():
+            done = sum(1 for name in repo_files if (target_dir / name).exists())  # real files, not .cache meta
             progress(done, total)  # main thread: safe for st.progress
+            time.sleep(_DOWNLOAD_POLL_S)
+        future.result()  # re-raise any download failure
+    progress(total, total)
     assert meta_path.exists(), "download did not produce meta.json"
     return target_dir
 

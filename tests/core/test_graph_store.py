@@ -5,6 +5,7 @@ One test_<fn> per production symbol (exact-name mirror). Reads the committed FIX
 used to also cover now live in tests/preprocessing/test_graph_writer.py.
 """
 
+import time
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -238,40 +239,41 @@ def test_snap_to_node():
 
 
 def test_download_graph_from_hf(tmp_path: Path, monkeypatch):
-    # Idempotent: meta.json present → skipped, no network. When missing, it lists the repo files and
-    # downloads each concurrently, reporting progress(done, total) from the main thread (safe for
-    # st.progress). Any per-file failure propagates.
+    # Idempotent: meta.json present → skipped, no network. When missing, it runs snapshot_download
+    # (HF's xet-coordinated fetch) and reports progress from the on-disk file count, ending at
+    # (total, total) on the main thread. A download failure propagates.
     present = tmp_path / "present"
     present.mkdir()
     (present / GraphConfig.META_FILENAME).write_text("{}")
     called = MagicMock()
-    monkeypatch.setattr(graph_store, "list_repo_files", called)
+    monkeypatch.setattr(graph_store, "snapshot_download", called)
     assert download_graph_from_hf(target_dir=present) == present
     called.assert_not_called()  # already present → no network
 
     fresh = tmp_path / "fresh"
     repo_files = ["meta.json", "nodes/tile_0_0.parquet", "edges/tile_0_0.parquet"]
     monkeypatch.setattr(graph_store, "list_repo_files", lambda **_kwargs: repo_files)
+    monkeypatch.setattr(graph_store, "_DOWNLOAD_POLL_S", 0.001)  # fast poll so the loop body runs
 
-    dl_args: list[str] = []
+    def _fake_snapshot_download(*, repo_id, repo_type, local_dir, max_workers):
+        # Write files with a tiny gap so the main-thread poll loop samples a partial on-disk count.
+        for name in repo_files:
+            Path(local_dir, name).parent.mkdir(parents=True, exist_ok=True)
+            Path(local_dir, name).write_text("{}")
+            time.sleep(0.005)
 
-    def _fake_hf_hub_download(*, repo_id, repo_type, filename, local_dir):
-        dl_args.append(filename)
-        Path(local_dir, filename).parent.mkdir(parents=True, exist_ok=True)
-        Path(local_dir, filename).write_text("{}")
-
-    monkeypatch.setattr(graph_store, "hf_hub_download", _fake_hf_hub_download)
+    monkeypatch.setattr(graph_store, "snapshot_download", _fake_snapshot_download)
     seen: list[tuple[int, int]] = []
     result = download_graph_from_hf(target_dir=fresh, progress=lambda d, t: seen.append((d, t)))
     assert result == fresh and (fresh / GraphConfig.META_FILENAME).exists()
-    assert set(dl_args) == set(repo_files)  # every file downloaded
-    assert len(seen) == 3 and seen[-1] == (3, 3)  # progress reaches (total, total)
-    assert [d for d, _t in seen] == [1, 2, 3] and all(t == 3 for _d, t in seen)  # monotonic, correct total
+    assert seen[-1] == (3, 3)  # progress ends at (total, total)
+    assert all(0 <= d <= t == 3 for d, t in seen)  # every sample within [0, total], correct total
+    assert [d for d, _t in seen] == sorted(d for d, _t in seen)  # monotonic (disk count only grows)
 
     def _boom(**_kwargs):
         raise OSError("network died mid-download")
 
-    monkeypatch.setattr(graph_store, "hf_hub_download", _boom)
+    monkeypatch.setattr(graph_store, "snapshot_download", _boom)
     with pytest.raises(OSError, match="network died"):
         download_graph_from_hf(target_dir=tmp_path / "boom")
 
