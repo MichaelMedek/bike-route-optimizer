@@ -166,7 +166,14 @@ def nearest_place_name(*, lat: float, lon: float, http_get: HttpGetter = _defaul
     (e.g. "Baiersbronn"), never a full address. Any network/parse error or empty result returns
     None (caller drops the label) so a weak connection never crashes. Names the gmaps waypoints.
     """
-    params: HttpParams = {"lat": lat, "lon": lon, "lang": PhotonConfig.LANG, "osm_tag": PhotonConfig.PLACE_OSM_TAG}
+    params: HttpParams = {
+        "lat": lat,
+        "lon": lon,
+        "lang": PhotonConfig.LANG,
+        "osm_tag": PhotonConfig.PLACE_OSM_TAG,
+        "radius": PhotonConfig.REVERSE_RADIUS_KM,  # widen so a waypoint far from any village still resolves one
+        "limit": 1,
+    }
     reverse_url = PhotonConfig.BASE_URL.removesuffix("/api") + "/reverse"
     try:
         payload = http_get(url=reverse_url, params=params, timeout=PhotonConfig.TIMEOUT_S)

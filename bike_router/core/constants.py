@@ -411,6 +411,7 @@ class PhotonConfig:
     LIMIT = 5
     PLACE_OSM_TAG = "place"  # settlements, not POIs
     TIMEOUT_S = 3.0
+    REVERSE_RADIUS_KM = 10.0  # reverse search so a waypoint far from any village still names one
 
 
 class GpxConfig:
@@ -458,14 +459,9 @@ class WebMapConfig:
     START_COLOR = Palette.hex_to_rgb(hex_color=Palette.START)  # blue (start marker)
     END_COLOR = Palette.hex_to_rgb(hex_color=Palette.END)  # cyan (destination marker)
     RAIL_COLOR = Palette.hex_to_rgb(hex_color=Palette.RAIL)  # purple — the train ribbon + donut only
-    # Composition-donut mode display: two buckets only — pedalled vs train. Station
-    # access-hops are negligible and fold into "bike route".
-    # The ribbon/PNG use segment_color (condition-based), NOT this map.
+    # Composition "by mode" display labels: two buckets only — pedalled vs train (station access-hops
+    # fold into "bike route"). The label→colour map lives in core/composition (MODE_COLORS, one source).
     MODE_DONUT_LABELS = {Mode.BIKE: "bike route", Mode.RAIL: "train path"}
-    MODE_DONUT_COLORS = {
-        "bike route": Palette.hex_to_rgb(hex_color=Palette.START),  # blue
-        "train path": RAIL_COLOR,  # purple
-    }
     # ONE colour for EVERY map marker (start, end, stations, waypoints) — the start/end blue.
     MARKER_COLOR = Palette.hex_to_rgb(hex_color=Palette.START)  # blue — all markers
     ENDPOINT_RADIUS_M = 70.0  # start/end: slightly bigger than the intermediate markers
@@ -484,35 +480,3 @@ class WebMapConfig:
     TERRAIN_TILES_URL = "https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png"
     TERRAIN_ELEVATION_DECODER = {"rScaler": 256, "gScaler": 1, "bScaler": 1 / 256, "offset": -32768}
     TEXTURE_TILES_URL = "https://a.tile.opentopomap.org/{z}/{x}/{y}.png"
-
-
-# --- Load-time invariants: fail loud on a bad edit ---------------------------
-assert SurfaceConfig.SURFACE_TIER, "SURFACE_TIER must not be empty"
-assert set(SurfaceConfig.SURFACE_TIER.values()) <= {0, 1, 2}, "surface tiers must be 0, 1, or 2"
-assert SurfaceConfig.DEFAULT_TIER in set(SurfaceConfig.SURFACE_TIER.values()), (
-    "surface DEFAULT_TIER must be a real tier"
-)
-assert RoadConfig.ROAD_TIER, "ROAD_TIER must not be empty"
-assert set(RoadConfig.ROAD_TIER.values()) <= {0, 1}, "road tiers must be 0 or 1"
-assert RoadConfig.DEFAULT_TIER in {0, 1}, "road DEFAULT_TIER must be 0 or 1"
-# labels + speeds must cover EVERY surface/road tier that exists (single source: the tier map)
-assert set(SurfaceConfig.TIER_LABEL_COLORS) == set(SurfaceConfig.SURFACE_TIER.values()), "surface labels ≠ tiers"
-assert set(RoadConfig.TIER_LABEL_COLORS) == set(RoadConfig.ROAD_TIER.values()), "road labels ≠ tiers"
-assert GmapsConfig.N_WAYPOINTS >= 2, "need at least origin + destination"
-assert RoutingDefaults.MAX_EXTRA_KM > 0, "MAX_EXTRA_KM must be positive"
-assert PARAM_SPECS, "PARAM_SPECS must not be empty"
-assert all(0 <= s.default <= RoutingDefaults.MAX_EXTRA_KM for s in PARAM_SPECS), "param default out of [0, MAX]"
-assert {s.field for s in PARAM_SPECS} == set(RoutingParams.__dataclass_fields__), "PARAM_SPECS ≠ RoutingParams fields"
-assert set(SpeedConfig.BASE_KMH_BY_TIER) == set(SurfaceConfig.SURFACE_TIER.values()), "need a base speed per tier"
-assert all(speed > SpeedConfig.WALK_KMH for speed in SpeedConfig.BASE_KMH_BY_TIER.values()), "base speeds > walk"
-assert SpeedConfig.WALK_GRADE > 0, "WALK_GRADE must be a positive uphill grade"
-assert 0 < CorridorConfig.MIN_TRIP_KM < CorridorConfig.MAX_TRIP_KM, "trip bounds must be 0 < min < max"
-assert CorridorConfig.BIKE_HALF_WIDTH_KM > 0 and CorridorConfig.RAIL_HALF_WIDTH_KM > 0, "half-widths must be positive"
-assert CorridorConfig.BIKE_EXTEND_KM >= 0 and CorridorConfig.RAIL_EXTEND_KM >= 0, "corridor extends must be >= 0"
-assert CorridorConfig.RAIL_HALF_WIDTH_KM > CorridorConfig.BIKE_HALF_WIDTH_KM, "rail tube must be wider than bike tube"
-assert max(SpeedConfig.BASE_KMH_BY_TIER.values()) < RailConfig.RAIL_SPEED_KMH, "rail must be faster than any bike leg"
-assert RailConfig.BOARDING_WAIT_S > 0 and RailConfig.STATION_RADIUS_M > 0, "rail waits/radius must be positive"
-assert RailConfig.STATION_MAX_ENTRANCES >= 1, "must declare at least one entrance per station"
-assert GraphConfig.CONSOLIDATION_TOLERANCE_M >= 0 and GraphConfig.TILE_DEG > 0, "graph tolerance/tile must be sane"
-assert set(WebMapConfig.MODE_DONUT_COLORS) == set(WebMapConfig.MODE_DONUT_LABELS.values()), "mode donut keys ≠ labels"
-assert PhotonConfig.LIMIT > 0 and PhotonConfig.TIMEOUT_S > 0, "Photon limit/timeout must be positive"

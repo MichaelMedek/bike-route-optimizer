@@ -234,7 +234,7 @@ def plan_route(
     # Expand to the full real 2D polyline; elevation stays LINEAR node-to-node (edge_vertices_3d),
     # so the GPX, 3D ribbon, and elevation profile all read the SAME elevation the optimiser + stats use.
     track = densify_track(route=route, track=track)
-    composition = route_composition(route=route)
+    composition = route_composition(track=track)
     logger.info(
         f"total {track.total.distance_km:.1f} km / {track.total.duration_min:.0f} min, "
         f"bike {track.bike.distance_km:.1f} km, +{track.bike.ascent_m:.0f} m / -{track.bike.descent_m:.0f} m"

@@ -11,7 +11,7 @@ import pytest
 import requests
 from geopy.exc import GeocoderServiceError, GeocoderUnavailable
 
-from bike_router.core.constants import NominatimConfig
+from bike_router.core.constants import NominatimConfig, PhotonConfig
 from bike_router.core.errors import BikeRouterError, GeocodeConnectionError, GeocodeNotFoundError
 from bike_router.core.geocoding import (
     _GEOCODE_CACHE,
@@ -176,6 +176,7 @@ def test_nearest_place_name():
     ok = MagicMock(return_value=payload)
     assert nearest_place_name(lat=48.5, lon=8.37, http_get=ok) == "Baiersbronn"
     assert ok.call_args.kwargs["url"].endswith("/reverse")  # reverse endpoint, not /api
+    assert ok.call_args.kwargs["params"]["radius"] == PhotonConfig.REVERSE_RADIUS_KM  # widened search radius
 
     assert nearest_place_name(lat=0.0, lon=0.0, http_get=MagicMock(return_value={"features": []})) is None
     blank = MagicMock(return_value={"features": [_photon_feature(name="", lon=0.0, lat=0.0)]})

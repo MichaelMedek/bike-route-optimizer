@@ -63,6 +63,7 @@ class TestRailConfig:
     def test_speed_wait_and_tags(self):
         assert RailConfig.RAIL_SPEED_KMH > 0 and RailConfig.BOARDING_WAIT_S > 0
         assert RailConfig.STATION_RADIUS_M > 0 and RailConfig.STATION_MAX_ENTRANCES >= 1
+        assert max(SpeedConfig.BASE_KMH_BY_TIER.values()) < RailConfig.RAIL_SPEED_KMH  # rail beats any bike leg
         assert "rail" in RailConfig.RAIL_TAGS and "station" in RailConfig.STATION_TAGS
 
 
@@ -80,6 +81,8 @@ class TestGeoConfig:
 class TestCorridorConfig:
     def test_rail_tube_wider_and_trip_bounds_ordered(self):
         assert CorridorConfig.RAIL_HALF_WIDTH_KM > CorridorConfig.BIKE_HALF_WIDTH_KM
+        assert CorridorConfig.BIKE_HALF_WIDTH_KM > 0 and CorridorConfig.RAIL_HALF_WIDTH_KM > 0
+        assert CorridorConfig.BIKE_EXTEND_KM >= 0 and CorridorConfig.RAIL_EXTEND_KM >= 0
         assert 0 < CorridorConfig.MIN_TRIP_KM < CorridorConfig.MAX_TRIP_KM
         assert CorridorConfig.MAX_ROUTE_EDGES > 0
 
@@ -96,6 +99,8 @@ class TestPalette:
 
 class TestSurfaceConfig:
     def test_tiers_labels_and_default(self):
+        assert SurfaceConfig.SURFACE_TIER  # not empty
+        assert set(SurfaceConfig.SURFACE_TIER.values()) <= {0, 1, 2}
         assert SurfaceConfig.SURFACE_TIER["asphalt"] == 0 and SurfaceConfig.SURFACE_TIER["gravel"] == 1
         assert SurfaceConfig.SURFACE_TIER["ground"] == 2
         assert set(SurfaceConfig.TIER_LABEL_COLORS) == set(SurfaceConfig.SURFACE_TIER.values())
@@ -104,7 +109,10 @@ class TestSurfaceConfig:
 
 class TestRoadConfig:
     def test_quiet_vs_main_and_labels(self):
+        assert RoadConfig.ROAD_TIER  # not empty
+        assert set(RoadConfig.ROAD_TIER.values()) <= {0, 1}
         assert RoadConfig.ROAD_TIER["residential"] == 0 and RoadConfig.ROAD_TIER["primary"] == 1
+        assert RoadConfig.DEFAULT_TIER in {0, 1}
         assert set(RoadConfig.TIER_LABEL_COLORS) == set(RoadConfig.ROAD_TIER.values())
 
 
@@ -115,6 +123,8 @@ class TestRoutingDefaults:
 
 class TestRoutingParamSpec:
     def test_spec_fields_present(self):
+        assert PARAM_SPECS  # not empty
+        assert all(0 <= s.default <= RoutingDefaults.MAX_EXTRA_KM for s in PARAM_SPECS)
         spec = PARAM_SPECS[0]
         assert isinstance(spec, RoutingParamSpec)
         assert spec.field and spec.label and spec.help and 0 <= spec.default <= RoutingDefaults.MAX_EXTRA_KM
@@ -195,7 +205,8 @@ class TestSanityConfig:
 
 
 class TestWebMapConfig:
-    def test_mode_donut_keys_match_labels_and_colours_derive_from_palette(self):
-        assert set(WebMapConfig.MODE_DONUT_COLORS) == set(WebMapConfig.MODE_DONUT_LABELS.values())
+    def test_mode_labels_and_rail_colour_derive_from_palette(self):
+        # The label→colour map now lives in core/composition (MODE_COLORS); here just labels + colours.
+        assert set(WebMapConfig.MODE_DONUT_LABELS.values()) == {"bike route", "train path"}
         assert Palette.hex_to_rgb(hex_color=Palette.RAIL) == WebMapConfig.RAIL_COLOR
         assert WebMapConfig.MAP_HEIGHT_PX > 0

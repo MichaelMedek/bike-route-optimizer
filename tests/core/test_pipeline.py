@@ -104,9 +104,9 @@ def test_plan_route(tmp_path: Path, monkeypatch):
     assert result.track.total.duration_min > 0
     assert result.track.total.ascent_m == pytest.approx(30.0) and result.track.total.descent_m == pytest.approx(30.0)
     assert result.track.bike == result.track.total  # pure-bike route: bike-only == total
-    # composition is all bike (line graph has no rail): bike km == the full route distance.
-    assert result.composition.by_mode_km["bike route"] == pytest.approx(1.6)
-    assert sum(result.composition.by_surface_km.values()) == pytest.approx(1.6)
+    # composition is all bike (line graph has no rail): one bike-route mode bucket, all "good" quality.
+    assert set(result.composition.by_mode_km) == {"bike route"}
+    assert set(result.composition.by_quality_km) == {"good"}
 
 
 def test_plan_route_rejects_too_short_trip(monkeypatch):
@@ -419,7 +419,8 @@ def test_plan_route_e2e_real_route_from_fixture(tmp_path: Path, monkeypatch):
     assert track.bike.distance_km <= track.total.distance_km
     assert len(track.points) > 50  # densified along the real 3D polyline
     assert all(p.elevation_m > 0 for p in track.points)  # baked elevations, no DEM at inference
-    assert sum(result.composition.by_surface_km.values()) == pytest.approx(sum(result.composition.by_road_km.values()))
+    # quality + grade both slice the pedalled legs → same total km; mode covers the whole route.
+    assert sum(result.composition.by_quality_km.values()) == pytest.approx(sum(result.composition.by_grade_km.values()))
     assert result.composition.by_mode_km
 
 

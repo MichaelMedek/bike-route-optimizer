@@ -15,15 +15,14 @@ import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 
-from bike_router.core.constants import Mode, Palette, WebMapConfig
+from bike_router.core.composition import MODE_COLORS, composition_rows
+from bike_router.core.constants import Mode, WebMapConfig
 from bike_router.core.geo import haversine_vec
 from bike_router.core.simplify import place_label  # single source; re-exported for the app shell
 from bike_router.core.track import (
     RouteStats,
     Track,
     TrackPoint,
-    classify_condition,
-    classify_grade,
     cumulative_km,
     grade_color,
     segment_color,
@@ -38,50 +37,6 @@ __all__ = ["place_label"]  # noqa: F822 — re-export so app_webmap imports it f
 def _hex(rgb: tuple[int, int, int]) -> str:
     """RGB tuple → ``#rrggbb`` hex (Altair wants hex/CSS colours)."""
     return "#{:02x}{:02x}{:02x}".format(*rgb)
-
-
-# Donut label→colour maps, derived from single sources (no re-typed labels): the road-QUALITY
-# and road-GRADE scales come from Palette; the mode donut from WebMapConfig.
-QUALITY_DONUT_COLORS = {label: Palette.CONDITION_COLORS[label] for label in ("good", "unpaved", "main road")}
-GRADE_DONUT_COLORS = {label: Palette.GRADE_COLORS[label] for label in ("flat", "uphill", "downhill")}
-MODE_DONUT_COLORS = {label: _hex(rgb=rgb) for label, rgb in WebMapConfig.MODE_DONUT_COLORS.items()}
-
-
-def _bike_km_by(track: Track, bucket_of: "Callable[[TrackPoint], str]") -> dict[str, float]:
-    """Bike km per bucket, ``bucket_of`` mapping each pedalled point to its label.
-
-    Each point is one edge's far end; its leg is the great-circle gap from the prior point
-    (vectorized). Rail skipped. One loop serves both QUALITY and GRADE donuts (no duplication).
-    """
-    lats = np.array([p.lat for p in track.points], dtype=np.float64)
-    lons = np.array([p.lon for p in track.points], dtype=np.float64)
-    leg_km = haversine_vec(lat_a=lats[:-1], lon_a=lons[:-1], lat_b=lats[1:], lon_b=lons[1:]) / 1000.0
-    by_km: dict[str, float] = {}
-    for point, km in zip(track.points[1:], leg_km, strict=True):
-        if point.mode != str(Mode.BIKE):
-            continue
-        bucket = bucket_of(point)
-        by_km[bucket] = by_km.get(bucket, 0.0) + float(km)
-    return by_km
-
-
-def condition_km(track: Track) -> dict[str, float]:
-    """Bike km per road-QUALITY bucket (good / unpaved / main road) — the unified donut source.
-
-    Bucketed via classify_condition; "main road" and "main road + unpaved" fold into "main
-    road" (the dominant hazard).
-    """
-
-    def _bucket(p: TrackPoint) -> str:
-        condition = classify_condition(mode=p.mode, surface_bad=p.surface_bad, road_bad=p.road_bad)
-        return "main road" if condition in ("main road", "main road + unpaved") else condition
-
-    return _bike_km_by(track, _bucket)
-
-
-def grade_km(track: Track) -> dict[str, float]:
-    """Bike km per road-GRADE bucket (flat / uphill / downhill) via classify_grade (one source)."""
-    return _bike_km_by(track, lambda p: classify_grade(mode=p.mode, grade=p.grade))
 
 
 def composition_donut(title: str, by_km: dict[str, float], colors: dict[str, str]) -> alt.Chart:
@@ -143,7 +98,7 @@ def elevation_profile_chart(track: Track, markers: list[tuple[float, float, str]
                     x=dists[run_start:end],
                     y=elevs[run_start:end],
                     mode="lines",
-                    line={"color": MODE_DONUT_COLORS[label], "width": 2},
+                    line={"color": MODE_COLORS[label], "width": 2},
                     name=label,
                     legendgroup=label,
                     showlegend=label not in seen_legend,  # one legend entry per mode
@@ -432,17 +387,11 @@ def output_stat_rows(result: "RouteResult") -> tuple[tuple[str, RouteStats, str]
 
 
 def output_donuts(result: "RouteResult") -> tuple[tuple[str, dict[str, float], dict[str, str]], ...]:
-    """(title, km-breakdown, colours) for the three composition donuts — the tested spec.
+    """The three composition donuts — delegates to core composition_rows (the ONE shared source).
 
-    Road-QUALITY (good/unpaved/main), road-GRADE (flat/uphill/downhill), and by-mode — each
-    from its single-source km function, so app_webmap merely renders what this returns.
+    Quality / grade / mode, identical to what the PNG overlay + CLI print, so they never drift.
     """
-    track = result.track
-    return (
-        ("By quality", condition_km(track=track), QUALITY_DONUT_COLORS),
-        ("By grade", grade_km(track=track), GRADE_DONUT_COLORS),
-        ("By mode", result.composition.by_mode_km, MODE_DONUT_COLORS),
-    )
+    return composition_rows(comp=result.composition)
 
 
 def profile_markers(

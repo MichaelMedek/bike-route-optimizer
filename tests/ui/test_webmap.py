@@ -10,16 +10,15 @@ from types import SimpleNamespace
 
 import pytest
 
+from bike_router.core.composition import MODE_COLORS
 from bike_router.core.constants import Mode, Palette, WebMapConfig
 from bike_router.core.geo import haversine_distance_m
 from bike_router.core.track import build_track
 from bike_router.ui.webmap import (
     GRADE_SCALE,
-    MODE_DONUT_COLORS,
     QUALITY_SCALE,
     RibbonSegment,
     ViewState,
-    _bike_km_by,
     _hex,
     _point_color,
     _segment_tooltip,
@@ -27,11 +26,9 @@ from bike_router.ui.webmap import (
     _waypoint_label,
     composition_donut,
     compute_gate,
-    condition_km,
     default_view_state,
     elevation_profile_chart,
     endpoint_labels,
-    grade_km,
     map_remount_key,
     map_waypoint_markers,
     output_donuts,
@@ -65,37 +62,6 @@ def test_hex():
     assert _hex(rgb=(0, 0, 0)) == "#000000"
 
 
-def test_bike_km_by():
-    # Bike km per bucket via bucket_of; each point is one edge's far end, its km the gap from the
-    # previous point; rail/station points are skipped. A constant bucket sums the whole pedalled span.
-    track = _line_track()
-    lats = [p.lat for p in track.points]
-    lons = [p.lon for p in track.points]
-    expected = sum(
-        haversine_distance_m(lat_a=lats[i], lon_a=lons[i], lat_b=lats[i + 1], lon_b=lons[i + 1]) / 1000.0
-        for i in range(len(track.points) - 1)
-    )
-    by = _bike_km_by(track, lambda _p: "all")
-    assert by == {"all": pytest.approx(expected)}  # one bucket = the whole pedalled great-circle span
-    # a train route: only the pedalled points contribute (this route has none) → empty
-    assert _bike_km_by(build_track(route=make_rail_route()), lambda _p: "all") == {}
-
-
-def test_condition_km():
-    # Bike km per road-QUALITY bucket via classify_condition; the all-good line route → one "good".
-    km = condition_km(track=_line_track())
-    assert set(km) == {"good"} and km["good"] > 0
-
-
-def test_grade_km():
-    # Bike km per road-GRADE bucket; the line route climbs then descends → both uphill and downhill,
-    # and the grade buckets sum to the SAME pedalled total as the quality buckets (one shared source).
-    track = _line_track()
-    km = grade_km(track=track)
-    assert "uphill" in km and "downhill" in km
-    assert sum(km.values()) == pytest.approx(sum(condition_km(track=track).values()))
-
-
 def test_composition_donut():
     # A small Altair donut of a km breakdown; the colour domain is exactly the given labels; an
     # empty breakdown fails loud.
@@ -120,7 +86,7 @@ def test_elevation_profile_chart():
     assert len(fig.data) == 1  # single contiguous bike run
     trace = fig.data[0]
     assert trace.name == WebMapConfig.MODE_DONUT_LABELS[Mode.BIKE]
-    assert trace.line.color == MODE_DONUT_COLORS[WebMapConfig.MODE_DONUT_LABELS[Mode.BIKE]]
+    assert trace.line.color == MODE_COLORS[WebMapConfig.MODE_DONUT_LABELS[Mode.BIKE]]  # SAME as the "Mode" donut
     assert max(trace.y) == pytest.approx(130.0) and min(trace.y) == pytest.approx(100.0)
     assert trace.x[0] == pytest.approx(0.0) and trace.x[-1] > 0  # cumulative distance
     lo, hi = fig.layout.yaxis.range
@@ -313,11 +279,13 @@ def test_output_stat_rows():
 
 
 def test_output_donuts():
-    # Three donuts (By quality / By grade / By mode), each from its single-source km function.
-    result = SimpleNamespace(track=_line_track(), composition=SimpleNamespace(by_mode_km={"bike route": 1.6}))
+    # Delegates to core composition_rows → the THREE rows (Quality/Grade/Mode) the PNG + CLI also use.
+    from bike_router.core.composition import route_composition
+
+    result = SimpleNamespace(composition=route_composition(track=_line_track()))
     donuts = output_donuts(result=result)
-    assert [title for title, _km, _colors in donuts] == ["By quality", "By grade", "By mode"]
-    assert donuts[2][1] == {"bike route": 1.6}  # by-mode reads the route composition
+    assert [title for title, _km, _colors in donuts] == ["Quality", "Grade", "Mode"]
+    assert "bike route" in donuts[2][1]  # the all-bike line route's mode bucket
 
 
 def test_profile_markers():
