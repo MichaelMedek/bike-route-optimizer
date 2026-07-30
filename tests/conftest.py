@@ -11,6 +11,9 @@ import numpy as np
 import pandas as pd
 import pytest
 
+# Import the two entry-point shells ONCE so coverage MEASURES them
+import app_webmap  # noqa: E402, F401
+import bike_route  # noqa: E402, F401
 from bike_router.core.constants import PARAM_SPECS, PROJECT_ROOT, GeoConfig, Mode, NodeType, RoutingParams
 from bike_router.core.cost import edge_cost_array
 from bike_router.core.geo import haversine_distance_m
