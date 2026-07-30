@@ -3,12 +3,12 @@
 -r requirements.txt
 
 # OSM read + graph construction
-osmnx>=2.0.0  # projection + intersection consolidation (build-time graph simplification)
-networkx>=3.0  # the build-time MultiDiGraph representation (osmnx's graph type)
-pyrosm>=0.6.0  # fast local .osm.pbf reader for the offline country-graph builder
-geopandas>=0.14.0  # GeoDataFrames from pyrosm; node/edge tables
-scikit-learn>=1.3.0  # osmnx.distance.nearest_nodes needs it for unprojected graphs
-pyproj>=3.6.0  # UTM projection for metric consolidation
+osmnx>=2.0.0  # BUILD: projection + intersection consolidation
+networkx>=3.0  # BUILD: the build-time MultiDiGraph representation
+pyrosm>=0.6.0  # BUILD: fast local .osm.pbf reader
+geopandas>=0.14.0  # BUILD: GeoDataFrames from pyrosm ways
+scikit-learn>=1.3.0  # BUILD: osmnx nearest_nodes on unprojected graphs
+pyproj>=3.6.0  # BUILD: UTM projection for metric consolidation
 
 # DEM elevation sampling
-rasterio>=1.3.0  # read the cropped EuroDEM GeoTIFF, sample node/vertex elevations
+rasterio>=1.3.0  # BUILD: read cropped EuroDEM, sample elevations

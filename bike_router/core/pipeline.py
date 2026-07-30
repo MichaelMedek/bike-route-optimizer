@@ -15,7 +15,12 @@ from bike_router.core.composition import RouteComposition, route_composition
 from bike_router.core.constants import CorridorConfig, GmapsConfig, GpxConfig, GraphConfig, RoutingParams
 from bike_router.core.corridor import build_corridor
 from bike_router.core.cost import edge_cost_array
-from bike_router.core.errors import NoRouteError, OutOfCoverageError, RouteTooLargeError, TripTooLongError, TripTooShortError
+from bike_router.core.errors import (
+    OutOfCoverageError,
+    RouteTooLargeError,
+    TripTooLongError,
+    TripTooShortError,
+)
 from bike_router.core.geo import haversine_distance_m
 from bike_router.core.geocoding import geocode_endpoint, make_geocode_fn
 from bike_router.core.gmaps import build_gmaps_url

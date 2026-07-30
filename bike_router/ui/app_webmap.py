@@ -14,33 +14,31 @@ from bike_router.core.constants import PARAM_SPECS, RoutingDefaults, RoutingPara
 from bike_router.core.errors import BikeRouterError
 from bike_router.core.geocoding import photon_autocomplete
 from bike_router.core.graph_store import download_graph_from_hf, load_meta
-from bike_router.core.pipeline import plan_route, resolve_endpoints
+from bike_router.core.pipeline import RouteResult, plan_route, resolve_endpoints
 from bike_router.core.simplify import (
     format_bike_legs,
     format_rail_legs,
-    place_label,
     rail_leg_tooltips,
     route_station_markers,
 )
 from bike_router.ui.webmap import (
-    GRADE_DONUT_COLORS,
+    COMPUTE_LABEL,
     GRADE_SCALE,
-    MODE_DONUT_COLORS,
-    QUALITY_DONUT_COLORS,
     QUALITY_SCALE,
+    SET_LABEL,
     composition_donut,
-    condition_km,
+    compute_gate,
     default_view_state,
     elevation_profile_chart,
-    grade_km,
+    endpoint_labels,
+    map_remount_key,
+    output_donuts,
+    output_stat_rows,
     route_ribbon_segments,
     route_view_state,
+    scale_label,
 )
 from bike_router.ui.webmap_layers import build_deck
-
-# Fixed button labels, defined ONCE — referenced by the buttons AND the help/caption text
-SET_LABEL = "📍 Set start & end"
-COMPUTE_LABEL = "🧭 Compute route"
 
 
 def _download_graph_with_bar() -> None:
@@ -54,42 +52,29 @@ def _download_graph_with_bar() -> None:
     bar.empty()
 
 
-@st.cache_data(ttl=300)
+@st.cache_data(ttl=300)  # type: ignore[misc]  # st.cache_data is an untyped external decorator
 def _suggest(term: str, bbox: tuple[float, float, float, float]) -> list[str]:
     """Cached Photon place-label suggestions for a typed term, biased to the bbox."""
     return photon_autocomplete(term=term, bbox=bbox)
 
 
-def _render_route_output(result: object) -> None:
+def _render_route_output(result: RouteResult) -> None:
     """Route output: stats + donuts in a collapsible box; trains, links, downloads always shown."""
     track = result.track
     # Collapsible: route stats + the three composition donuts — detail to expand, not the
     # primary call to action. Show the bike-vs-total split ONLY when a train is used; a
     # pure-bike route has one set of numbers, so just show "Route".
     with st.expander("📊 Stats & composition", expanded=False):
-        stat_rows = (
-            (("**Total** (bike + train)", track.total, "Time"), ("**Bike only**", track.bike, "Ride time"))
-            if result.rail_legs
-            else (("**Route**", track.bike, "Ride time"),)
-        )
-        for caption, stats, duration_label in stat_rows:
+        for caption, stats, duration_label in output_stat_rows(result):
             st.caption(caption)
             pairs = stats.metric_pairs(duration_label=duration_label)
             for col, (label, value) in zip(st.columns(len(pairs)), pairs, strict=True):
                 col.metric(label, value)
 
-        comp = result.composition
-        # Three donuts: the unified road-QUALITY donut, the road-GRADE donut, and by-mode.
-        donuts = (
-            ("By quality", condition_km(track=track), QUALITY_DONUT_COLORS),
-            ("By grade", grade_km(track=track), GRADE_DONUT_COLORS),
-            ("By mode", comp.by_mode_km, MODE_DONUT_COLORS),
-        )
-        for col, (title, by_km, colors) in zip(st.columns(len(donuts)), donuts, strict=True):
+        for col, (title, by_km, colors) in zip(st.columns(3), output_donuts(result), strict=True):
             col.altair_chart(composition_donut(title=title, by_km=by_km, colors=colors), width="stretch")
 
-        # Below the donuts: the elevation profile (distance × elevation), line coloured by mode
-        # (bike/train) like the "By mode" donut.
+        # Below the donuts: the elevation profile (distance × elevation), line coloured by mode.
         st.plotly_chart(elevation_profile_chart(track=track), width="stretch")
 
     # Always visible: which trains to catch, the bike-leg Maps links, and the downloads —
@@ -133,7 +118,7 @@ def _place_input(*, field: str, label: str, placeholder: str, bbox: tuple[float,
         placeholder: greyed-out hint shown when empty.
         bbox: coverage box biasing the suggestions.
     """
-    typed = st.text_input(label, key=field, placeholder=placeholder)
+    typed: str = st.text_input(label, key=field, placeholder=placeholder)
     if typed == st.session_state[f"{field}_resolved"]:
         return typed  # already resolved to this text → no stale suggestions under the box
     # Suggestions ranked by Photon relevance (OSM prominence + proximity to the bbox centre);
@@ -224,24 +209,15 @@ def main() -> None:
         }
 
     # 4. Compute the route — draws the ribbon; does NOT recenter (step 2 owns the camera).
-    # Gated on the two-button workflow: enabled ONLY when both boxes still hold the EXACT text
-    # Set resolved. Editing either box (without re-Setting) disables Compute again.
-    endpoints_set = st.session_state.start_latlon is not None
-    endpoints_match = (
-        endpoints_set
-        and origin == st.session_state.start_box_resolved
-        and destination == st.session_state.end_box_resolved
+    # The gate decision (enabled? help text?) is the tested compute_gate helper.
+    enabled, compute_help = compute_gate(
+        start_latlon=st.session_state.start_latlon,
+        origin=origin,
+        destination=destination,
+        start_resolved=st.session_state.start_box_resolved,
+        end_resolved=st.session_state.end_box_resolved,
     )
-    # The three valid states are explicit branches; the else is unreachable (guard).
-    if not endpoints_set:
-        compute_help = "Set a start and end first"
-    elif endpoints_set and not endpoints_match:
-        compute_help = f"Start/End changed — press {SET_LABEL} again first"
-    elif endpoints_set and endpoints_match:
-        compute_help = "Plan the route for the current slider settings"
-    else:
-        raise AssertionError(f"unreachable compute state: set={endpoints_set} match={endpoints_match}")
-    if st.button(COMPUTE_LABEL, width="stretch", disabled=not endpoints_match, help=compute_help):
+    if st.button(COMPUTE_LABEL, width="stretch", disabled=not enabled, help=compute_help):
         try:
             params = RoutingParams(**slider_values)
             with st.spinner("Planning route…"):
@@ -254,7 +230,7 @@ def main() -> None:
             )
         except BikeRouterError as error:  # too short/long, out of coverage, or no route
             st.toast(str(error), icon="⚠️")
-    if not endpoints_match:
+    if not enabled:
         st.caption(f"⬆️ Press **{SET_LABEL}** first to enable **{COMPUTE_LABEL}**.")
 
     _render_map(origin=origin, destination=destination)
@@ -276,13 +252,11 @@ def _render_map(*, origin: str, destination: str) -> None:
         if st.session_state.start_latlon is not None
         else None
     )
-    endpoint_labels = (
-        (
-            place_label(name=origin, elevation_m=st.session_state.start_latlon[2]),
-            place_label(name=destination, elevation_m=st.session_state.end_latlon[2]),
-        )
-        if endpoints is not None
-        else None
+    labels = endpoint_labels(
+        start_latlon=st.session_state.start_latlon,
+        end_latlon=st.session_state.end_latlon,
+        origin=origin,
+        destination=destination,
     )
     # Ribbon colour scale: a radio ABOVE the map so its value flows straight into the ribbon build.
     result = st.session_state.result
@@ -291,9 +265,7 @@ def _render_map(*, origin: str, destination: str) -> None:
         color_scale = st.radio(
             "Ribbon colour",
             options=(QUALITY_SCALE, GRADE_SCALE),
-            format_func=lambda s: "Road quality (good / unpaved / main road)"
-            if s == QUALITY_SCALE
-            else "Road grade (flat / uphill / downhill)",
+            format_func=scale_label,
             key="color_scale",
             horizontal=True,
         )
@@ -308,10 +280,12 @@ def _render_map(*, origin: str, destination: str) -> None:
         view=st.session_state.view,
         ribbon_segments=ribbon,
         endpoints=endpoints,
-        endpoint_labels=endpoint_labels,
+        endpoint_labels=labels,
         stations=st.session_state.stations,
     )
-    map_key = f"bike_map_{st.session_state.camera_epoch}_{color_scale}_{ribbon is not None}"
+    map_key = map_remount_key(
+        camera_epoch=st.session_state.camera_epoch, color_scale=color_scale, has_ribbon=ribbon is not None
+    )
     st_deckgl(deck, key=map_key, height=WebMapConfig.MAP_HEIGHT_PX)
 
 

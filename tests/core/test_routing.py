@@ -13,7 +13,7 @@ def _route(arr, *, params, source, target):
     return shortest_path(route_graph=rg, source_osmid=source, target_osmid=target)
 
 
-def test_shortest_route_traverses_line():
+def test_shortest_path_traverses_line():
     assert _route(make_line_edges(), params=ZERO_PARAMS, source=1, target=3) == [1, 2, 3]
 
 

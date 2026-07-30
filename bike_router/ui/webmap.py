@@ -8,6 +8,7 @@ No streamlit imports here — these are pure builders the app shell merely calls
 import math
 from collections.abc import Callable
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 import altair as alt
 import numpy as np
@@ -17,7 +18,18 @@ import plotly.graph_objects as go
 from bike_router.core.constants import Mode, Palette, WebMapConfig
 from bike_router.core.geo import haversine_vec
 from bike_router.core.simplify import place_label  # single source; re-exported for the app shell
-from bike_router.core.track import Track, TrackPoint, classify_condition, classify_grade, grade_color, segment_color
+from bike_router.core.track import (
+    RouteStats,
+    Track,
+    TrackPoint,
+    classify_condition,
+    classify_grade,
+    grade_color,
+    segment_color,
+)
+
+if TYPE_CHECKING:
+    from bike_router.core.pipeline import RouteResult
 
 __all__ = ["place_label"]  # noqa: F822 — re-export so app_webmap imports it from here
 
@@ -324,4 +336,90 @@ def route_view_state(start_latlon: tuple[float, float], end_latlon: tuple[float,
         zoom=zoom_for_span_m(span_m=span_m),
         pitch=WebMapConfig.DEFAULT_PITCH,
         bearing=WebMapConfig.DEFAULT_BEARING,
+    )
+
+
+# --- pure shell-decision logic (unit-tested here so app_webmap stays thin st.* wiring) --------
+
+# Fixed button labels, defined ONCE — referenced by the buttons AND the help/caption text.
+SET_LABEL = "📍 Set start & end"
+COMPUTE_LABEL = "🧭 Compute route"
+
+
+def compute_gate(
+    *, start_latlon: object, origin: str, destination: str, start_resolved: object, end_resolved: object
+) -> tuple[bool, str]:
+    """(compute_enabled, help_text) for the two-button Set→Compute workflow.
+
+    Compute is enabled ONLY when endpoints are set AND both boxes still hold the exact text
+    Set resolved; editing either box (without re-Setting) disables it again. The three states
+    map to distinct help strings — the whole gate decision, testable without Streamlit.
+    """
+    endpoints_set = start_latlon is not None
+    endpoints_match = endpoints_set and origin == start_resolved and destination == end_resolved
+    if not endpoints_set:
+        return False, "Set a start and end first"
+    elif not endpoints_match:
+        return False, f"Start/End changed — press {SET_LABEL} again first"
+    else:
+        return True, "Plan the route for the current slider settings"
+
+
+def endpoint_labels(
+    *,
+    start_latlon: tuple[float, float, float] | None,
+    end_latlon: tuple[float, float, float] | None,
+    origin: str,
+    destination: str,
+) -> tuple[str, str] | None:
+    """(start, end) marker labels "Name (elev m)", or None when no endpoints are set yet."""
+    if start_latlon is None or end_latlon is None:
+        return None
+    return (
+        place_label(name=origin, elevation_m=start_latlon[2]),
+        place_label(name=destination, elevation_m=end_latlon[2]),
+    )
+
+
+def map_remount_key(*, camera_epoch: int, color_scale: str, has_ribbon: bool) -> str:
+    """The st_deckgl remount key: camera_epoch drives the only camera move; the colour scale +
+    whether a ribbon exists fold in so a fresh route or a scale toggle remounts immediately.
+    """
+    return f"bike_map_{camera_epoch}_{color_scale}_{has_ribbon}"
+
+
+def scale_label(scale: str) -> str:
+    """Human label for a ribbon colour scale (the radio's format_func)."""
+    return (
+        "Road quality (good / unpaved / main road)"
+        if scale == QUALITY_SCALE
+        else "Road grade (flat / uphill / downhill)"
+    )
+
+
+def output_stat_rows(result: "RouteResult") -> tuple[tuple[str, RouteStats, str], ...]:
+    """(caption, RouteStats, duration_label) rows for the stats panel — the tested selection.
+
+    A train route shows the bike-vs-total split (two rows); a pure-bike route shows one "Route".
+    """
+    track = result.track
+    if result.rail_legs:
+        return (
+            ("**Total** (bike + train)", track.total, "Time"),
+            ("**Bike only**", track.bike, "Ride time"),
+        )
+    return (("**Route**", track.bike, "Ride time"),)
+
+
+def output_donuts(result: "RouteResult") -> tuple[tuple[str, dict[str, float], dict[str, str]], ...]:
+    """(title, km-breakdown, colours) for the three composition donuts — the tested spec.
+
+    Road-QUALITY (good/unpaved/main), road-GRADE (flat/uphill/downhill), and by-mode — each
+    from its single-source km function, so app_webmap merely renders what this returns.
+    """
+    track = result.track
+    return (
+        ("By quality", condition_km(track=track), QUALITY_DONUT_COLORS),
+        ("By grade", grade_km(track=track), GRADE_DONUT_COLORS),
+        ("By mode", result.composition.by_mode_km, MODE_DONUT_COLORS),
     )
