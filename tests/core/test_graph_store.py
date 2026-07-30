@@ -32,14 +32,9 @@ from bike_router.core.graph_store import (
     tile_index,
 )
 from bike_router.core.route_path import RouteNode
-from tests.conftest import DEFAULT_PARAMS, FIXTURE_GRAPH_DIR, write_store_roundtrip_fixture
+from tests.conftest import DEFAULT_PARAMS, FIXTURE_GRAPH_DIR
 
 _META = {"bbox": [7.9, 47.9, 8.2, 48.1], "tile_deg": 0.5, "tolerance_m": 25.0}
-
-
-def _write_fixture_store(tmp_path: Path) -> Path:
-    """Write the round-trip fixture graph to a tiled parquet store under tmp_path (via shared infra)."""
-    return write_store_roundtrip_fixture(out_dir=tmp_path)
 
 
 def _bike_node(osmid: int, *, lat: float, lon: float, elev: float = 100.0) -> RouteNode:
@@ -87,16 +82,16 @@ def test_intersecting_tiles():
 # --- meta / tile reads -------------------------------------------------------
 
 
-def test_load_meta(tmp_path: Path):
-    store = _write_fixture_store(tmp_path)
+def test_load_meta(roundtrip_store: Path):
+    store = roundtrip_store
     meta = load_meta(graph_dir=store)
     assert meta["tile_deg"] == 0.5 and meta["bbox"] == [7.9, 47.9, 8.2, 48.1]
 
 
-def test_read_tiles(tmp_path: Path):
+def test_read_tiles(roundtrip_store: Path):
     # Reads only the named tiles (missing skipped); a mode filter pushes the predicate to parquet;
     # tiles=None reads every tile; an empty result yields the requested-columns empty frame.
-    store = _write_fixture_store(tmp_path)
+    store = roundtrip_store
     tiles = _intersecting_tiles(corridor=box(7.99, 47.99, 8.02, 48.02), tile_deg=0.5)
     rail_only = _read_tiles(
         directory=store / GraphConfig.EDGES_SUBDIR,
@@ -113,10 +108,10 @@ def test_read_tiles(tmp_path: Path):
     assert missing.empty and list(missing.columns) == graph_store._NODE_COLS
 
 
-def test_load_layer(tmp_path: Path):
+def test_load_layer(roundtrip_store: Path):
     # Reads one mode-layer confined to nodes the corridor COVERS; a bike layer yields only bike nodes
     # + bike edges among them, all inside the window.
-    store = _write_fixture_store(tmp_path)
+    store = roundtrip_store
     wide = box(7.9, 47.9, 8.2, 48.1)
     nodes_df, edges_df, inside_ids = _load_layer(
         corridor=wide,
@@ -135,10 +130,10 @@ def test_load_layer(tmp_path: Path):
 # --- combined routing window -------------------------------------------------
 
 
-def test_load_route_tables(tmp_path: Path):
+def test_load_route_tables(roundtrip_store: Path):
     # Both corridors covering the fixture recombine bike ring + rail + station into the minimal
     # routing tables (6 nodes, 14 edges); the two layers load independently; outside coverage fails.
-    store = _write_fixture_store(tmp_path)
+    store = roundtrip_store
     wide = box(7.9, 47.9, 8.2, 48.1)
     nodes_df, edges_df = load_route_tables(bike_corridor=wide, rail_corridor=wide, graph_dir=store)
     assert len(nodes_df) == 6 and len(edges_df) == 14
@@ -157,10 +152,10 @@ def test_load_route_tables(tmp_path: Path):
 # --- final-path re-read ------------------------------------------------------
 
 
-def test_load_path_edges(tmp_path: Path):
+def test_load_path_edges(roundtrip_store: Path):
     # Re-reads ONLY the chosen path's edges (with geometry) into an ordered RoutePath: the bike
     # square 1→2→3 yields two bike edges joining exactly those nodes, in order.
-    store = _write_fixture_store(tmp_path)
+    store = roundtrip_store
     path_nodes = [(1, 48.00, 8.00), (2, 48.00, 8.01), (3, 48.01, 8.01)]
     route = load_path_edges(path_nodes=path_nodes, params=DEFAULT_PARAMS, graph_dir=store)
     assert route.osmids == [1, 2, 3]

@@ -25,7 +25,7 @@ from bike_router.preprocessing.graph_writer import (
     read_region_tables,
     write_graph_parquet,
 )
-from tests.conftest import make_store_roundtrip_graph
+from tests.conftest import FIXTURE_ROUNDTRIP_STORE, make_store_roundtrip_graph, write_store_roundtrip_fixture
 
 _META = {"bbox": [7.9, 47.9, 8.2, 48.1], "tile_deg": 0.5, "tolerance_m": 25.0}
 
@@ -190,3 +190,26 @@ def test_assert_height_diffs_consistent():
     edges_df = pd.DataFrame([_edge_row(1, 2, mode=Mode.BIKE, height_diff=5.0)], columns=graph_store._EDGE_COLS)
     with pytest.raises(AssertionError, match="height_diff mismatch"):  # real diff is 30, not 5
         graph_from_tables(nodes_df=nodes_df, edges_df=edges_df)
+
+
+# --- committed fixture drift guard -------------------------------------------
+
+
+def test_write_store_roundtrip_fixture(tmp_path: Path):
+    # The committed FIXTURE_ROUNDTRIP_STORE (read by CORE tests without networkx) must still equal a
+    # fresh build — single source of truth. If the builder/schema changes, regenerate the committed store.
+    fresh = write_store_roundtrip_fixture(out_dir=tmp_path / "fresh")
+
+    def _tables(root: Path) -> tuple[pd.DataFrame, pd.DataFrame]:
+        def _concat(sub: str) -> pd.DataFrame:
+            parts = [pd.read_parquet(p) for p in sorted((root / sub).glob("tile_*.parquet"))]
+            return pd.concat(parts).sort_values(list(parts[0].columns)).reset_index(drop=True)
+
+        return _concat(graph_store.GraphConfig.NODES_SUBDIR), _concat(graph_store.GraphConfig.EDGES_SUBDIR)
+
+    fresh_nodes, fresh_edges = _tables(fresh)
+    committed_nodes, committed_edges = _tables(FIXTURE_ROUNDTRIP_STORE)
+    pd.testing.assert_frame_equal(fresh_nodes, committed_nodes)
+    pd.testing.assert_frame_equal(fresh_edges, committed_edges)
+    meta_name = graph_store.GraphConfig.META_FILENAME
+    assert (FIXTURE_ROUNDTRIP_STORE / meta_name).read_text() == (fresh / meta_name).read_text()

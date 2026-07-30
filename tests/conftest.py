@@ -21,6 +21,8 @@ from bike_router.core.route_path import RouteEdge, RouteNode, RoutePath
 
 # The committed real Schwarzwald artifact — the ONLY data source e2e tests may use.
 FIXTURE_GRAPH_DIR = PROJECT_ROOT / "tests" / "fixtures" / "dach_graph"
+# Tiny committed tiled store (built offline from make_store_roundtrip_graph).
+FIXTURE_ROUNDTRIP_STORE = PROJECT_ROOT / "tests" / "fixtures" / "roundtrip_store"
 
 
 class MockDEMService:
@@ -60,6 +62,12 @@ class MockDEMService:
 def flat_dem() -> MockDEMService:
     """Perfectly flat DEM at 1000 m."""
     return MockDEMService(base_elevation=1000.0, slope_ns_pct=0.0, slope_ew_pct=0.0)
+
+
+@pytest.fixture
+def roundtrip_store() -> "object":
+    """The committed tiny tiled store — CORE graph_store tests READ it, no build stack needed."""
+    return FIXTURE_ROUNDTRIP_STORE
 
 
 DEFAULT_PARAMS = RoutingParams(**{spec.field: spec.default for spec in PARAM_SPECS})
