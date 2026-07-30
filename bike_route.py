@@ -18,7 +18,6 @@ import logging
 from bike_router.core.constants import PARAM_SPECS, RoutingParams
 from bike_router.core.graph_store import download_graph_from_hf
 from bike_router.core.pipeline import format_cli_report, plan_route
-from bike_router.core.progress import tqdm_progress
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -36,8 +35,8 @@ def main(argv: list[str] | None = None) -> int:
         format="%(levelname)s %(name)s: %(message)s",
     )
 
-    # Progress belongs ONLY to the one-time graph download (tqdm here, st.progress in the app).
-    download_graph_from_hf(progress=tqdm_progress(desc="Downloading graph"))
+    # snapshot_download prints its own "Fetching N files" progress to the terminal.
+    download_graph_from_hf()
     # Expected failures raise a BikeRouterError — its class name + message already explain.
     params = RoutingParams(**{spec.field: getattr(arguments, spec.field) for spec in PARAM_SPECS})
     result = plan_route(origin=arguments.origin, destination=arguments.destination, params=params)
