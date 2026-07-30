@@ -8,13 +8,12 @@ the Google Maps URL.
 import logging
 from dataclasses import dataclass
 
-import networkx as nx
 import numpy as np
 from shapely.geometry import LineString
 
 from bike_router.constants import GmapsConfig, GpxConfig, Mode, NodeType
 from bike_router.geo import haversine_distance_m
-from bike_router.track import cheapest_edge, iter_route_edges
+from bike_router.route_path import RouteNode, RoutePath
 
 logger = logging.getLogger(__name__)
 
@@ -26,16 +25,16 @@ def place_label(*, name: str, elevation_m: float) -> str:
     return f"{name} ({elevation_m:.0f} m)"
 
 
-def _split_mode_runs(graph: nx.MultiDiGraph, node_path: list[int], mode: str) -> list[list[int]]:
+def _split_mode_runs(route: RoutePath, mode: str) -> list[list[RouteNode]]:
     """Maximal runs of consecutive nodes whose connecting edges are ALL ``mode``.
 
     Each run is the node list ``[n0, n1, …]`` (>= 2 nodes) for one contiguous stretch;
     edges of other modes break the route. Shared by split_bike_legs and split_rail_legs.
     """
-    runs: list[list[int]] = []
-    current: list[int] = []
-    for node_a, node_b, data in iter_route_edges(graph=graph, node_path=node_path):
-        if data["mode"] == mode:
+    runs: list[list[RouteNode]] = []
+    current: list[RouteNode] = []
+    for node_a, node_b, edge in route.iter_edges():
+        if edge.mode == mode:
             if not current:
                 current = [node_a]
             current.append(node_b)
@@ -47,14 +46,14 @@ def _split_mode_runs(graph: nx.MultiDiGraph, node_path: list[int], mode: str) ->
     return runs
 
 
-def split_bike_legs(graph: nx.MultiDiGraph, node_path: list[int]) -> list[list[int]]:
+def split_bike_legs(route: RoutePath) -> list[list[int]]:
     """Split a route into maximal runs of consecutive BIKE edges (rail/station cut).
 
-    Each returned sub-path is one pedalled leg the rider actually cycles; train rides
-    and station-access hops break the route so a pure-bike trip yields one leg and a trip
+    Each returned sub-path is one pedalled leg the rider actually cycles (as osmids); train
+    rides and station-access hops break the route so a pure-bike trip yields one leg and a trip
     with one train ride yields two. Sub-paths have >= 2 nodes (one usable linestring).
     """
-    return _split_mode_runs(graph=graph, node_path=node_path, mode=Mode.BIKE)
+    return [[node.osmid for node in run] for run in _split_mode_runs(route=route, mode=Mode.BIKE)]
 
 
 @dataclass(frozen=True)
@@ -89,22 +88,21 @@ class RailLeg:
     alight: Station
 
 
-def split_rail_legs(graph: nx.MultiDiGraph, node_path: list[int]) -> list[RailLeg]:
+def split_rail_legs(route: RoutePath) -> list[RailLeg]:
     """Boarding + alighting station (name + position) for each train ride on the route.
 
     A ride is a maximal run of consecutive RAIL edges (a junction change stays one ride):
     board the first rail node, alight the last. Separate rides yield separate RailLegs.
     """
     return [
-        RailLeg(board=_station(graph=graph, node=run[0]), alight=_station(graph=graph, node=run[-1]))
-        for run in _split_mode_runs(graph=graph, node_path=node_path, mode=Mode.RAIL)
+        RailLeg(board=_station(node=run[0]), alight=_station(node=run[-1]))
+        for run in _split_mode_runs(route=route, mode=Mode.RAIL)
     ]
 
 
-def _station(graph: nx.MultiDiGraph, node: int) -> Station:
+def _station(node: RouteNode) -> Station:
     """Build a Station from a rail node's baked attributes."""
-    data = graph.nodes[node]
-    return Station(name=data["station_name"], lat=data["y"], lon=data["x"], elevation_m=data["elevation"])
+    return Station(name=node.station_name, lat=node.lat, lon=node.lon, elevation_m=node.elevation_m)
 
 
 def route_station_markers(rail_legs: list[RailLeg]) -> list[tuple[float, float, float, str]]:
@@ -151,7 +149,7 @@ class BikeLeg:
 
 
 def bike_leg_endpoints(
-    *, graph: nx.MultiDiGraph, node_path: list[int], leg_paths: list[list[int]], origin: str, destination: str
+    *, route: RoutePath, leg_paths: list[list[int]], origin: str, destination: str
 ) -> list[tuple[str, str]]:
     """(from_place, to_place) for each pedalled leg, derived STRUCTURALLY from the node path.
 
@@ -159,32 +157,28 @@ def bike_leg_endpoints(
     adjacent station it alighted-from / boards-at (the neighbouring node on the full path, which
     is a rail-station node). Robust to a route that starts/ends on a train or chains two trains.
     """
-    position = {node: index for index, node in enumerate(node_path)}  # node → its index on the path
+    nodes = route.nodes
+    position = {node.osmid: index for index, node in enumerate(nodes)}  # osmid → its index on the path
     ends: list[tuple[str, str]] = []
     for leg in leg_paths:
         head, tail = position[leg[0]], position[leg[-1]]
-        from_place = origin if head == 0 else _neighbour_station_name(graph=graph, node=node_path[head - 1])
-        to_place = (
-            destination
-            if tail == len(node_path) - 1
-            else _neighbour_station_name(graph=graph, node=node_path[tail + 1])
-        )
+        from_place = origin if head == 0 else _neighbour_station_name(node=nodes[head - 1])
+        to_place = destination if tail == len(nodes) - 1 else _neighbour_station_name(node=nodes[tail + 1])
         ends.append((from_place, to_place))
     return ends
 
 
-def _neighbour_station_name(graph: nx.MultiDiGraph, node: int) -> str:
+def _neighbour_station_name(node: RouteNode) -> str:
     """Station name of a path-neighbour that MUST be a rail node (unnamed halt → placeholder).
 
     A pedalled leg only ends before the route start/end when the adjacent node is the station
     it boards/alights at — so the neighbour is invariantly a rail node. We assert that (fail
     loud on a broken path) rather than let a stray bike node silently read as an unnamed stop.
     """
-    data = graph.nodes[node]
-    assert data["node_type"] == NodeType.RAIL, (
-        f"bike-leg neighbour {node} must be a rail station, got {data['node_type']}"
+    assert node.node_type == NodeType.RAIL, (
+        f"bike-leg neighbour {node.osmid} must be a rail station, got {node.node_type}"
     )
-    return data["station_name"] or _UNNAMED_STOP
+    return node.station_name or _UNNAMED_STOP
 
 
 def format_bike_legs(bike_legs: list[BikeLeg]) -> list[str]:
@@ -192,25 +186,18 @@ def format_bike_legs(bike_legs: list[BikeLeg]) -> list[str]:
     return [f"Bike Route {index}: {leg.from_place} → {leg.to_place}" for index, leg in enumerate(bike_legs, start=1)]
 
 
-def route_to_linestring(graph: nx.MultiDiGraph, node_path: list[int]) -> LineString:
-    """Stitch a node path into the full lon/lat OSM geometry (x=lon, y=lat).
+def route_to_linestring(route: RoutePath) -> LineString:
+    """Stitch the route's edges into the full lon/lat OSM geometry (x=lon, y=lat).
 
-    For each consecutive node pair pick the cheapest parallel edge (matching A*)
-    and use its stored ``geometry`` if present, else a straight segment between
-    node coordinates.
+    Each edge uses its real oriented ``geometry`` if present, else a straight segment
+    between node coordinates. Shared vertices between consecutive edges are de-duplicated.
     """
-    assert len(node_path) >= 2, "route must have >= 2 nodes (distinct source/target)"
     coords: list[tuple[float, float]] = []
-    for node_a, node_b in zip(node_path[:-1], node_path[1:], strict=True):
-        data = cheapest_edge(edges=graph.get_edge_data(node_a, node_b))
-        geometry = data.get("geometry")  # OSM geometry is genuinely optional
-        if geometry is not None:
-            segment = [(c[0], c[1]) for c in geometry.coords]  # drop any z → 2D lon/lat
+    for node_a, node_b, edge in route.iter_edges():
+        if edge.geometry is not None:
+            segment = list(edge.geometry)  # already oriented a→b, 2D lon/lat
         else:
-            segment = [
-                (graph.nodes[node_a]["x"], graph.nodes[node_a]["y"]),
-                (graph.nodes[node_b]["x"], graph.nodes[node_b]["y"]),
-            ]
+            segment = [(node_a.lon, node_a.lat), (node_b.lon, node_b.lat)]
         if coords and segment and coords[-1] == segment[0]:
             segment = segment[1:]  # avoid duplicating the shared vertex
         coords.extend(segment)

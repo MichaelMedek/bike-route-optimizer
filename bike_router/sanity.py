@@ -6,10 +6,9 @@ model before we emit outputs.
 
 import logging
 
-import networkx as nx
+import numpy as np
 
-from bike_router.constants import CostConfig, Mode, RoutingParams, SanityConfig
-from bike_router.track import cheapest_edge
+from bike_router.constants import Mode, RoutingParams, SanityConfig
 
 logger = logging.getLogger(__name__)
 
@@ -28,47 +27,50 @@ def check_simplify_shrunk(nodes_before: int, nodes_after: int) -> None:
     logger.info(f"Sanity 1 OK: {nodes_before} → {nodes_after} nodes (>50% shrink)")
 
 
-def _cheapest_cost(edges: dict[int, dict[str, object]]) -> float:
-    """Stored cost of the cheapest parallel edge (via the canonical selector)."""
-    return float(cheapest_edge(edges=edges)[CostConfig.EDGE_COST])
+def check_cost_model(
+    *,
+    from_osmid: np.ndarray,
+    to_osmid: np.ndarray,
+    mode: np.ndarray,
+    cost: np.ndarray,
+    elev_by_osmid: dict[int, float],
+    params: RoutingParams,
+) -> None:
+    """Sanity 2: on the steepest bidirectional BIKE edge, uphill must cost more than downhill.
 
-
-def check_uphill_costlier(graph: nx.MultiDiGraph, node_lower: int, node_upper: int, params: RoutingParams) -> None:
-    """Sanity 2: when the rider penalises uphill, the uphill direction of a non-flat
-    edge costs more than downhill. If the uphill penalty is 0 the rider does not
-    care, so the two directions are (correctly) equal — the check is skipped.
-
-    Caller must pass a genuinely bidirectional, non-flat edge (see
-    find_steepest_bidirectional_edge) — edges/elevations accessed strictly.
+    Operates on the corridor's flat edge arrays (the CSR router's own inputs) — no networkx.
+    Only BIKE edges qualify (the terrain penalty is bike-only). If the uphill penalty is 0 the
+    rider doesn't care, so the two directions are equal and the check is skipped; if there is no
+    bidirectional non-flat bike edge the check is skipped (legitimate, not a bug).
     """
     if params.extra_km_per_uphill_100m == 0:
         logger.info("Sanity 2 skipped (uphill penalty disabled by user)")
         return
-    cost_up = _cheapest_cost(edges=graph.get_edge_data(node_lower, node_upper))
-    cost_down = _cheapest_cost(edges=graph.get_edge_data(node_upper, node_lower))
-    elev_lower = graph.nodes[node_lower]["elevation"]
-    elev_upper = graph.nodes[node_upper]["elevation"]
-    if elev_upper > elev_lower:  # node_lower→node_upper is uphill
-        assert cost_up > cost_down, f"Sanity 2 failed: uphill {cost_up} !> downhill {cost_down}"
-    elif elev_lower > elev_upper:  # node_upper→node_lower is uphill
-        assert cost_down > cost_up, f"Sanity 2 failed: uphill {cost_down} !> downhill {cost_up}"
-    else:
-        raise AssertionError("Sanity 2 misused: edge is flat (caller must pass a non-flat edge)")
-    logger.info(f"Sanity 2 OK: uphill {cost_up:.1f} > downhill {cost_down:.1f}")
-
-
-def find_steepest_bidirectional_edge(graph: nx.MultiDiGraph) -> tuple[int, int] | None:
-    """Return (node_a, node_b) of the bidirectional BIKE edge with the largest |Δelevation|.
-
-    Only BIKE edges qualify: Sanity 2 checks the terrain penalty, which is bike-only.
-    Used to feed check_uphill_costlier a genuinely non-flat edge.
-    """
-    steepest = None
-    steepest_delta = 0.0
-    for node_a, node_b, data in graph.edges(data=True):
-        if data["mode"] != Mode.BIKE or not graph.has_edge(node_b, node_a):
+    # Cheapest cost per directed (u, v) among BIKE edges (matches the router's min-collapse).
+    cost_by_pair: dict[tuple[int, int], float] = {}
+    for u, v, m, c in zip(from_osmid, to_osmid, mode, cost, strict=True):
+        if m != Mode.BIKE:
             continue
-        delta = abs(graph.nodes[node_b]["elevation"] - graph.nodes[node_a]["elevation"])
+        key = (int(u), int(v))
+        if key not in cost_by_pair or c < cost_by_pair[key]:
+            cost_by_pair[key] = float(c)
+
+    steepest: tuple[int, int] | None = None
+    steepest_delta = 0.0
+    for u, v in cost_by_pair:
+        if (v, u) not in cost_by_pair:
+            continue
+        delta = abs(elev_by_osmid[v] - elev_by_osmid[u])
         if delta > steepest_delta:
-            steepest_delta, steepest = delta, (node_a, node_b)
-    return steepest
+            steepest_delta, steepest = delta, (u, v)
+    if steepest is None:
+        logger.info("Sanity 2 skipped (no bidirectional non-flat bike edge)")
+        return
+
+    lower, upper = steepest
+    cost_lu, cost_ul = cost_by_pair[(lower, upper)], cost_by_pair[(upper, lower)]
+    if elev_by_osmid[upper] > elev_by_osmid[lower]:  # lower→upper is uphill
+        assert cost_lu > cost_ul, f"Sanity 2 failed: uphill {cost_lu} !> downhill {cost_ul}"
+    else:  # upper→lower is uphill
+        assert cost_ul > cost_lu, f"Sanity 2 failed: uphill {cost_ul} !> downhill {cost_lu}"
+    logger.info(f"Sanity 2 OK: uphill > downhill on steepest bike edge (|Δ|={steepest_delta:.1f} m)")

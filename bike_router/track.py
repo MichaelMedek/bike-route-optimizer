@@ -1,20 +1,18 @@
-"""Unified route-track builder — the single source of per-point time & elevation.
+"""Unified route-track builder — the single source of per-point time, elevation & colour.
 
-Walks the A* node path once, computing per-edge length, grade and adaptive speed
-while accumulating ride time. GPX, stats, and elevation profile all derive from this
-one structure, so total time and GPX end-timestamp agree by construction.
+Walks the route's ordered edge list once, computing per-edge length, grade and adaptive
+speed while accumulating ride time. GPX, stats, elevation profile, and both colour scales
+all derive from this one structure, so every number and colour agrees by construction.
 """
 
-from collections.abc import Iterator
 from dataclasses import dataclass
-from typing import Any
 
-import networkx as nx
 import numpy as np
 
-from bike_router.constants import CostConfig, GpxConfig, Mode, RailConfig, SpeedConfig
+from bike_router.constants import GpxConfig, GradeConfig, Mode, Palette, RailConfig, SpeedConfig
 from bike_router.cost import road_tier, surface_tier
 from bike_router.geo import haversine_vec
+from bike_router.route_path import RouteEdge, RouteNode, RoutePath
 from bike_router.speed import effective_speed_kmh, kmh_to_ms
 
 
@@ -92,12 +90,6 @@ class Track:
     total: RouteStats
 
 
-def cheapest_edge(edges: dict[int, dict[str, Any]]) -> dict[str, Any]:
-    """The parallel edge A* would traverse (lowest stored cost)."""
-    best_key = min(edges, key=lambda key: float(edges[key][CostConfig.EDGE_COST]))
-    return edges[best_key]
-
-
 def climb_totals(deltas: list[float]) -> tuple[float, float]:
     """(ascent, descent) in metres from per-edge Δelevations: gross up- vs down-sum.
 
@@ -117,36 +109,27 @@ def edge_grade(*, elev_source: float, elev_target: float, length_m: float) -> fl
     return (elev_target - elev_source) / length_m
 
 
-def iter_route_edges(graph: nx.MultiDiGraph, node_path: list[int]) -> Iterator[tuple[int, int, dict[str, Any]]]:
-    """Yield ``(node_a, node_b, cheapest_edge_data)`` for each hop on the A* path."""
-    for node_a, node_b in zip(node_path[:-1], node_path[1:], strict=True):
-        yield node_a, node_b, cheapest_edge(edges=graph.get_edge_data(node_a, node_b))
-
-
-def edge_condition_speed(
-    *, data: dict[str, Any], elev_source: float, elev_target: float, length_m: float
-) -> tuple[bool, bool, float]:
+def edge_condition_speed(*, edge: RouteEdge, elev_source: float, elev_target: float) -> tuple[bool, bool, float]:
     """(surface_bad, road_bad, speed_kmh) for one edge — single source for timing + colour.
 
     bike: surface_bad if surface tier != 0; road_bad if a main road; speed from the adaptive
     model. rail / station: never bad, fixed RAIL_SPEED_KMH / walking pace.
     """
-    mode = data["mode"]
-    if mode == Mode.BIKE:
-        s_tier = surface_tier(surface=data.get("surface"))
-        grade = edge_grade(elev_source=elev_source, elev_target=elev_target, length_m=length_m)
+    if edge.mode == Mode.BIKE:
+        s_tier = surface_tier(surface=edge.surface)
+        grade = edge_grade(elev_source=elev_source, elev_target=elev_target, length_m=edge.length_m)
         speed_kmh = effective_speed_kmh(surface_tier=s_tier, grade=grade)
-        return s_tier != 0, road_tier(highway=data.get("highway")) != 0, speed_kmh
-    elif mode == Mode.RAIL:
+        return s_tier != 0, road_tier(highway=edge.highway) != 0, speed_kmh
+    elif edge.mode == Mode.RAIL:
         return False, False, RailConfig.RAIL_SPEED_KMH
-    elif mode == Mode.STATION:
+    elif edge.mode == Mode.STATION:
         return False, False, SpeedConfig.WALK_KMH  # short walk to the platform
     else:
-        raise AssertionError(f"unknown edge mode: {mode!r}")
+        raise AssertionError(f"unknown edge mode: {edge.mode!r}")
 
 
 def classify_condition(*, mode: str, surface_bad: bool, road_bad: bool) -> str:
-    """Canonical condition label for a route segment — the SINGLE branch point."""
+    """Canonical road-QUALITY label for a route segment — the SINGLE branch point."""
     if mode == Mode.RAIL:
         return "train"
     elif surface_bad and road_bad:
@@ -161,88 +144,98 @@ def classify_condition(*, mode: str, surface_bad: bool, road_bad: bool) -> str:
         raise AssertionError(f"unclassified segment: mode={mode!r} surface_bad={surface_bad} road_bad={road_bad}")
 
 
-def build_track(graph: nx.MultiDiGraph, node_path: list[int]) -> Track:
-    """Build the full route track with adaptive-speed timing from a node path.
+def classify_grade(*, mode: str, grade: float) -> str:
+    """Canonical road-GRADE label for a segment — the SINGLE grade branch point.
+
+    A train keeps its own "train" label (purple, no rider-felt grade). Bike/station: uphill
+    above +MARGIN, downhill below −MARGIN, else flat (mirrors the GradeConfig threshold).
+    """
+    if mode == Mode.RAIL:
+        return "train"
+    elif grade > GradeConfig.MARGIN:
+        return "uphill"
+    elif grade < -GradeConfig.MARGIN:
+        return "downhill"
+    else:
+        return "flat"
+
+
+def segment_color(*, mode: str, surface_bad: bool, road_bad: bool) -> list[int]:
+    """RGB on the road-QUALITY scale — the single source both the 3D ribbon and PNG use.
+
+    Delegates the branching to classify_condition (one source) and looks the colour up in
+    Palette.CONDITION_COLORS, so colour and legend label can never disagree.
+    """
+    condition = classify_condition(mode=mode, surface_bad=surface_bad, road_bad=road_bad)
+    return list(Palette.hex_to_rgb(hex_color=Palette.CONDITION_COLORS[condition]))
+
+
+def grade_color(*, mode: str, grade: float) -> list[int]:
+    """RGB on the road-GRADE scale (flat blue / uphill red / downhill green) — one source."""
+    return list(Palette.hex_to_rgb(hex_color=Palette.GRADE_COLORS[classify_grade(mode=mode, grade=grade)]))
+
+
+def _track_point(*, at: RouteNode, edge: RouteEdge, other_elev: float, elapsed_s: float) -> TrackPoint:
+    """A TrackPoint at ``at``, carrying ``edge``'s condition/grade/speed — the ONE point builder.
+
+    ``other_elev`` is the edge's OTHER endpoint elevation (for grade + condition); the start
+    point passes the far node, every arriving point passes its own source node.
+    """
+    surface_bad, road_bad, speed_kmh = edge_condition_speed(
+        edge=edge, elev_source=at.elevation_m, elev_target=other_elev
+    )
+    return TrackPoint(
+        lat=at.lat,
+        lon=at.lon,
+        elevation_m=at.elevation_m,
+        elapsed_s=elapsed_s,
+        mode=edge.mode,
+        surface_bad=surface_bad,
+        road_bad=road_bad,
+        grade=edge_grade(elev_source=at.elevation_m, elev_target=other_elev, length_m=edge.length_m),
+        speed_kmh=speed_kmh,
+    )
+
+
+def build_track(route: RoutePath) -> Track:
+    """Build the full route track with adaptive-speed timing from an ordered edge list.
 
     Bike edges use the surface/grade speed model and count toward ascent/descent; rail
     edges ride at RAIL_SPEED_KMH; each station edge adds half of BOARDING_WAIT_S, so board
     + alight sum to one full wait (mirrors the cost split). All leg times are DERIVED.
     """
-    assert len(node_path) >= 2, "route must have >= 2 nodes"
-
-    first = graph.nodes[node_path[0]]
-    first_data = cheapest_edge(edges=graph.get_edge_data(node_path[0], node_path[1]))
-    first_surface_bad, first_road_bad, first_speed = edge_condition_speed(
-        data=first_data,
-        elev_source=float(first["elevation"]),
-        elev_target=float(graph.nodes[node_path[1]]["elevation"]),
-        length_m=float(first_data["length"]),
-    )
-    first_len = float(first_data["length"])
-    first_grade = edge_grade(
-        elev_source=float(first["elevation"]),
-        elev_target=float(graph.nodes[node_path[1]]["elevation"]),
-        length_m=first_len,
-    )
-    points = [
-        TrackPoint(
-            lat=first["y"],
-            lon=first["x"],
-            elevation_m=float(first["elevation"]),
-            elapsed_s=0.0,
-            mode=str(first_data["mode"]),
-            surface_bad=first_surface_bad,
-            road_bad=first_road_bad,
-            grade=first_grade,
-            speed_kmh=first_speed,
-        )
-    ]
+    first_node, second_node, first_edge = next(route.iter_edges())
+    # Start point: at the first node, oriented by the first edge (grade sign matches the arriving legs).
+    points = [_track_point(at=first_node, edge=first_edge, other_elev=second_node.elevation_m, elapsed_s=0.0)]
     total_m = total_s = 0.0
     total_deltas: list[float] = []  # Δelevation of EVERY edge (whole-journey climb)
     bike_deltas: list[float] = []  # Δelevation of pedalled edges only
     bike_m = bike_s = 0.0  # only bike legs feed the avg-speed assert (rail is far faster)
     rail_speed_ms = kmh_to_ms(kmh=RailConfig.RAIL_SPEED_KMH)
 
-    for node_a, node_b, data in iter_route_edges(graph=graph, node_path=node_path):
-        length_m = float(data["length"])
-        elev_a = float(graph.nodes[node_a]["elevation"])
-        elev_b = float(graph.nodes[node_b]["elevation"])
-        delta = elev_b - elev_a
-        surface_bad, road_bad, speed_kmh = edge_condition_speed(
-            data=data, elev_source=elev_a, elev_target=elev_b, length_m=length_m
-        )
+    for node_a, node_b, edge in route.iter_edges():
+        length_m = edge.length_m
+        delta = node_b.elevation_m - node_a.elevation_m
         total_deltas.append(delta)  # every edge feeds the whole-journey climb (same scope as total_m)
 
-        if data["mode"] == Mode.BIKE:
+        if edge.mode == Mode.BIKE:
             bike_deltas.append(delta)
-            speed_ms = kmh_to_ms(kmh=speed_kmh)
-            leg_s = length_m / speed_ms
+            _s, _r, speed_kmh = edge_condition_speed(
+                edge=edge, elev_source=node_a.elevation_m, elev_target=node_b.elevation_m
+            )
+            leg_s = length_m / kmh_to_ms(kmh=speed_kmh)
             bike_m += length_m
             bike_s += leg_s
-        elif data["mode"] == Mode.RAIL:
+        elif edge.mode == Mode.RAIL:
             leg_s = length_m / rail_speed_ms  # train ride time, derived from length
-        elif data["mode"] == Mode.STATION:  # half the wait per station edge: board + alight = full wait
+        elif edge.mode == Mode.STATION:  # half the wait per station edge: board + alight = full wait
             leg_s = 0.5 * RailConfig.BOARDING_WAIT_S
         else:
-            raise AssertionError(f"unknown edge mode: {data['mode']!r}")
+            raise AssertionError(f"unknown edge mode: {edge.mode!r}")
         total_s += leg_s
         total_m += length_m
-
-        target = graph.nodes[node_b]
-        grade = edge_grade(elev_source=elev_a, elev_target=elev_b, length_m=length_m)
-        points.append(
-            TrackPoint(
-                lat=target["y"],
-                lon=target["x"],
-                elevation_m=elev_b,
-                elapsed_s=total_s,
-                mode=str(data["mode"]),
-                surface_bad=surface_bad,
-                road_bad=road_bad,
-                grade=grade,
-                speed_kmh=speed_kmh,
-            )
-        )
+        # The arriving point sits at node_b, carrying THIS edge's condition (other endpoint = node_a).
+        points.append(_track_point(at=node_b, edge=edge, other_elev=node_a.elevation_m, elapsed_s=total_s))
 
     assert total_m > 0, "route distance must be positive"
     assert total_s > 0, "route duration must be positive"
@@ -271,30 +264,44 @@ def build_track(graph: nx.MultiDiGraph, node_path: list[int]) -> Track:
     return Track(points=points, bike=bike_stats, total=total_stats)
 
 
-def densify_track(graph: nx.MultiDiGraph, node_path: list[int], track: Track) -> Track:
+def edge_vertices_3d(*, node_a: RouteNode, node_b: RouteNode, edge: RouteEdge) -> list[tuple[float, float, float]]:
+    """(lon, lat, elev) vertices of an edge: REAL 2D polyline, elevation LINEAR node-to-node.
+
+    z is interpolated between the two node elevations by along-edge distance (NOT a per-vertex
+    baked DEM z) — the single elevation source the optimiser + stats also use. A hop with no
+    geometry (rail/station) is a straight two-node segment.
+    """
+    ea, eb = node_a.elevation_m, node_b.elevation_m
+    if edge.geometry is None:
+        return [(node_a.lon, node_a.lat, ea), (node_b.lon, node_b.lat, eb)]
+    xy = np.asarray(edge.geometry, dtype=np.float64)  # already oriented a→b, 2D lon/lat
+    seg = haversine_vec(lat_a=xy[:-1, 1], lon_a=xy[:-1, 0], lat_b=xy[1:, 1], lon_b=xy[1:, 0])
+    cum = np.concatenate(([0.0], np.cumsum(seg)))
+    frac = cum / (cum[-1] or 1.0)
+    z = ea + (eb - ea) * frac
+    return [(float(x), float(y), float(zi)) for (x, y), zi in zip(xy, z, strict=True)]
+
+
+def densify_track(route: RoutePath, track: Track) -> Track:
     """Expand the node-level track into the full 3D road polyline (no DEM at inference).
 
-    Walks each edge's baked 3D geometry so the profile follows the true road/track;
-    only station access-links contribute a straight segment. Each leg's time is spread by
-    along-edge distance and ascent/descent are recomputed from the baked vertex elevations.
+    Walks each edge's real 2D geometry so the profile follows the true road/track; only
+    station access-links contribute a straight segment. Each leg's time is spread by
+    along-edge distance; ascent/descent + per-leg condition/speed carry from the node track.
     """
-    assert len(node_path) >= 2, "route must have >= 2 nodes to densify"
-    assert len(track.points) == len(node_path), "track points must align with node path"
+    assert len(track.points) == len(route.nodes), "track points must align with route nodes"
     out: list[TrackPoint] = []
+    n_edges = len(route.edges)
 
-    for index, (node_a, node_b, data) in enumerate(iter_route_edges(graph=graph, node_path=node_path)):
-        mode = str(data["mode"])
-        # Condition + speed are per-edge; the arriving point (index+1) carries the leg's.
-        leg_point = track.points[index + 1]
-        leg_surface_bad, leg_road_bad, leg_speed = leg_point.surface_bad, leg_point.road_bad, leg_point.speed_kmh
-        leg_grade = leg_point.grade  # the leg's node-level gradient, shared by its dense vertices
-        verts = edge_vertices_3d(graph=graph, node_a=node_a, node_b=node_b, data=data)
+    for index, (node_a, node_b, edge) in enumerate(route.iter_edges()):
+        leg_point = track.points[index + 1]  # the arriving point carries this leg's condition/speed/grade
+        verts = edge_vertices_3d(node_a=node_a, node_b=node_b, edge=edge)
         t_start, t_end = track.points[index].elapsed_s, track.points[index + 1].elapsed_s
         vxy = np.asarray([(v[0], v[1]) for v in verts], dtype=np.float64)
         seg_lengths = haversine_vec(lat_a=vxy[:-1, 1], lon_a=vxy[:-1, 0], lat_b=vxy[1:, 1], lon_b=vxy[1:, 0])
         total = float(seg_lengths.sum()) or 1.0
         cum = 0.0
-        last_leg = index == len(node_path) - 2
+        last_leg = index == n_edges - 1
         stop = len(verts) if last_leg else len(verts) - 1  # avoid duplicating shared node vertex
         for i in range(stop):
             lon, lat, elev = verts[i]
@@ -304,11 +311,11 @@ def densify_track(graph: nx.MultiDiGraph, node_path: list[int], track: Track) ->
                     lon=lon,
                     elevation_m=elev,
                     elapsed_s=t_start + (t_end - t_start) * (cum / total),
-                    mode=mode,
-                    surface_bad=leg_surface_bad,
-                    road_bad=leg_road_bad,
-                    grade=leg_grade,
-                    speed_kmh=leg_speed,
+                    mode=edge.mode,
+                    surface_bad=leg_point.surface_bad,
+                    road_bad=leg_point.road_bad,
+                    grade=leg_point.grade,
+                    speed_kmh=leg_point.speed_kmh,
                 )
             )
             if i < len(seg_lengths):
@@ -316,29 +323,3 @@ def densify_track(graph: nx.MultiDiGraph, node_path: list[int], track: Track) ->
 
     # Stats are unchanged by densification (same legs) — carry both groups through.
     return Track(points=out, bike=track.bike, total=track.total)
-
-
-def edge_vertices_3d(
-    graph: nx.MultiDiGraph, node_a: int, node_b: int, data: dict[str, Any]
-) -> list[tuple[float, float, float]]:
-    """(lon, lat, elev) vertices of edge a→b: REAL 2D polyline, elevation LINEAR node-to-node.
-
-    z is interpolated between the two node elevations by along-edge distance (NOT the per-vertex
-    baked DEM z) — the single elevation source the optimiser + stats also use. Station links have
-    no geometry → a straight two-node segment.
-    """
-    ea, eb = float(graph.nodes[node_a]["elevation"]), float(graph.nodes[node_b]["elevation"])
-    ax, ay = graph.nodes[node_a]["x"], graph.nodes[node_a]["y"]
-    geom = data.get("geometry")
-    if geom is None:
-        return [(ax, ay, ea), (graph.nodes[node_b]["x"], graph.nodes[node_b]["y"], eb)]
-    xy = np.asarray(geom.coords, dtype=np.float64)[:, :2]  # drop any baked z; keep the 2D path
-    # Orient a→b by matching the first vertex to node_a's coords.
-    if abs(xy[0, 0] - ax) + abs(xy[0, 1] - ay) > abs(xy[-1, 0] - ax) + abs(xy[-1, 1] - ay):
-        xy = xy[::-1]
-    # Vectorized cumulative along-edge distance → linear z between the node elevations.
-    seg = haversine_vec(lat_a=xy[:-1, 1], lon_a=xy[:-1, 0], lat_b=xy[1:, 1], lon_b=xy[1:, 0])
-    cum = np.concatenate(([0.0], np.cumsum(seg)))
-    frac = cum / (cum[-1] or 1.0)
-    z = ea + (eb - ea) * frac
-    return [(float(x), float(y), float(zi)) for (x, y), zi in zip(xy, z, strict=True)]

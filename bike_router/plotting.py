@@ -1,8 +1,8 @@
-"""Debug visualization: graph nodes colored by elevation + the route overlaid.
+"""Debug visualization: the route drawn on a plain map, coloured for quick verification.
 
-Renders the corridor's bike graph with intersection nodes color-mapped by
-elevation (plasma/viridis) and the computed route drawn as a thick, high-contrast
-foreground line. Uses the Agg backend so it works headless.
+For DEBUG only — uses what inference already has (the confirmed edge list + track), no ox,
+no corridor backdrop, no clever logic. Nodes are scatter-coloured by elevation and each edge
+is drawn along its real polyline coloured by condition, with a stats panel beneath.
 """
 
 import logging
@@ -12,24 +12,22 @@ import matplotlib
 
 matplotlib.use("Agg")  # headless — must precede pyplot import
 import matplotlib.pyplot as plt  # noqa: E402
-import networkx as nx  # noqa: E402
 import numpy as np  # noqa: E402
-import osmnx as ox  # noqa: E402
 from matplotlib import cm  # noqa: E402
 from matplotlib.axes import Axes  # noqa: E402
 from matplotlib.colors import Normalize  # noqa: E402
 from matplotlib.ticker import MaxNLocator  # noqa: E402
 
 from bike_router.composition import RouteComposition, format_composition  # noqa: E402
-from bike_router.constants import PlotConfig, RoutingParams, WebMapConfig  # noqa: E402
+from bike_router.constants import Palette, PlotConfig, RoutingParams  # noqa: E402
+from bike_router.route_path import RoutePath  # noqa: E402
 from bike_router.track import (  # noqa: E402
     Track,
-    cheapest_edge,
     classify_condition,
     edge_condition_speed,
     edge_vertices_3d,
+    segment_color,
 )
-from bike_router.webmap import segment_color  # noqa: E402
 
 logger = logging.getLogger(__name__)
 
@@ -66,25 +64,19 @@ def _figsize_for_route(*, route_lons: list[float], route_lats: list[float]) -> t
     return map_w + PlotConfig.SIDE_MARGIN_IN, map_h + PlotConfig.STATS_HEIGHT_IN, map_h
 
 
-def _draw_route_overlay(*, axes: Axes, graph: nx.MultiDiGraph, route_nodes: list[int]) -> None:
-    """Draw each route edge coloured by condition/mode along its baked polyline."""
+def _draw_route_overlay(*, axes: Axes, route: RoutePath) -> None:
+    """Draw each route edge along its real polyline, coloured by condition (one legend entry each)."""
     seen_labels: set[str] = set()
-    for node_a, node_b in zip(route_nodes[:-1], route_nodes[1:], strict=True):
-        data = cheapest_edge(edges=graph.get_edge_data(node_a, node_b))
-        mode = str(data["mode"])
-        # Condition booleans from the single source (edge_condition_speed), not re-thresholded here.
+    for node_a, node_b, edge in route.iter_edges():
         surface_bad, road_bad, _speed = edge_condition_speed(
-            data=data,
-            elev_source=float(graph.nodes[node_a]["elevation"]),
-            elev_target=float(graph.nodes[node_b]["elevation"]),
-            length_m=float(data["length"]),
+            edge=edge, elev_source=node_a.elevation_m, elev_target=node_b.elevation_m
         )
-        rgb = segment_color(mode=mode, surface_bad=surface_bad, road_bad=road_bad)
+        rgb = segment_color(mode=edge.mode, surface_bad=surface_bad, road_bad=road_bad)
         color = (rgb[0] / 255, rgb[1] / 255, rgb[2] / 255)
-        edge_label = classify_condition(mode=mode, surface_bad=surface_bad, road_bad=road_bad)
+        edge_label = classify_condition(mode=edge.mode, surface_bad=surface_bad, road_bad=road_bad)
         label = edge_label if edge_label not in seen_labels else None
         seen_labels.add(edge_label)
-        verts = edge_vertices_3d(graph=graph, node_a=node_a, node_b=node_b, data=data)
+        verts = edge_vertices_3d(node_a=node_a, node_b=node_b, edge=edge)
         axes.plot(
             [lon for lon, _lat, _elev in verts],
             [lat for _lon, lat, _elev in verts],
@@ -96,10 +88,9 @@ def _draw_route_overlay(*, axes: Axes, graph: nx.MultiDiGraph, route_nodes: list
         )
 
 
-def plot_elevation_heatmap(
+def plot_route_debug(
     *,
-    graph: nx.MultiDiGraph,
-    route_nodes: list[int],
+    route: RoutePath,
     track: Track,
     params: RoutingParams,
     out_path: str,
@@ -109,109 +100,54 @@ def plot_elevation_heatmap(
     cmap_name: str = PlotConfig.CMAP,
     dpi: int = PlotConfig.DPI,
 ) -> None:
-    """Save a PNG heatmap of the graph (nodes by elevation) with the route on top.
+    """Save a debug PNG: route nodes coloured by elevation, edges coloured by condition.
 
-    Layout is one solid-white page: a large map (nodes colour-mapped by elevation, the
-    route overlaid and its ends marked), an elevation colorbar down the right, and a
-    condensed stats panel (preferences · route totals · km breakdown) across the bottom.
+    One solid-white page: the route (nodes by elevation, edges by condition, ends marked), an
+    elevation colorbar down the right, and a condensed stats panel (prefs · totals · km) below.
     """
-    nodes = list(graph.nodes)
-    assert nodes, "graph must have nodes to plot"
-    assert len(route_nodes) >= 2, "route must have >= 2 nodes to overlay"
-    # elevation is an invariant (enrich_elevations fills nodata) → strict access.
-    elevations = np.array([graph.nodes[node]["elevation"] for node in nodes], dtype=float)
+    lons = np.array([node.lon for node in route.nodes], dtype=float)
+    lats = np.array([node.lat for node in route.nodes], dtype=float)
+    elevations = np.array([node.elevation_m for node in route.nodes], dtype=float)
     assert np.all(np.isfinite(elevations)), "node elevations must be finite"
 
     elev_min, elev_max = float(elevations.min()), float(elevations.max())
     if elev_min == elev_max:
         elev_max = elev_min + 1.0
     norm = Normalize(vmin=elev_min, vmax=elev_max)
-    cmap = matplotlib.colormaps[cmap_name]  # cm.get_cmap removed in matplotlib 3.9+
-    node_colors = [cmap(norm(elevation)) for elevation in elevations]
+    cmap = matplotlib.colormaps[cmap_name]
 
-    # Size the page to the ROUTE's geographic aspect BEFORE drawing (the plotted graph is the loaded
-    # schlauch). Equal-aspect map fills its axis, colorbar hugs it.
-    route_lons = [graph.nodes[node]["x"] for node in route_nodes]
-    route_lats = [graph.nodes[node]["y"] for node in route_nodes]
-    fig_w, fig_h, map_h = _figsize_for_route(route_lons=route_lons, route_lats=route_lats)
-
-    # One page: map (large) + colorbar (thin, right of the map) + stats (full-width, bottom).
-    # Row heights come straight from the computed inches (one source of truth, no drift).
+    fig_w, fig_h, map_h = _figsize_for_route(route_lons=lons.tolist(), route_lats=lats.tolist())
     figure, mosaic = plt.subplot_mosaic(
         [["map", "cbar"], ["stats", "stats"]],
-        gridspec_kw={
-            "width_ratios": [1.0, 0.04],
-            "height_ratios": [map_h, PlotConfig.STATS_HEIGHT_IN],
-        },
+        gridspec_kw={"width_ratios": [1.0, 0.04], "height_ratios": [map_h, PlotConfig.STATS_HEIGHT_IN]},
         figsize=(fig_w, fig_h),
         layout="constrained",
     )
-    figure.set_facecolor("white")  # solid white page, not the default transparent canvas
+    figure.set_facecolor("white")
     axes, cbar_ax, stats_ax = mosaic["map"], mosaic["cbar"], mosaic["stats"]
+    axes.set_aspect("equal", adjustable="datalim")
 
-    ox.plot_graph(
-        graph,
-        ax=axes,
-        node_color=node_colors,
-        node_size=6,
-        edge_color="#cccccc",
-        edge_linewidth=0.4,
-        bgcolor="white",
-        show=False,
-        close=False,
-        save=False,
-    )
+    _draw_route_overlay(axes=axes, route=route)
+    axes.scatter(lons, lats, c=elevations, cmap=cmap, norm=norm, s=12, zorder=6, edgecolors="none")
 
-    # Route overlay: colour each edge by CONDITION (blue good / red bad) or purple for
-    # trains — the same segment_color the 3D map uses (one source of truth). Each edge
-    # follows its BAKED OSM polyline, so rail/bike curves render as the real path.
-    _draw_route_overlay(axes=axes, graph=graph, route_nodes=route_nodes)
+    pad = max(lons.max() - lons.min(), lats.max() - lats.min()) * PlotConfig.ROUTE_ZOOM_MARGIN or 0.001
+    axes.set_xlim(lons.min() - pad, lons.max() + pad)
+    axes.set_ylim(lats.min() - pad, lats.max() + pad)
 
-    # Zoom to the route bounds (padded) so the route is clearly visible; the loaded schlauch nodes
-    # around it still show within this view. Pad by a fraction of the route's larger extent — always
-    # positive for a valid route (>= 2 distinct nodes), so an axis-aligned route still gets a margin.
-    pad = max(max(route_lons) - min(route_lons), max(route_lats) - min(route_lats)) * PlotConfig.ROUTE_ZOOM_MARGIN
-    axes.set_xlim(min(route_lons) - pad, max(route_lons) + pad)
-    axes.set_ylim(min(route_lats) - pad, max(route_lats) + pad)
-
-    # Start / end markers, named so the reader knows which end is which. Colors
-    # read from WebMapConfig so the PNG and 3D map share one source of truth.
-    start_rgb = tuple(c / 255 for c in WebMapConfig.START_COLOR)
-    end_rgb = tuple(c / 255 for c in WebMapConfig.END_COLOR)
+    start_rgb = tuple(c / 255 for c in Palette.hex_to_rgb(hex_color=Palette.START))
+    end_rgb = tuple(c / 255 for c in Palette.hex_to_rgb(hex_color=Palette.END))
+    axes.scatter(lons[0], lats[0], s=150, c=[start_rgb], edgecolors="black", linewidths=1.2, zorder=7, label="start")
     axes.scatter(
-        route_lons[0],
-        route_lats[0],
-        s=150,
-        c=[start_rgb],
-        edgecolors="black",
-        linewidths=1.2,
-        zorder=7,
-        marker="o",
-        label="start",
-    )
-    axes.scatter(
-        route_lons[-1],
-        route_lats[-1],
-        s=200,
-        c=[end_rgb],
-        edgecolors="black",
-        linewidths=1.2,
-        zorder=7,
-        marker="*",
-        label="end",
+        lons[-1], lats[-1], s=200, c=[end_rgb], edgecolors="black", linewidths=1.2, zorder=7, marker="*", label="end"
     )
     axes.set_title(f"Bike route: {origin} → {destination}", fontsize=13, weight="bold")
 
-    # Elevation colorbar down the right, its own axis (crisp label + evenly-spaced ticks).
     mappable = cm.ScalarMappable(norm=norm, cmap=cmap)
     mappable.set_array([])
     colorbar = figure.colorbar(mappable, cax=cbar_ax)
     colorbar.set_label("Elevation (m)", fontsize=11, weight="bold", labelpad=10)
     colorbar.ax.yaxis.set_major_locator(MaxNLocator(nbins=8))
 
-    # Bottom panel (own axis, no frame): a single combined stats box on the LEFT (prefs +
-    # route + km composition, stacked so it fits any page width) and the route/marker legend
-    # on the RIGHT — kept HERE, never over the map, so the map stays clear.
     stats_ax.axis("off")
     stats = _prefs_text(params=params, track=track)
     if composition is not None:
@@ -230,15 +166,9 @@ def plot_elevation_heatmap(
     )
     handles, labels = axes.get_legend_handles_labels()
     stats_ax.legend(
-        handles,
-        labels,
-        loc="upper right",
-        fontsize=9,
-        framealpha=0.95,
-        facecolor="white",
-        edgecolor="#999999",
+        handles, labels, loc="upper right", fontsize=9, framealpha=0.95, facecolor="white", edgecolor="#999999"
     )
 
     figure.savefig(out_path, dpi=dpi, facecolor="white", bbox_inches="tight", pad_inches=0.3)
     plt.close(figure)
-    logger.info(f"Wrote debug heatmap to {out_path}")
+    logger.info(f"Wrote debug route PNG to {out_path}")

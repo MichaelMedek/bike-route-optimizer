@@ -34,5 +34,9 @@ class NoRouteError(BikeRouterError):
     """No path connects the two endpoints within the search corridor."""
 
 
+class RouteTooLargeError(BikeRouterError):
+    """The corridor would load more edges than the server's memory budget allows."""
+
+
 class ParamOutOfRangeError(BikeRouterError):
     """A routing preference is outside the allowed [0, MAX_EXTRA_KM] range."""

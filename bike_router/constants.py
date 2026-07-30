@@ -86,6 +86,7 @@ class GraphConfig:
 
     HF_REPO_ID = "MichaelMedek/dach_bike_graph"
     HF_FILENAME = META_FILENAME  # the whole snapshot is pulled; meta anchors the download
+    HF_MAX_WORKERS = 8  # snapshot_download concurrent file downloads (its own default)
 
     # Merge nodes within this radius (metres, UTM-projected). Benchmarked on the
     # Freudenstadt→Pforzheim corridor: 25 m is the largest tolerance keeping route
@@ -122,12 +123,8 @@ class GeoConfig:
 
 
 class CorridorConfig:
-    """The "Schlauch" search corridor around the straight start→dest line.
-
-    Two tubes, each extended past both endpoints: a tight bike tube (bike is ~98% of
-    the graph — the compute weight) and a wide rail tube (rail is ~1%, so loading it
-    generously is cheap and lets a route ride a train that leaves the bike tube and
-    returns). Isotropic in real km; trips outside MIN/MAX_TRIP_KM are rejected up front.
+    """The "Schlauch" search corridor: a tight bike tube (~98% of the graph) + a wide rail
+    tube (~1%, sparse so generous is cheap). Isotropic in km; trips outside MIN/MAX rejected.
     """
 
     BIKE_HALF_WIDTH_KM = 30.0  # bike tube half-width each side of the direct line
@@ -136,32 +133,38 @@ class CorridorConfig:
     RAIL_EXTEND_KM = 50.0  # extend the rail tube this far past each endpoint
     MIN_TRIP_KM = 5.0  # too short to bother planning
     MAX_TRIP_KM = 300.0  # beyond this the corridor graph is too big / out of scope
+    # Hard memory guard: ~669k edges ≈ 1.35 GB peak, well under the ~2.7 GB deploy ceiling.
+    MAX_ROUTE_EDGES = 1_100_000
 
 
 class Palette:
     """All display colours, defined ONCE as hex; use ``hex_to_rgb`` where RGB is needed.
 
-    Bad surface and bad road are DISTINCT red tones so the two conditions are tellable
-    apart on the map/PNG (both still red to read as "avoid"); an edge that is BOTH gets a
-    near-black red. Green = good, purple = trains, blue/cyan = start/end markers.
+    Two 3-colour scales share these swatches (single source): the road-QUALITY scale
+    (blue good / orange unpaved / red main road) and the road-GRADE scale (blue flat /
+    red uphill / green downhill). Purple = trains; blue/cyan = start/end markers.
     """
 
-    GOOD = "#1565c0"  # blue — good surface AND quiet road (high-contrast on terrain)
-    BAD_SURFACE = "#d63f15"  # red variant — unpaved/loose surface on a quiet road
-    BAD_ROAD = "#c80d29"  # red variant — main road with a good surface
-    BAD_BOTH = "#280303"  # near-black red — main road AND unpaved (worst)
+    BLUE = "#1565c0"  # good surface + quiet road, and flat grade (high-contrast on terrain)
+    ORANGE = "#ef7f18"  # unpaved (but not a main road)
+    RED = "#c80d29"  # main road (or main road AND unpaved), and uphill grade
+    GREEN = "#1b9e3f"  # downhill grade
     RAIL = "#9600c8"  # purple — trains only
     START = "#0096ff"  # blue — start marker
     END = "#00e5ff"  # cyan — destination marker
 
-    # Route-segment CONDITION → hex.
+    # Route-segment CONDITION → hex, the road-QUALITY scale (3 bike colours + train purple).
+    # "main road + unpaved" folds into the main-road red (a main road is the dominant hazard).
     CONDITION_COLORS = {
         "train": RAIL,
-        "good": GOOD,
-        "unpaved": BAD_SURFACE,
-        "main road": BAD_ROAD,
-        "main road + unpaved": BAD_BOTH,
+        "good": BLUE,
+        "unpaved": ORANGE,
+        "main road": RED,
+        "main road + unpaved": RED,
     }
+    # Route-segment GRADE → hex, the road-GRADE scale (flat blue / uphill red / downhill green);
+    # a train has no rider-felt grade so it keeps its purple, same as the quality scale.
+    GRADE_COLORS = {"train": RAIL, "flat": BLUE, "uphill": RED, "downhill": GREEN}
 
     @staticmethod
     def hex_to_rgb(hex_color: str) -> tuple[int, int, int]:
@@ -214,9 +217,9 @@ class SurfaceConfig:
     DEFAULT_TIER = 1
     # Per-tier human label + swatch. Tier 2 is a COMPUTE-only split.
     TIER_LABEL_COLORS = {
-        0: ("paved road", Palette.GOOD),
-        1: ("unpaved path", Palette.BAD_SURFACE),
-        2: ("unpaved path", Palette.BAD_SURFACE),  # COMPUTE-only, same optic
+        0: ("paved road", Palette.BLUE),
+        1: ("unpaved path", Palette.ORANGE),
+        2: ("unpaved path", Palette.ORANGE),  # COMPUTE-only, same optic
     }
 
 
@@ -255,8 +258,8 @@ class RoadConfig:
     }
     # Untagged highway (~0% in practice) → assume main road (kept, penalised).
     DEFAULT_TIER = 1
-    # Per-tier human label + swatch (donut colours): tier 0 (quiet) blue, tier 1 (main) crimson.
-    TIER_LABEL_COLORS = {0: ("quiet way", Palette.GOOD), 1: ("main road", Palette.BAD_ROAD)}
+    # Per-tier human label + swatch (donut colours): tier 0 (quiet) blue, tier 1 (main) red.
+    TIER_LABEL_COLORS = {0: ("quiet way", Palette.BLUE), 1: ("main road", Palette.RED)}
 
 
 class RoutingDefaults:
@@ -342,12 +345,21 @@ class RoutingParams:
 class CostConfig:
     """Per-edge cost = length + uphill + unpaved + main-road penalties (all in metres).
 
-    All penalties are >= 0, so the cheapest possible edge is pure distance — which
-    keeps the A* great-circle heuristic admissible with scale 1.0.
+    All penalties are >= 0, so the cheapest possible edge is pure distance — Dijkstra on
+    these non-negative costs is provably optimal (the CSR routing engine).
     """
 
-    EDGE_COST = "custom_cost"  # stored per directed edge by assign_edge_costs
     UPHILL_REFERENCE_M = 100.0  # the "per 100 m of climb" reference rise
+
+
+class GradeConfig:
+    """Grade classification for the road-GRADE colour scale + grade donut.
+
+    An edge steeper than +MARGIN uphill is red, below −MARGIN downhill is green, and
+    everything between is flat blue. One threshold both the colour scale and the donut read.
+    """
+
+    MARGIN = 0.03  # rise/run: |grade| within this reads as flat
 
 
 class SpeedConfig:
@@ -496,40 +508,24 @@ assert SurfaceConfig.DEFAULT_TIER in set(SurfaceConfig.SURFACE_TIER.values()), (
 assert RoadConfig.ROAD_TIER, "ROAD_TIER must not be empty"
 assert set(RoadConfig.ROAD_TIER.values()) <= {0, 1}, "road tiers must be 0 or 1"
 assert RoadConfig.DEFAULT_TIER in {0, 1}, "road DEFAULT_TIER must be 0 or 1"
-# labels + speeds must cover EVERY surface tier that exists (single source: the tier map)
-assert set(SurfaceConfig.TIER_LABEL_COLORS) == set(SurfaceConfig.SURFACE_TIER.values()), (
-    "surface labels must cover exactly the surface tiers in use"
-)
-assert set(RoadConfig.TIER_LABEL_COLORS) == set(RoadConfig.ROAD_TIER.values()), (
-    "road labels must cover exactly the road tiers in use"
-)
+# labels + speeds must cover EVERY surface/road tier that exists (single source: the tier map)
+assert set(SurfaceConfig.TIER_LABEL_COLORS) == set(SurfaceConfig.SURFACE_TIER.values()), "surface labels ≠ tiers"
+assert set(RoadConfig.TIER_LABEL_COLORS) == set(RoadConfig.ROAD_TIER.values()), "road labels ≠ tiers"
 assert GmapsConfig.N_WAYPOINTS >= 2, "need at least origin + destination"
 assert RoutingDefaults.MAX_EXTRA_KM > 0, "MAX_EXTRA_KM must be positive"
 assert PARAM_SPECS, "PARAM_SPECS must not be empty"
-assert all(0 <= spec.default <= RoutingDefaults.MAX_EXTRA_KM for spec in PARAM_SPECS), (
-    "every param default must be within [0, MAX_EXTRA_KM]"
-)
-assert {spec.field for spec in PARAM_SPECS} == set(RoutingParams.__dataclass_fields__), (
-    "PARAM_SPECS fields must match RoutingParams attributes exactly"
-)
-assert set(SpeedConfig.BASE_KMH_BY_TIER) == set(SurfaceConfig.SURFACE_TIER.values()), (
-    "need a base speed for every surface tier in use"
-)
+assert all(0 <= s.default <= RoutingDefaults.MAX_EXTRA_KM for s in PARAM_SPECS), "param default out of [0, MAX]"
+assert {s.field for s in PARAM_SPECS} == set(RoutingParams.__dataclass_fields__), "PARAM_SPECS ≠ RoutingParams fields"
+assert set(SpeedConfig.BASE_KMH_BY_TIER) == set(SurfaceConfig.SURFACE_TIER.values()), "need a base speed per tier"
 assert all(speed > SpeedConfig.WALK_KMH for speed in SpeedConfig.BASE_KMH_BY_TIER.values()), "base speeds > walk"
 assert SpeedConfig.WALK_GRADE > 0, "WALK_GRADE must be a positive uphill grade"
 assert 0 < CorridorConfig.MIN_TRIP_KM < CorridorConfig.MAX_TRIP_KM, "trip bounds must be 0 < min < max"
-assert CorridorConfig.BIKE_HALF_WIDTH_KM > 0 and CorridorConfig.RAIL_HALF_WIDTH_KM > 0, (
-    "corridor half-widths must be positive"
-)
-assert CorridorConfig.BIKE_EXTEND_KM >= 0 and CorridorConfig.RAIL_EXTEND_KM >= 0, (
-    "corridor extends must be non-negative"
-)
+assert CorridorConfig.BIKE_HALF_WIDTH_KM > 0 and CorridorConfig.RAIL_HALF_WIDTH_KM > 0, "half-widths must be positive"
+assert CorridorConfig.BIKE_EXTEND_KM >= 0 and CorridorConfig.RAIL_EXTEND_KM >= 0, "corridor extends must be >= 0"
 assert CorridorConfig.RAIL_HALF_WIDTH_KM > CorridorConfig.BIKE_HALF_WIDTH_KM, "rail tube must be wider than bike tube"
 assert max(SpeedConfig.BASE_KMH_BY_TIER.values()) < RailConfig.RAIL_SPEED_KMH, "rail must be faster than any bike leg"
 assert RailConfig.BOARDING_WAIT_S > 0 and RailConfig.STATION_RADIUS_M > 0, "rail waits/radius must be positive"
 assert RailConfig.STATION_MAX_ENTRANCES >= 1, "must declare at least one entrance per station"
 assert GraphConfig.CONSOLIDATION_TOLERANCE_M >= 0 and GraphConfig.TILE_DEG > 0, "graph tolerance/tile must be sane"
-assert set(WebMapConfig.MODE_DONUT_COLORS) == set(WebMapConfig.MODE_DONUT_LABELS.values()), (
-    "mode donut colours must key on exactly the display labels"
-)
+assert set(WebMapConfig.MODE_DONUT_COLORS) == set(WebMapConfig.MODE_DONUT_LABELS.values()), "mode donut keys ≠ labels"
 assert PhotonConfig.LIMIT > 0 and PhotonConfig.TIMEOUT_S > 0, "Photon limit/timeout must be positive"

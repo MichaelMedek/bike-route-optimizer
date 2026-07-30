@@ -33,7 +33,8 @@ Because the graph is directed, only the uphill direction of a street is penalise
 
 import math
 
-import networkx as nx
+import numpy as np
+import pandas as pd
 
 from bike_router.constants import (
     CostConfig,
@@ -110,65 +111,42 @@ def road_included(highway: object) -> bool:
     return tag_included(tag=highway, tier_map=RoadConfig.ROAD_TIER)
 
 
-def edge_cost(
-    *,
-    mode: str,
-    length: float,
-    surface: object,
-    highway: object,
-    elev_source: float,
-    elev_target: float,
-    params: RoutingParams,
-) -> float:
-    """Total edge cost in metres, branching on travel mode.
+def edge_cost_array(*, edges_df: pd.DataFrame, elev_by_osmid: dict[int, float], params: RoutingParams) -> np.ndarray:
+    """Per-edge cost in metres for a whole edge table — the ONE cost formula, fully vectorized.
 
-    bike: length + uphill + unpaved + main-road penalties (terrain-aware).
-    rail: per-km rail charge only (no terrain penalties; boarding lives on station edges).
-    station: straight-line length + half the boarding charge (board + alight = full).
+    cost branches on mode (numpy ``np.select``):
+      bike: length + uphill + unpaved + main-road penalties (terrain-aware, uphill only).
+      rail: per-km rail charge only (no terrain penalties; boarding lives on station edges).
+      station: straight-line length + half the boarding charge (board + alight = full).
+    Tag→tier parsing is the only per-value step (surface/highway are external OSM strings/lists);
+    all arithmetic is array-wide. ``elev_by_osmid`` supplies node elevations for the uphill term.
     """
-    assert length >= 0, "edge length must be non-negative"
-    length_km = length / GpxConfig.METERS_PER_KM
+    mpk = GpxConfig.METERS_PER_KM
+    mode = edges_df["mode"].to_numpy()
+    length = edges_df["length_m"].to_numpy(dtype=np.float64)
+    length_km = length / mpk
+    from_elev = edges_df["from_node"].map(elev_by_osmid).to_numpy(dtype=np.float64)
+    to_elev = edges_df["to_node"].map(elev_by_osmid).to_numpy(dtype=np.float64)
+    s_tier = edges_df["surface"].map(surface_tier).to_numpy(dtype=np.float64)
+    r_tier = edges_df["highway"].map(road_tier).to_numpy(dtype=np.float64)
 
-    if mode == Mode.RAIL:
-        total = length + params.extra_km_per_rail_km * length_km * GpxConfig.METERS_PER_KM
-    elif mode == Mode.STATION:
-        # Half the boarding charge per station edge: entry + exit sum to one full boarding.
-        assert length <= RailConfig.STATION_RADIUS_M, "station link exceeds station radius"
-        total = length + 0.5 * params.extra_km_per_boarding * GpxConfig.METERS_PER_KM
-    elif mode == Mode.BIKE:
-        climb_m = max(elev_target - elev_source, 0.0)  # uphill only; downhill = 0
-        uphill_penalty = (
-            (climb_m / CostConfig.UPHILL_REFERENCE_M) * params.extra_km_per_uphill_100m * GpxConfig.METERS_PER_KM
-        )
-        unpaved_penalty = (
-            surface_tier(surface=surface) * params.extra_km_per_unpaved_km * length_km * GpxConfig.METERS_PER_KM
-        )
-        main_road_penalty = (
-            road_tier(highway=highway) * params.extra_km_per_main_road_km * length_km * GpxConfig.METERS_PER_KM
-        )
-        total = length + uphill_penalty + unpaved_penalty + main_road_penalty
-    else:
-        raise ValueError(f"unknown edge mode: {mode!r}")
+    climb_m = np.maximum(to_elev - from_elev, 0.0)  # uphill only; downhill = 0
+    bike_cost = (
+        length
+        + (climb_m / CostConfig.UPHILL_REFERENCE_M) * params.extra_km_per_uphill_100m * mpk
+        + s_tier * params.extra_km_per_unpaved_km * length_km * mpk
+        + r_tier * params.extra_km_per_main_road_km * length_km * mpk
+    )
+    rail_cost = length + params.extra_km_per_rail_km * length_km * mpk
+    # Half the boarding charge per station edge: entry + exit sum to one full boarding.
+    station_cost = length + 0.5 * params.extra_km_per_boarding * mpk
 
-    assert total >= 0, "edge cost must be non-negative"
-    return total
-
-
-def assign_edge_costs(graph: nx.MultiDiGraph, params: RoutingParams) -> None:
-    """Store the total cost on every directed edge of the graph, in place.
-
-    Requires node ``elevation`` (enrich_elevations) and edge ``length``/``mode``
-    (baked at build time) — internal invariants, accessed strictly so a gap fails
-    loud. ``surface``/``highway`` stay optional (genuine external OSM data).
-    """
-    for node_a, node_b, _key, data in graph.edges(keys=True, data=True):
-        data[CostConfig.EDGE_COST] = edge_cost(
-            mode=data["mode"],
-            length=float(data["length"]),
-            surface=data.get("surface"),  # OSM surface tag is genuinely optional
-            highway=data.get("highway"),  # ditto highway (external OSM data)
-            elev_source=float(graph.nodes[node_a]["elevation"]),
-            elev_target=float(graph.nodes[node_b]["elevation"]),
-            params=params,
-        )
-    assert graph.number_of_edges() > 0, "graph must have edges to cost"
+    is_station = mode == Mode.STATION
+    assert bool(np.all(length[is_station] <= RailConfig.STATION_RADIUS_M)), "station link exceeds station radius"
+    assert bool(np.all(length >= 0)), "edge length must be non-negative"
+    cost: np.ndarray = np.select(
+        [mode == Mode.BIKE, mode == Mode.RAIL, is_station], [bike_cost, rail_cost, station_cost], default=np.nan
+    )
+    assert not np.isnan(cost).any(), "unknown edge mode in cost array"
+    assert bool(np.all(cost >= 0)), "edge cost must be non-negative"
+    return cost

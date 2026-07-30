@@ -31,9 +31,9 @@ from bike_router.constants import (
     NodeType,
     RailConfig,
 )
-from bike_router.elevation import DEMService
 from bike_router.geo import haversine_distance_m, haversine_vec
-from bike_router.graph_ops import (
+from bike_router.preprocessing.elevation import DEMService
+from bike_router.preprocessing.graph_ops import (
     bake_edge_geometry_elevations,
     consolidate_graph,
     drop_disallowed_edges,

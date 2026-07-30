@@ -14,7 +14,7 @@ pip install -r requirements.txt
 
 ```bash
 source .venv/bin/activate
-streamlit run app_webmap.py
+streamlit run bike_router/ui/app_webmap.py
 ```
 
 Open the Local URL it prints (default http://localhost:8501). Type a start and end place, press **📍 Set start & end** to mark them on the 3D map, tune the five preference sliders, then press **🧭 Compute route**. The route is drawn as a coloured ribbon floating above the terrain (blue bike legs, purple train legs); below the map you get the route stats, three composition donuts (surface / road / mode), a copyable Google Maps link, and Download GPX / Download PNG buttons.

@@ -10,25 +10,23 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import networkx as nx
+from shapely.geometry import Polygon
 
 from bike_router.composition import RouteComposition, route_composition
 from bike_router.constants import CorridorConfig, GmapsConfig, GpxConfig, GraphConfig, RoutingParams
 from bike_router.corridor import build_corridor
-from bike_router.cost import assign_edge_costs
-from bike_router.errors import NoRouteError, OutOfCoverageError, TripTooLongError, TripTooShortError
+from bike_router.cost import edge_cost_array
+from bike_router.errors import NoRouteError, OutOfCoverageError, RouteTooLargeError, TripTooLongError, TripTooShortError
 from bike_router.geo import haversine_distance_m
 from bike_router.geocoding import geocode_endpoint, make_geocode_fn
 from bike_router.gmaps import build_gmaps_url
 from bike_router.gpx_export import build_gpx
-from bike_router.graph_ops import snap_endpoints
-from bike_router.graph_store import load_meta, load_route_graph, snap_to_node
+from bike_router.graph_store import load_meta, load_path_edges, load_route_tables, snap_to_node
 from bike_router.naming import route_output_paths
-from bike_router.plotting import plot_elevation_heatmap
-from bike_router.routing import shortest_route
-from bike_router.sanity import (
-    check_uphill_costlier,
-    find_steepest_bidirectional_edge,
-)
+from bike_router.plotting import plot_route_debug
+from bike_router.progress import log_rss
+from bike_router.route_graph import RouteGraph, shortest_path
+from bike_router.sanity import check_cost_model
 from bike_router.simplify import (
     BikeLeg,
     RailLeg,
@@ -101,6 +99,67 @@ def resolve_endpoints(
     )
 
 
+def _route_node_path(
+    *,
+    bike_corridor: Polygon,
+    rail_corridor: Polygon,
+    graph_dir: Path,
+    start_latlon: tuple[float, float],
+    dest_latlon: tuple[float, float],
+    params: RoutingParams,
+) -> list[tuple[int, float, float]]:
+    """Load the corridor, route on a compact CSR graph, return the path as (osmid, lat, lon).
+
+    Reads ONLY the minimal routing columns (no geometry_wkt — 73% of the edge table) so the
+    whole-corridor load stays memory-lean, then routes on a scipy CSR matrix (~12 bytes/edge vs
+    ~2.8 KB/edge for networkx). Frees the corridor tables before returning; geometry for the tiny
+    chosen path is re-read by the caller. Raises RouteTooLargeError past the memory cap.
+    """
+    nodes_df, edges_df = load_route_tables(
+        bike_corridor=bike_corridor, rail_corridor=rail_corridor, graph_dir=graph_dir
+    )
+    log_rss(label=f"corridor tables loaded ({len(edges_df)} edges)")
+    if len(edges_df) > CorridorConfig.MAX_ROUTE_EDGES:
+        raise RouteTooLargeError(
+            f"Route corridor is too large for this server ({len(edges_df):,} edges > "
+            f"{CorridorConfig.MAX_ROUTE_EDGES:,}) — try a shorter trip."
+        )
+    assert not edges_df.empty, "corridor graph has no edges"
+
+    elev_by_osmid = {int(o): float(e) for o, e in zip(nodes_df["osmid"], nodes_df["elevation_m"], strict=True)}
+    from_osmid = edges_df["from_node"].to_numpy(dtype="int64")
+    to_osmid = edges_df["to_node"].to_numpy(dtype="int64")
+    cost = edge_cost_array(edges_df=edges_df, elev_by_osmid=elev_by_osmid, params=params)
+    check_cost_model(
+        from_osmid=from_osmid,
+        to_osmid=to_osmid,
+        mode=edges_df["mode"].to_numpy(),
+        cost=cost,
+        elev_by_osmid=elev_by_osmid,
+        params=params,
+    )
+    route_graph = RouteGraph.from_arrays(
+        osmids=nodes_df["osmid"].to_numpy(dtype="int64"),
+        lat=nodes_df["lat"].to_numpy(dtype=float),
+        lon=nodes_df["lon"].to_numpy(dtype=float),
+        node_type=nodes_df["node_type"].to_numpy(),
+        from_osmid=from_osmid,
+        to_osmid=to_osmid,
+        cost=cost,
+    )
+    log_rss(label=f"CSR route graph built ({route_graph.n_edges} edges)")
+    source = route_graph.snap_bike_node(lat=start_latlon[0], lon=start_latlon[1])
+    target = route_graph.snap_bike_node(lat=dest_latlon[0], lon=dest_latlon[1])
+    try:
+        node_path = shortest_path(route_graph=route_graph, source_osmid=source, target_osmid=target)
+    except nx.NetworkXNoPath as exc:
+        raise NoRouteError("No bike route found between the two places within the corridor.") from exc
+    return [
+        (int(n), float(route_graph.lat[route_graph.index[n]]), float(route_graph.lon[route_graph.index[n]]))
+        for n in node_path
+    ]
+
+
 def plan_route(
     *,
     origin: str,
@@ -151,25 +210,29 @@ def plan_route(
         extend_km=CorridorConfig.RAIL_EXTEND_KM,
     )
 
-    graph = load_route_graph(bike_corridor=bike_corridor, rail_corridor=rail_corridor, graph_dir=graph_dir)
+    # Load the corridor, route on a compact CSR graph, resolve the node path (memory-lean:
+    # no geometry, no networkx). Returns the path as (osmid, lat, lon) for the geometry re-read.
+    path_coords = _route_node_path(
+        bike_corridor=bike_corridor,
+        rail_corridor=rail_corridor,
+        graph_dir=graph_dir,
+        start_latlon=start_latlon,
+        dest_latlon=dest_latlon,
+        params=params,
+    )
+    logger.info(f"Route: {len(path_coords)} nodes")
 
-    source, target = snap_endpoints(graph=graph, start_latlon=start_latlon, dest_latlon=dest_latlon)
-    assign_edge_costs(graph=graph, params=params)
-    steepest = find_steepest_bidirectional_edge(graph=graph)
-    if steepest is not None:  # None = no bidirectional edge (legitimate, not a bug)
-        check_uphill_costlier(graph=graph, node_lower=steepest[0], node_upper=steepest[1], params=params)
+    # The route is an ultra-small subset (hundreds of edges); re-read those edges WITH geometry
+    # into an ordered RoutePath — no networkx. The big corridor tables were already freed inside
+    # _route_node_path. The re-read picks the SAME cheapest parallel edge per hop (same params).
+    route = load_path_edges(path_nodes=path_coords, params=params, graph_dir=graph_dir)
+    log_rss(label="path edges loaded (corridor freed)")
 
-    try:
-        node_path = shortest_route(graph=graph, source=source, target=target)
-    except nx.NetworkXNoPath as exc:
-        raise NoRouteError("No bike route found between the two places within the corridor.") from exc
-    logger.info(f"Route: {len(node_path)} nodes")
-
-    track = build_track(graph=graph, node_path=node_path)
+    track = build_track(route=route)
     # Expand to the full real 2D polyline; elevation stays LINEAR node-to-node (edge_vertices_3d),
-    # so the GPX, 3D ribbon, and elevation profile all read the SAME elevation the optimiser and stats use
-    track = densify_track(graph=graph, node_path=node_path, track=track)
-    composition = route_composition(graph=graph, node_path=node_path)
+    # so the GPX, 3D ribbon, and elevation profile all read the SAME elevation the optimiser + stats use.
+    track = densify_track(route=route, track=track)
+    composition = route_composition(route=route)
     logger.info(
         f"total {track.total.distance_km:.1f} km / {track.total.duration_min:.0f} min, "
         f"bike {track.bike.distance_km:.1f} km, +{track.bike.ascent_m:.0f} m / -{track.bike.descent_m:.0f} m"
@@ -181,9 +244,8 @@ def plan_route(
     logger.info(f"Wrote {gpx_path} ({len(track.points)} trackpoints)")
 
     png_path.parent.mkdir(parents=True, exist_ok=True)
-    plot_elevation_heatmap(
-        graph=graph,
-        route_nodes=node_path,
+    plot_route_debug(
+        route=route,
         track=track,
         params=params,
         out_path=str(png_path),
@@ -194,20 +256,22 @@ def plan_route(
 
     # Train rides first (boarding + alighting station per ride) — they both label the bike
     # legs and let the rider look the actual train up in a railway app. Empty for pure bike.
-    rail_legs = split_rail_legs(graph=graph, node_path=node_path)
+    rail_legs = split_rail_legs(route=route)
 
     # One Google Maps bicycling URL per pedalled leg: a train ride splits the route, so a
     # pure-bike trip yields one link and a one-train trip yields two. Each leg is labelled
     # by its real endpoints (origin/destination at the ends, station names where a train abuts).
-    leg_paths = split_bike_legs(graph=graph, node_path=node_path)
-    endpoints = bike_leg_endpoints(
-        graph=graph, node_path=node_path, leg_paths=leg_paths, origin=origin, destination=destination
-    )
+    leg_paths = split_bike_legs(route=route)
+    endpoints = bike_leg_endpoints(route=route, leg_paths=leg_paths, origin=origin, destination=destination)
+    position = {osmid: index for index, osmid in enumerate(route.osmids)}
     bike_legs = [
         BikeLeg(
             url=build_gmaps_url(
                 waypoints_latlon=select_waypoints(
-                    line=route_to_linestring(graph=graph, node_path=leg), count=GmapsConfig.N_WAYPOINTS
+                    line=route_to_linestring(
+                        route=route.subpath(start_index=position[leg[0]], end_index=position[leg[-1]])
+                    ),
+                    count=GmapsConfig.N_WAYPOINTS,
                 )
             ),
             from_place=from_place,

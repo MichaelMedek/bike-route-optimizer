@@ -23,12 +23,16 @@ from bike_router.simplify import (
     route_station_markers,
 )
 from bike_router.webmap import (
+    GRADE_DONUT_COLORS,
+    GRADE_SCALE,
     MODE_DONUT_COLORS,
-    ROAD_DONUT_COLORS,
-    SURFACE_DONUT_COLORS,
+    QUALITY_DONUT_COLORS,
+    QUALITY_SCALE,
     composition_donut,
+    condition_km,
     default_view_state,
     elevation_profile_chart,
+    grade_km,
     route_ribbon_segments,
     route_view_state,
 )
@@ -75,9 +79,10 @@ def _render_route_output(result: object) -> None:
                 col.metric(label, value)
 
         comp = result.composition
+        # Three donuts: the unified road-QUALITY donut, the road-GRADE donut, and by-mode.
         donuts = (
-            ("By surface", comp.by_surface_km, SURFACE_DONUT_COLORS),
-            ("By road", comp.by_road_km, ROAD_DONUT_COLORS),
+            ("By quality", condition_km(track=track), QUALITY_DONUT_COLORS),
+            ("By grade", grade_km(track=track), GRADE_DONUT_COLORS),
             ("By mode", comp.by_mode_km, MODE_DONUT_COLORS),
         )
         for col, (title, by_km, colors) in zip(st.columns(len(donuts)), donuts, strict=True):
@@ -162,7 +167,6 @@ def main() -> None:
         "start_latlon": None,
         "end_latlon": None,
         "result": None,
-        "ribbon_segments": None,
         "stations": None,
         "start_box_resolved": None,  # exact box text Set resolved (gates Compute + hides suggestions)
         "end_box_resolved": None,
@@ -198,7 +202,6 @@ def main() -> None:
                 start_box_resolved=origin,  # suppress suggestions until the box is edited again
                 end_box_resolved=destination,
                 result=None,  # stale route from the previous endpoints
-                ribbon_segments=None,
                 stations=None,
                 view=route_view_state(start_latlon=start[:2], end_latlon=end[:2]),
                 camera_epoch=st.session_state.camera_epoch + 1,
@@ -243,14 +246,10 @@ def main() -> None:
             params = RoutingParams(**slider_values)
             with st.spinner("Planning route…"):
                 result = plan_route(origin=origin, destination=destination, params=params)
-            # No camera_epoch bump → the map keeps the view set in step 2. Rail-leg tooltips label
-            # the train ribbon runs; station markers mark each hop-on/hop-off stop.
-            ribbon = route_ribbon_segments(
-                track=result.track, rail_tooltips=rail_leg_tooltips(rail_legs=result.rail_legs)
-            )
+            # No camera_epoch bump → the map keeps the view set in step 2. Store the result; the
+            # ribbon is rebuilt at render time from the colour-scale radio (below the map).
             st.session_state.update(
                 result=result,
-                ribbon_segments=ribbon,
                 stations=route_station_markers(rail_legs=result.rail_legs),
             )
         except BikeRouterError as error:  # too short/long, out of coverage, or no route
@@ -258,13 +257,25 @@ def main() -> None:
     if not endpoints_match:
         st.caption(f"⬆️ Press **{SET_LABEL}** first to enable **{COMPUTE_LABEL}**.")
 
-    # 5. 3D map. camera_epoch (bumped only by Set start & end) keys the remount.
+    _render_map(origin=origin, destination=destination)
+
+    # 6. Stats + export controls BELOW the map, shown once a route exists.
+    if st.session_state.result is not None:
+        _render_route_output(result=st.session_state.result)
+
+
+def _render_map(*, origin: str, destination: str) -> None:
+    """Render the 3D map: endpoints, the colour-scale radio, and the route ribbon.
+
+    camera_epoch (bumped only by Set start & end) drives the only camera move; the colour
+    scale + whether a ribbon exists fold into the remount key so a fresh route or a scale
+    toggle shows immediately without moving the view.
+    """
     endpoints = (
         (st.session_state.start_latlon, st.session_state.end_latlon)
         if st.session_state.start_latlon is not None
         else None
     )
-    # Start/end markers show the typed place + its snapped elevation on hover.
     endpoint_labels = (
         (
             place_label(name=origin, elevation_m=st.session_state.start_latlon[2]),
@@ -273,22 +284,35 @@ def main() -> None:
         if endpoints is not None
         else None
     )
+    # Ribbon colour scale: a radio ABOVE the map so its value flows straight into the ribbon build.
+    result = st.session_state.result
+    color_scale = QUALITY_SCALE
+    if result is not None:
+        color_scale = st.radio(
+            "Ribbon colour",
+            options=(QUALITY_SCALE, GRADE_SCALE),
+            format_func=lambda s: "Road quality (good / unpaved / main road)"
+            if s == QUALITY_SCALE
+            else "Road grade (flat / uphill / downhill)",
+            key="color_scale",
+            horizontal=True,
+        )
+    ribbon = (
+        route_ribbon_segments(
+            track=result.track, rail_tooltips=rail_leg_tooltips(rail_legs=result.rail_legs), color_scale=color_scale
+        )
+        if result is not None
+        else None
+    )
     deck = build_deck(
         view=st.session_state.view,
-        ribbon_segments=st.session_state.ribbon_segments,
+        ribbon_segments=ribbon,
         endpoints=endpoints,
         endpoint_labels=endpoint_labels,
         stations=st.session_state.stations,
     )
-    # Render via st_deckgl (NOT st.pydeck_chart): a changed key remounts the component and
-    # re-applies initial_view_state, so "Set start & end" — the only camera move — always
-    # re-zooms. camera_epoch (bumped only by Set) is the whole key; nothing else moves the view.
-    map_key = f"bike_map_{st.session_state.camera_epoch}"
+    map_key = f"bike_map_{st.session_state.camera_epoch}_{color_scale}_{ribbon is not None}"
     st_deckgl(deck, key=map_key, height=WebMapConfig.MAP_HEIGHT_PX)
-
-    # 6. Stats + export controls BELOW the map, shown once a route exists.
-    if st.session_state.result is not None:
-        _render_route_output(result=st.session_state.result)
 
 
 if __name__ == "__main__":

@@ -15,7 +15,8 @@ pyproj>=3.6.0
 # OSM graph + routing
 osmnx>=2.0.0
 networkx>=3.0
-scikit-learn>=1.3.0  # osmnx.distance.nearest_nodes needs it for unprojected graphs
+scikit-learn>=1.3.0  # osmnx.distance.nearest_nodes needs it for unprojected graphs (build-time)
+scipy>=1.11.0  # sparse CSR routing graph + csgraph.dijkstra (memory-lean inference)
 pyrosm>=0.6.0  # fast local .osm.pbf reader for the offline country-graph builder
 geopandas>=0.14.0  # GeoDataFrames from pyrosm; node/edge tables
 pyarrow>=14.0.0  # tiled GeoParquet artifact read/write
@@ -25,6 +26,7 @@ gpxpy>=1.6.0
 numpy>=1.24.0
 matplotlib>=3.7.0
 tqdm>=4.60.0  # CLI progress bar
+psutil>=5.9.0  # process RSS logging (memory guard around route planning)
 
 # Web viewer (Streamlit 3D map). st_deckgl (not the built-in st.pydeck_chart) because st.pydeck_chart
 # keeps the panned camera, so "Set start & end" could never re-zoom.

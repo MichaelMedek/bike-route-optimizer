@@ -9,18 +9,18 @@ GPX + debug PNG. The prebuilt DACH bike+rail graph (downloaded from Hugging Face
 first run) bakes in elevation, so NO DEM is used at inference.
 
 Thin CLI shell only: arg parsing + calling package functions; pipeline logic lives
-in bike_router.pipeline.
+in bike_router.core.pipeline.
 """
 
 import argparse
 import logging
 
-from bike_router.composition import format_composition
-from bike_router.constants import PARAM_SPECS, RoutingParams
-from bike_router.graph_store import download_graph_from_hf
-from bike_router.pipeline import plan_route
-from bike_router.progress import tqdm_progress
-from bike_router.simplify import format_bike_legs, format_rail_legs
+from bike_router.core.composition import format_composition
+from bike_router.core.constants import PARAM_SPECS, RoutingParams
+from bike_router.core.graph_store import download_graph_from_hf
+from bike_router.core.pipeline import plan_route
+from bike_router.core.progress import tqdm_progress
+from bike_router.core.simplify import format_bike_legs, format_rail_legs
 
 
 def main(argv: list[str] | None = None) -> int:

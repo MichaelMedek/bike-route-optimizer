@@ -16,16 +16,18 @@ import math
 from pathlib import Path
 from typing import Any
 
-import networkx as nx
 import pandas as pd
-from huggingface_hub import hf_hub_download, list_repo_files
-from shapely import covers, from_wkt, points, to_wkt
-from shapely.geometry import LineString, Polygon, box
+from huggingface_hub import snapshot_download
+from huggingface_hub.utils import tqdm as hf_tqdm
+from shapely import covers, from_wkt, points
+from shapely.geometry import Polygon, box
 
-from bike_router.constants import GraphConfig, Mode, NodeType
+from bike_router.constants import GraphConfig, Mode, NodeType, RoutingParams
+from bike_router.cost import edge_cost_array
 from bike_router.errors import OutOfCoverageError
 from bike_router.geo import haversine_vec
 from bike_router.progress import ProgressFn, null_progress
+from bike_router.route_path import RouteEdge, RouteNode, RoutePath
 
 logger = logging.getLogger(__name__)
 
@@ -85,67 +87,13 @@ def _intersecting_tiles(*, corridor: Polygon, tile_deg: float) -> list[tuple[int
     ]
 
 
-def compute_bbox(nodes_df: pd.DataFrame) -> tuple[float, float, float, float]:
-    """The (west, south, east, north) bounds of a node table — one source for both build scripts."""
-    return (
-        float(nodes_df["lon"].min()),
-        float(nodes_df["lat"].min()),
-        float(nodes_df["lon"].max()),
-        float(nodes_df["lat"].max()),
-    )
-
-
-def write_graph_parquet(
-    nodes_df: pd.DataFrame, edges_df: pd.DataFrame, meta: dict[str, Any], out_dir: Path, compression: str = "snappy"
-) -> None:
-    """Write node/edge tables as lat/lon-tiled Parquet + meta.json under ``out_dir``.
-
-    Nodes are tiled by their own coordinate; edges by their ``from_node``'s tile, so a
-    corridor read (covering tiles + 1 margin) reliably pulls both endpoints. ``compression``
-    is the parquet codec: "snappy" (fast, for per-region intermediates) or "zstd" (~35%
-    smaller, for the final artifact uploaded to HF — readers auto-detect the codec).
-    """
-    assert list(nodes_df.columns) == _NODE_COLS, f"nodes schema drift: {list(nodes_df.columns)}"
-    assert list(edges_df.columns) == _EDGE_COLS, f"edges schema drift: {list(edges_df.columns)}"
-    tile_deg = meta["tile_deg"]
-
-    nodes_dir = out_dir / GraphConfig.NODES_SUBDIR
-    edges_dir = out_dir / GraphConfig.EDGES_SUBDIR
-    nodes_dir.mkdir(parents=True, exist_ok=True)
-    edges_dir.mkdir(parents=True, exist_ok=True)
-
-    node_tiles = [
-        tile_index(lat=lat, lon=lon, tile_deg=tile_deg)
-        for lat, lon in zip(nodes_df["lat"], nodes_df["lon"], strict=True)
-    ]
-    nodes_df = nodes_df.assign(_tile=node_tiles)
-    coord = {
-        osmid: (lat, lon) for osmid, lat, lon in zip(nodes_df["osmid"], nodes_df["lat"], nodes_df["lon"], strict=True)
-    }
-    edge_tiles = [
-        tile_index(lat=coord[node][0], lon=coord[node][1], tile_deg=tile_deg) for node in edges_df["from_node"]
-    ]
-    edges_df = edges_df.assign(_tile=edge_tiles)
-
-    for (row, col), group in nodes_df.groupby("_tile"):
-        group[_NODE_COLS].to_parquet(
-            nodes_dir / f"{_tile_name(row=row, col=col)}.parquet", index=False, compression=compression
-        )
-    for (row, col), group in edges_df.groupby("_tile"):
-        group[_EDGE_COLS].to_parquet(
-            edges_dir / f"{_tile_name(row=row, col=col)}.parquet", index=False, compression=compression
-        )
-
-    (out_dir / GraphConfig.META_FILENAME).write_text(json.dumps(meta, indent=2))
-    logger.info(f"Wrote {len(nodes_df)} nodes / {len(edges_df)} edges across tiles to {out_dir}")
-
-
 def download_graph_from_hf(target_dir: Path = GraphConfig.GRAPH_DIR, progress: ProgressFn = null_progress) -> Path:
     """Download the prebuilt DACH graph artifact from Hugging Face if missing.
 
-    Fetches the dataset's files one-by-one (nodes/, edges/, meta.json) so ``progress``
-    reports genuine (files_done, files_total) — the ONE place the app/CLI show a bar.
-    Idempotent: skips entirely once meta.json is already present locally.
+    Uses snapshot_download (concurrent, ``HF_MAX_WORKERS`` files at once) so the ~630-file
+    artifact pulls far faster than one-at-a-time. ``progress`` reports genuine
+    (files_done, files_total) via the main-thread "Fetching N files" bar — the ONE place the
+    app/CLI show a bar. Idempotent: skips entirely once meta.json is already present locally.
     """
     meta_path = target_dir / GraphConfig.META_FILENAME
     if meta_path.exists():
@@ -153,13 +101,28 @@ def download_graph_from_hf(target_dir: Path = GraphConfig.GRAPH_DIR, progress: P
         return target_dir
     target_dir.mkdir(parents=True, exist_ok=True)
     logger.info(f"Downloading DACH graph from HF {GraphConfig.HF_REPO_ID} …")
-    files = list_repo_files(repo_id=GraphConfig.HF_REPO_ID, repo_type="dataset")
-    progress(0, len(files))
-    for done, filename in enumerate(files, start=1):
-        hf_hub_download(
-            repo_id=GraphConfig.HF_REPO_ID, repo_type="dataset", filename=filename, local_dir=str(target_dir)
-        )
-        progress(done, len(files))
+
+    class _FileCountTqdm(hf_tqdm):  # type: ignore[misc]  # hf_tqdm is untyped (Any)
+        """Forward ONLY the main-thread 'Fetching N files' bar to ``progress``.
+
+        snapshot_download also creates two byte bars (unit='B') updated from worker threads;
+        those are skipped so st.progress is only ever touched on the main thread (off-thread
+        st.progress calls silently no-op).
+        """
+
+        def update(self, n: float | None = 1) -> bool | None:
+            result: bool | None = super().update(n)
+            if self.unit != "B" and self.total:
+                progress(int(self.n), int(self.total))
+            return result
+
+    snapshot_download(
+        repo_id=GraphConfig.HF_REPO_ID,
+        repo_type="dataset",
+        local_dir=str(target_dir),
+        max_workers=GraphConfig.HF_MAX_WORKERS,
+        tqdm_class=_FileCountTqdm,
+    )
     assert meta_path.exists(), "download did not produce meta.json"
     return target_dir
 
@@ -192,168 +155,86 @@ def _read_tiles(
     return pd.concat(frames, ignore_index=True)
 
 
-def read_region_tables(region_dir: Path) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """Read one region artifact's full node + edge tables back (all its tiles).
-
-    Used by the Phase-3 combine step to re-load each per-region artifact written by
-    write_graph_parquet. Returns (nodes_df, edges_df) with the standard schemas.
-    """
-    nodes_df = _read_tiles(region_dir / GraphConfig.NODES_SUBDIR, columns=_NODE_COLS)
-    edges_df = _read_tiles(region_dir / GraphConfig.EDGES_SUBDIR, columns=_EDGE_COLS)
-    return nodes_df, edges_df
-
-
-def read_full_graph(graph_dir: Path = GraphConfig.GRAPH_DIR) -> nx.MultiDiGraph:
-    """Reconstruct the WHOLE graph from every tile of an artifact (Phase-4 validation).
-
-    Unlike load_corridor_graph (which reads only a corridor's covering tiles), this loads
-    all tiles so a connectivity probe tests the entire merged network exactly as saved.
-    """
-    nodes_df, edges_df = read_region_tables(region_dir=graph_dir)
-    return graph_from_tables(nodes_df=nodes_df, edges_df=edges_df)
-
-
-def graph_from_tables(nodes_df: pd.DataFrame, edges_df: pd.DataFrame) -> nx.MultiDiGraph:
-    """Reconstruct an OSMnx-shaped MultiDiGraph from node/edge tables.
-
-    Uses bulk add_nodes_from / add_edges_from (networkx C internals). Edges whose
-    endpoints are both present become graph edges; edges referencing a node outside
-    the loaded window are dropped (they dangle off the tile set).
-    """
-    graph = nx.MultiDiGraph(crs="EPSG:4326")
-    graph.add_nodes_from(
-        (
-            int(osmid),
-            {
-                "x": float(lon),
-                "y": float(lat),
-                "elevation": float(elev),
-                "node_type": NodeType(ntype),
-                "station_name": _str_or_none(value=name),
-            },
-        )
-        for osmid, lat, lon, elev, ntype, name in zip(
-            nodes_df["osmid"],
-            nodes_df["lat"],
-            nodes_df["lon"],
-            nodes_df["elevation_m"],
-            nodes_df["node_type"],
-            nodes_df["station_name"],
-            strict=True,
-        )
-    )
-    present = set(graph.nodes)
-    surfaces = edges_df["surface"].map(_str_or_none)
-    highways = edges_df["highway"].map(_str_or_none)
-    geoms = edges_df["geometry_wkt"].map(lambda w: from_wkt(w) if isinstance(w, str) else None)
-    graph.add_edges_from(
-        (
-            int(u),
-            int(v),
-            int(k),
-            {"length": float(ln), "height_diff": float(hd), "surface": s, "highway": h, "mode": m, "geometry": g},
-        )
-        for u, v, k, ln, hd, s, h, m, g in zip(
-            edges_df["from_node"],
-            edges_df["to_node"],
-            edges_df["key"],
-            edges_df["length_m"],
-            edges_df["height_diff_m"],
-            surfaces,
-            highways,
-            edges_df["mode"],
-            geoms,
-            strict=True,
-        )
-        if int(u) in present and int(v) in present
-    )
-    _assert_height_diffs_consistent(graph)
-    _assert_node_edge_types_consistent(graph)
-    return graph
-
-
-def _assert_node_edge_types_consistent(graph: nx.MultiDiGraph) -> None:
-    """Hard-fail if any edge's endpoints don't match its mode's required node types.
-
-    The core structural guarantee: a BIKE edge joins two bike nodes, a RAIL edge two rail
-    nodes, and a STATION edge exactly one of each. So a bike route can NEVER pass through a
-    station node — reaching a station always crosses a station edge (which carries boarding).
-    Only rules edges the corridor window fully contains; dangling edges were already dropped.
-    """
-    for u, v, data in graph.edges(data=True):
-        tu, tv = graph.nodes[u]["node_type"], graph.nodes[v]["node_type"]
-        mode = data["mode"]
-        if mode == Mode.BIKE:
-            ok = tu == NodeType.BIKE and tv == NodeType.BIKE
-        elif mode == Mode.RAIL:
-            ok = tu == NodeType.RAIL and tv == NodeType.RAIL
-        elif mode == Mode.STATION:
-            ok = {tu, tv} == {NodeType.BIKE, NodeType.RAIL}
-        else:
-            raise AssertionError(f"unknown edge mode {mode!r} on {u}->{v}")
-        assert ok, f"{mode} edge {u}->{v} has inconsistent node types {tu}/{tv} — artifact corrupt"
-
-
-def _assert_height_diffs_consistent(graph: nx.MultiDiGraph) -> None:
-    """Hard-fail if any edge's stored height_diff disagrees with its node elevations.
-
-    height_diff_m is a convenience column derivable from the two nodes' elevation_m;
-    a mismatch beyond HEIGHT_DIFF_TOLERANCE_M means the artifact is corrupt or stale.
-    """
-    tol = GraphConfig.HEIGHT_DIFF_TOLERANCE_M
-    for u, v, data in graph.edges(data=True):
-        expected = graph.nodes[v]["elevation"] - graph.nodes[u]["elevation"]
-        assert abs(data["height_diff"] - expected) <= tol, (
-            f"height_diff mismatch on edge {u}->{v}: stored {data['height_diff']:.2f} m "
-            f"vs nodes {expected:.2f} m (tol {tol} m) — artifact corrupt or stale"
-        )
-
-
 def _load_layer(
-    *, corridor: Polygon, graph_dir: Path, node_type: str, edge_modes: list[str]
+    *,
+    corridor: Polygon,
+    graph_dir: Path,
+    node_type: str,
+    edge_modes: list[str],
+    node_columns: list[str],
+    edge_columns: list[str],
+    extra_from_ids: frozenset[int] = frozenset(),
 ) -> tuple[pd.DataFrame, pd.DataFrame, set[int]]:
     """Read one mode-layer's nodes/edges for a corridor, keeping only nodes inside it.
 
     Reads only tiles the corridor crosses and only rows of the requested node_type / edge
-    modes (parquet pushdown), then masks nodes to those the corridor COVERS (covers, not
-    contains — a point exactly on the tube edge must count). Returns (nodes, edges, inside_ids).
+    modes (parquet pushdown) with only ``node_columns``/``edge_columns`` (column projection).
+    Nodes are masked to those the corridor COVERS FIRST, then edges are read with a
+    ``from_node in (inside_ids ∪ extra_from_ids)`` pushdown so only corridor edges ever
+    materialize (a tile can hold 100k+ edges — masking after a whole-tile read would spike
+    memory). ``extra_from_ids`` admits station edges whose from_node is in the OTHER layer
+    (bike→rail station links, read in the rail layer). Returns (nodes, edges, inside_ids).
     """
     tile_deg = load_meta(graph_dir=graph_dir)["tile_deg"]
     tiles = _intersecting_tiles(corridor=corridor, tile_deg=tile_deg)
     nodes_df = _read_tiles(
         directory=graph_dir / GraphConfig.NODES_SUBDIR,
-        columns=_NODE_COLS,
+        columns=node_columns,
         tiles=tiles,
         filters=[("node_type", "==", node_type)],
     )
+    inside_mask = covers(corridor, points(nodes_df["lon"].to_numpy(dtype=float), nodes_df["lat"].to_numpy(dtype=float)))
+    nodes_df = nodes_df[inside_mask].reset_index(drop=True)
+    inside_ids = set(nodes_df["osmid"].astype(int))
     edges_df = _read_tiles(
         directory=graph_dir / GraphConfig.EDGES_SUBDIR,
-        columns=_EDGE_COLS,
+        columns=edge_columns,
         tiles=tiles,
-        filters=[("mode", "in", edge_modes)],
+        filters=[("mode", "in", edge_modes), ("from_node", "in", list(inside_ids | extra_from_ids))],
     )
-    inside_mask = covers(corridor, points(nodes_df["lon"].to_numpy(dtype=float), nodes_df["lat"].to_numpy(dtype=float)))
-    nodes_df = nodes_df[inside_mask]
-    inside_ids = set(nodes_df["osmid"].astype(int))
-    return nodes_df.reset_index(drop=True), edges_df, inside_ids
+    return nodes_df, edges_df, inside_ids
 
 
-def load_route_graph(
-    *, bike_corridor: Polygon, rail_corridor: Polygon, graph_dir: Path = GraphConfig.GRAPH_DIR
-) -> nx.MultiDiGraph:
-    """Reconstruct the routing graph from two corridors: a tight bike tube + a wide rail tube.
+# Minimal columns the CSR router needs: node coords+elev+type, edge endpoints+length+tags+mode.
+# geometry_wkt (73% of the edge table) and key/height_diff are read ONLY for the final path.
+_ROUTE_NODE_COLS = ["osmid", "lat", "lon", "elevation_m", "node_type"]
+_ROUTE_EDGE_COLS = ["from_node", "to_node", "length_m", "surface", "highway", "mode"]
 
-    Bike (the ~98% compute weight) is confined to the narrow tube; sparse rail is loaded from a
-    much wider tube so a route may ride a train that leaves and re-enters the bike tube. Station
-    access edges bridge the two. NOT strongly-component-pruned: A* raises NoRouteError if no path,
-    and a valid multi-component corridor (e.g. across a water gap) must not be rejected. The result
-    is optimal WITHIN the tube — a detour leaving it is out of scope by construction.
+
+def load_route_tables(
+    *,
+    bike_corridor: Polygon,
+    rail_corridor: Polygon,
+    graph_dir: Path = GraphConfig.GRAPH_DIR,
+    node_columns: list[str] = _ROUTE_NODE_COLS,
+    edge_columns: list[str] = _ROUTE_EDGE_COLS,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Combined (nodes_df, edges_df) for the two-corridor routing window — the SINGLE combine.
+
+    Tight bike tube + wide rail tube (rail is sparse), recombined with the bike ring, the
+    rail↔rail edges, and the station bridges. Default columns are the minimal routing set
+    (no geometry) so the corridor load stays memory-lean; callers wanting a full networkx
+    graph pass the full schemas. Not component-pruned: a valid multi-component corridor
+    (water gap) must not be rejected — the router raises NoRouteError if truly disconnected.
     """
     bike_nodes, bike_edges, bike_ids = _load_layer(
-        corridor=bike_corridor, graph_dir=graph_dir, node_type=NodeType.BIKE, edge_modes=[Mode.BIKE]
+        corridor=bike_corridor,
+        graph_dir=graph_dir,
+        node_type=NodeType.BIKE,
+        edge_modes=[Mode.BIKE],
+        node_columns=node_columns,
+        edge_columns=edge_columns,
     )
+    # Rail layer also carries STATION edges; a bike→rail station link has from_node in the BIKE
+    # layer, so admit bike_ids to the from_node pushdown or those links would be filtered out.
     rail_nodes, rail_edges, rail_ids = _load_layer(
-        corridor=rail_corridor, graph_dir=graph_dir, node_type=NodeType.RAIL, edge_modes=[Mode.RAIL, Mode.STATION]
+        corridor=rail_corridor,
+        graph_dir=graph_dir,
+        node_type=NodeType.RAIL,
+        edge_modes=[Mode.RAIL, Mode.STATION],
+        node_columns=node_columns,
+        edge_columns=edge_columns,
+        extra_from_ids=frozenset(bike_ids),
     )
     assert not bike_nodes.empty, "bike corridor is outside the prebuilt graph coverage (no node tiles)"
 
@@ -373,9 +254,111 @@ def load_route_graph(
 
     nodes_df = pd.concat([bike_nodes, rail_nodes], ignore_index=True)
     edges_df = pd.concat([bike_edges, rail_edges], ignore_index=True)
-    graph = graph_from_tables(nodes_df=nodes_df, edges_df=edges_df)
-    assert graph.number_of_edges() > 0, "corridor graph has no edges"
-    return graph
+    return nodes_df, edges_df
+
+
+def load_path_edges(
+    *, path_nodes: list[tuple[int, float, float]], params: RoutingParams, graph_dir: Path = GraphConfig.GRAPH_DIR
+) -> RoutePath:
+    """Re-read ONLY the chosen path's edges (with geometry) into an ordered RoutePath.
+
+    The route is an ultra-small subset (hundreds of edges), so re-reading their tiles WITH
+    geometry_wkt costs a few MB — vs the ~GB a full-corridor networkx graph would. For each
+    consecutive hop the CHEAPEST parallel candidate is kept (recomputed via edge_cost with the
+    SAME params the CSR router used — the single cost source), oriented from_node→to_node.
+
+    Args:
+        path_nodes: the route's (osmid, lat, lon) in order — coords give the tiles to read.
+        params: the rider's preferences (so the re-read picks the same parallel edge as routing).
+        graph_dir: prebuilt-graph dir.
+    """
+    assert len(path_nodes) >= 2, "path must have >= 2 nodes"
+    path_osmids = [int(osmid) for osmid, _lat, _lon in path_nodes]
+    tile_deg = load_meta(graph_dir=graph_dir)["tile_deg"]
+    tiles = sorted(
+        {
+            tile
+            for _osmid, lat, lon in path_nodes
+            for tile in _covering_tiles(bounds=(lon, lat, lon, lat), tile_deg=tile_deg, margin=1)
+        }
+    )
+    # Read the path's nodes, index by osmid, and reindex to the route order (pandas — no py loop).
+    nodes_df = (
+        _read_tiles(
+            directory=graph_dir / GraphConfig.NODES_SUBDIR,
+            columns=_NODE_COLS,
+            tiles=tiles,
+            filters=[("osmid", "in", list(set(path_osmids)))],
+        )
+        .set_index("osmid")
+        .reindex(path_osmids)
+    )
+    nodes = [
+        RouteNode(
+            osmid=int(osmid),
+            lat=float(row.lat),
+            lon=float(row.lon),
+            elevation_m=float(row.elevation_m),
+            node_type=str(row.node_type),
+            station_name=_str_or_none(value=row.station_name),
+        )
+        for osmid, row in zip(path_osmids, nodes_df.itertuples(index=False), strict=True)
+    ]
+    edges_df = _read_tiles(
+        directory=graph_dir / GraphConfig.EDGES_SUBDIR,
+        columns=_EDGE_COLS,
+        tiles=tiles,
+        filters=[("from_node", "in", list(set(path_osmids)))],
+    )
+    return RoutePath(nodes=nodes, edges=_select_path_edges(nodes=nodes, edges_df=edges_df, params=params))
+
+
+def _select_path_edges(*, nodes: list[RouteNode], edges_df: pd.DataFrame, params: RoutingParams) -> list[RouteEdge]:
+    """Cheapest parallel edge per consecutive hop, oriented a→b, as an ordered RouteEdge list.
+
+    Both orientations of each hop are read (edges are directed); the cheapest matching row under
+    ``params`` is kept — the SAME min-collapse the CSR router applied — via edge_cost_array (the
+    ONE vectorized cost). Costs the whole candidate table at once, then picks per hop.
+    """
+    elev = {node.osmid: node.elevation_m for node in nodes}
+    known = edges_df["from_node"].isin(elev) & edges_df["to_node"].isin(elev)
+    df = edges_df[known].reset_index(drop=True)
+    costs = edge_cost_array(edges_df=df, elev_by_osmid=elev, params=params)
+    # Cheapest (from, to) → row index across all parallel candidates (vectorized cost, then min per pair).
+    best: dict[tuple[int, int], tuple[float, int]] = {}
+    for i, (u, v, c) in enumerate(zip(df["from_node"], df["to_node"], costs, strict=True)):
+        pair = (int(u), int(v))
+        if pair not in best or c < best[pair][0]:
+            best[pair] = (float(c), i)
+
+    edges: list[RouteEdge] = []
+    for node_a, node_b in zip(nodes[:-1], nodes[1:], strict=True):
+        chosen = best.get((node_a.osmid, node_b.osmid))
+        assert chosen is not None, f"no edge found for path hop {node_a.osmid}->{node_b.osmid}"
+        row = df.iloc[chosen[1]]
+        edges.append(
+            RouteEdge(
+                from_node=node_a.osmid,
+                to_node=node_b.osmid,
+                mode=str(row["mode"]),
+                length_m=float(row["length_m"]),
+                surface=_str_or_none(value=row["surface"]),
+                highway=_str_or_none(value=row["highway"]),
+                geometry=_oriented_geometry(wkt=row["geometry_wkt"], node_a=node_a),
+            )
+        )
+    return edges
+
+
+def _oriented_geometry(*, wkt: object, node_a: RouteNode) -> list[tuple[float, float]] | None:
+    """WKT LINESTRING → 2D ``[(lon, lat), ...]`` oriented to start at node_a, or None if absent."""
+    if not isinstance(wkt, str):
+        return None
+    coords = [(float(c[0]), float(c[1])) for c in from_wkt(wkt).coords]  # drop any z
+    first, last = coords[0], coords[-1]
+    if abs(first[0] - node_a.lon) + abs(first[1] - node_a.lat) > abs(last[0] - node_a.lon) + abs(last[1] - node_a.lat):
+        coords.reverse()
+    return coords
 
 
 def snap_to_node(lat: float, lon: float, graph_dir: Path = GraphConfig.GRAPH_DIR) -> tuple[float, float, float]:
@@ -397,60 +380,6 @@ def snap_to_node(lat: float, lon: float, graph_dir: Path = GraphConfig.GRAPH_DIR
     return float(row["lat"]), float(row["lon"]), float(row["elevation_m"])
 
 
-def graph_to_tables(graph: nx.MultiDiGraph) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """Flatten a built MultiDiGraph into node/edge tables matching the on-disk schema.
-
-    ``node_type`` and ``mode`` are internal invariants the builder sets on every node/edge
-    (fail loud if not). Bike and rail edges both keep their real polyline; only the short
-    station access-links have no geometry (straight).
-    """
-    nodes = [
-        {
-            "osmid": int(n),
-            "lat": float(d["y"]),  # OSMnx stores y = latitude
-            "lon": float(d["x"]),  # x = longitude
-            "elevation_m": float(d["elevation"]),
-            "node_type": str(d["node_type"]),  # internal invariant: builder types every node
-            "station_name": d["station_name"],  # internal invariant: str for stations, None otherwise
-        }
-        for n, d in graph.nodes(data=True)
-    ]
-    edges = [
-        {
-            "from_node": int(u),
-            "to_node": int(v),
-            "key": int(k),
-            "length_m": float(d["length"]),
-            "height_diff_m": float(graph.nodes[v]["elevation"] - graph.nodes[u]["elevation"]),
-            "surface": _scalar(d.get("surface")),  # unknown → explicit None (external OSM)
-            "highway": _scalar(d.get("highway")),  # ditto (genuinely optional)
-            "mode": d["mode"],  # internal invariant: builder tags every edge (fail loud if not)
-            "geometry_wkt": _geometry_wkt(d.get("geometry")),
-        }
-        for u, v, k, d in graph.edges(keys=True, data=True)
-    ]
-    return pd.DataFrame(nodes, columns=_NODE_COLS), pd.DataFrame(edges, columns=_EDGE_COLS)
-
-
-def _geometry_wkt(geom: object) -> str | None:
-    """Real edge polyline as WKT, or None for straight (rail/station) hops."""
-    if isinstance(geom, LineString) and len(geom.coords) >= 2:
-        return str(to_wkt(geom, rounding_precision=GraphConfig.COORD_PRECISION))
-    return None
-
-
 def _str_or_none(value: object) -> str | None:
     """A str value, else None — the ONE 'non-str/NaN → None' coercion for tag/name columns."""
     return value if isinstance(value, str) else None
-
-
-def _scalar(value: object) -> object:
-    """Collapse a list-valued OSM tag to its first element; unknown/empty → None.
-
-    Consolidation merges parallel ways into list-valued surface/highway; routing
-    only needs one representative (surface_tier/road_tier handle scalars). An
-    absent or empty tag is stored as an explicit None, never a blank string.
-    """
-    if isinstance(value, list | tuple):
-        return value[0] if value else None
-    return _str_or_none(value=value)

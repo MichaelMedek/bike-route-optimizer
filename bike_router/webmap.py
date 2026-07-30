@@ -6,6 +6,7 @@ No streamlit imports here — these are pure builders the app shell merely calls
 """
 
 import math
+from collections.abc import Callable
 from dataclasses import dataclass
 
 import altair as alt
@@ -13,9 +14,12 @@ import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 
-from bike_router.constants import Mode, Palette, RoadConfig, SurfaceConfig, WebMapConfig
+from bike_router.constants import Mode, Palette, WebMapConfig
 from bike_router.geo import haversine_vec
-from bike_router.track import Track, TrackPoint, classify_condition
+from bike_router.simplify import place_label  # single source; re-exported for the app shell
+from bike_router.track import Track, TrackPoint, classify_condition, classify_grade, grade_color, segment_color
+
+__all__ = ["place_label"]  # noqa: F822 — re-export so app_webmap imports it from here
 
 
 def _hex(rgb: tuple[int, int, int]) -> str:
@@ -23,11 +27,49 @@ def _hex(rgb: tuple[int, int, int]) -> str:
     return "#{:02x}{:02x}{:02x}".format(*rgb)
 
 
-# Donut label→colour maps, all derived from single sources (no re-typed labels):
-# surface/road labels+colours live in SurfaceConfig/RoadConfig; mode in WebMapConfig.
-SURFACE_DONUT_COLORS = dict(SurfaceConfig.TIER_LABEL_COLORS.values())
-ROAD_DONUT_COLORS = dict(RoadConfig.TIER_LABEL_COLORS.values())
+# Donut label→colour maps, derived from single sources (no re-typed labels): the road-QUALITY
+# and road-GRADE scales come from Palette; the mode donut from WebMapConfig.
+QUALITY_DONUT_COLORS = {label: Palette.CONDITION_COLORS[label] for label in ("good", "unpaved", "main road")}
+GRADE_DONUT_COLORS = {label: Palette.GRADE_COLORS[label] for label in ("flat", "uphill", "downhill")}
 MODE_DONUT_COLORS = {label: _hex(rgb=rgb) for label, rgb in WebMapConfig.MODE_DONUT_COLORS.items()}
+
+
+def _bike_km_by(track: Track, bucket_of: "Callable[[TrackPoint], str]") -> dict[str, float]:
+    """Bike km per bucket, ``bucket_of`` mapping each pedalled point to its bucket label.
+
+    Each point (bar the start) is the far end of one edge; its leg length is the great-circle
+    gap from the previous point (vectorized once). Rail/station points are skipped. One loop
+    serves both the road-QUALITY and road-GRADE donuts (single source, no duplication).
+    """
+    lats = np.array([p.lat for p in track.points], dtype=np.float64)
+    lons = np.array([p.lon for p in track.points], dtype=np.float64)
+    leg_km = haversine_vec(lat_a=lats[:-1], lon_a=lons[:-1], lat_b=lats[1:], lon_b=lons[1:]) / 1000.0
+    by_km: dict[str, float] = {}
+    for point, km in zip(track.points[1:], leg_km, strict=True):
+        if point.mode != str(Mode.BIKE):
+            continue
+        bucket = bucket_of(point)
+        by_km[bucket] = by_km.get(bucket, 0.0) + float(km)
+    return by_km
+
+
+def condition_km(track: Track) -> dict[str, float]:
+    """Bike km per road-QUALITY bucket (good / unpaved / main road) — the unified donut source.
+
+    Bucketed via classify_condition; "main road" and "main road + unpaved" fold into "main
+    road" (the dominant hazard).
+    """
+
+    def _bucket(p: TrackPoint) -> str:
+        condition = classify_condition(mode=p.mode, surface_bad=p.surface_bad, road_bad=p.road_bad)
+        return "main road" if condition in ("main road", "main road + unpaved") else condition
+
+    return _bike_km_by(track, _bucket)
+
+
+def grade_km(track: Track) -> dict[str, float]:
+    """Bike km per road-GRADE bucket (flat / uphill / downhill) via classify_grade (one source)."""
+    return _bike_km_by(track, lambda p: classify_grade(mode=p.mode, grade=p.grade))
 
 
 def composition_donut(title: str, by_km: dict[str, float], colors: dict[str, str]) -> alt.Chart:
@@ -124,16 +166,6 @@ def elevation_profile_chart(track: Track) -> go.Figure:
     return fig
 
 
-def segment_color(*, mode: str, surface_bad: bool, road_bad: bool) -> list[int]:
-    """RGB for a route segment — the single source both the 3D ribbon and PNG use.
-
-    Delegates the branching to classify_condition (one source) and looks the colour up in
-    Palette.CONDITION_COLORS, so colour and legend label can never disagree.
-    """
-    condition = classify_condition(mode=mode, surface_bad=surface_bad, road_bad=road_bad)
-    return list(Palette.hex_to_rgb(hex_color=Palette.CONDITION_COLORS[condition]))
-
-
 @dataclass(frozen=True)
 class RibbonSegment:
     """One contiguous run of the route ribbon: colour, width, 3D points, and a hover tooltip."""
@@ -144,9 +176,19 @@ class RibbonSegment:
     tooltip: str
 
 
-def place_label(*, name: str, elevation_m: float) -> str:
-    """``Name (739 m)`` — the ONE marker/tooltip label format (start, end, stations, legs)."""
-    return f"{name} ({elevation_m:.0f} m)"
+# The two ribbon colour scales the radio button toggles between.
+QUALITY_SCALE = "quality"  # blue good / orange unpaved / red main road
+GRADE_SCALE = "grade"  # blue flat / red uphill / green downhill
+
+
+def _point_color(*, point: TrackPoint, scale: str) -> list[int]:
+    """RGB for one point's arriving edge on the chosen scale (both single-sourced in track)."""
+    if scale == QUALITY_SCALE:
+        return segment_color(mode=point.mode, surface_bad=point.surface_bad, road_bad=point.road_bad)
+    elif scale == GRADE_SCALE:
+        return grade_color(mode=point.mode, grade=point.grade)
+    else:
+        raise ValueError(f"unknown ribbon colour scale: {scale!r}")
 
 
 def _segment_tooltip(point: TrackPoint) -> str:
@@ -178,19 +220,21 @@ def route_ribbon_segments(
     track: Track,
     float_above_m: float = WebMapConfig.RIBBON_FLOAT_ABOVE_M,
     rail_tooltips: list[str] | None = None,
+    color_scale: str = QUALITY_SCALE,
 ) -> list[RibbonSegment]:
     """Split the route into contiguous runs sharing one colour + width + tooltip, for rendering.
 
-    Colour comes from segment_color (condition/mode). BIKE segments size their width by effort
-    (∝ 1/√speed, so slow spots are wider); RAIL + STATION segments use the fixed RIBBON_REF_WIDTH_M.
-    A pedalled segment's tooltip describes it (surface/road/gradient/speed); a train run shows its
-    whole-leg label from ``rail_tooltips`` (one per train ride, in order). Consecutive runs share
-    their boundary point so the ribbon stays continuous.
+    Colour comes from the chosen scale (road-QUALITY or road-GRADE, the radio toggle). BIKE
+    segments size their width by effort (∝ 1/√speed, so slow spots are wider); RAIL + STATION
+    segments use the fixed RIBBON_REF_WIDTH_M. A pedalled segment's tooltip describes it
+    (surface/road/gradient/speed); a train run shows its whole-leg label from ``rail_tooltips``
+    (one per train ride, in order). Consecutive runs share their boundary point so the ribbon stays continuous.
 
     Args:
         track: The computed route track from plan_route (points carry mode/condition/speed/grade).
         float_above_m: Metres to lift the ribbon above the terrain mesh.
         rail_tooltips: Whole-leg hover text per train ride (rail_leg_tooltips); None → generic.
+        color_scale: QUALITY_SCALE (blue/orange/red) or GRADE_SCALE (blue/green/red).
     """
     assert len(track.points) >= 2, "ribbon needs at least two points to draw"
     tips = rail_tooltips or []
@@ -199,7 +243,7 @@ def route_ribbon_segments(
     prev_mode = None
     for point in track.points[1:]:  # each point is the FAR end of one edge (point 0 has no edge)
         xyz = [point.lon, point.lat, point.elevation_m + float_above_m]
-        color = segment_color(mode=point.mode, surface_bad=point.surface_bad, road_bad=point.road_bad)
+        color = _point_color(point=point, scale=color_scale)
         # Bike segments size by effort (∝ 1/√speed); rail + station segments draw the fixed
         # reference width (a train's pace isn't rider effort; station hops are negligible links).
         pedalled = point.mode == str(Mode.BIKE)
