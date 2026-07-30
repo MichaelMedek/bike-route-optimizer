@@ -14,8 +14,8 @@ from bike_router.ui.webmap_layers import (
     build_deck,
     create_endpoint_layer,
     create_route_ribbon_layers,
-    create_station_layer,
     create_terrain_layer,
+    create_waypoint_layer,
 )
 
 
@@ -69,29 +69,33 @@ def test_marker_row():
 
 
 def test_create_endpoint_layer():
-    # Start (blue) + end (cyan) markers, each [lon, lat, elev+lift], with name+elev tooltips; on top.
+    # Start + end markers, BOTH the one blue MARKER_COLOR, each [lon, lat, elev+lift], name+elev
+    # tooltips, bigger than waypoints, drawn on top of terrain.
     layer = create_endpoint_layer(
         start=(48.0, 8.0, 300.0), end=(48.4, 8.6, 500.0), start_label="A (300 m)", end_label="B (500 m)"
     )
     assert layer.type == "ScatterplotLayer" and layer.id == "route_endpoints" and layer.pickable
     lift = WebMapConfig.RIBBON_FLOAT_ABOVE_M
     assert [row["position"] for row in layer.data] == [[8.0, 48.0, 300.0 + lift], [8.6, 48.4, 500.0 + lift]]
-    assert [row["color"] for row in layer.data] == [list(WebMapConfig.START_COLOR), list(WebMapConfig.END_COLOR)]
+    blue = list(WebMapConfig.MARKER_COLOR)
+    assert [row["color"] for row in layer.data] == [blue, blue]  # ONE colour for both endpoints
     assert [row["tooltip"] for row in layer.data] == ["A (300 m)", "B (500 m)"]
+    assert layer.get_radius == WebMapConfig.ENDPOINT_RADIUS_M > WebMapConfig.WAYPOINT_RADIUS_M  # bigger than waypoints
     assert layer.parameters == {"depthTest": False}  # drawn on top of terrain, never buried
 
 
-def test_create_station_layer():
-    # Rail-coloured markers at each hop-on/hop-off station, SMALLER than the start/end markers.
-    layer = create_station_layer(stations=[(48.5, 8.4, 700.0, "Freudenstadt Stadt (700 m)")])
-    assert layer.type == "ScatterplotLayer" and layer.id == "route_stations" and layer.pickable
-    assert layer.get_radius == WebMapConfig.STATION_MARKER_RADIUS_M < WebMapConfig.MARKER_RADIUS_M
-    assert layer.data[0]["color"] == list(WebMapConfig.RAIL_COLOR)  # rail purple
+def test_create_waypoint_layer():
+    # Intermediate markers (stations + gmaps waypoints): the SAME blue as the endpoints but SMALLER,
+    # round, on top — told apart from endpoints by size, never colour (no more rail purple).
+    layer = create_waypoint_layer(waypoints=[(48.5, 8.4, 700.0, "Freudenstadt Stadt (700 m)")])
+    assert layer.type == "ScatterplotLayer" and layer.id == "route_waypoints" and layer.pickable
+    assert layer.get_radius == WebMapConfig.WAYPOINT_RADIUS_M < WebMapConfig.ENDPOINT_RADIUS_M  # smaller
+    assert layer.data[0]["color"] == list(WebMapConfig.MARKER_COLOR)  # same blue as endpoints
     assert layer.data[0]["tooltip"] == "Freudenstadt Stadt (700 m)"
 
 
 def test_build_deck():
-    # Assembles the Deck bottom→top: terrain only; +endpoints; then terrain/stations/endpoints/ribbon
+    # Assembles the Deck bottom→top: terrain only; +endpoints; then terrain/waypoints/endpoints/ribbon
     # in that draw order, carrying the camera pose from the ViewState.
     view = default_view_state()
     terrain_only = build_deck(view=view, ribbon_segments=None)
@@ -109,6 +113,6 @@ def test_build_deck():
         view=view,
         ribbon_segments=two_run,
         endpoints=((48.0, 8.0, 300.0), (48.4, 8.6, 500.0)),
-        stations=[(48.01, 8.01, 500.0, "S (500 m)")],
+        waypoints=[(48.01, 8.01, 500.0, "S (500 m)")],
     )
-    assert [layer.id for layer in full.layers] == ["terrain_3d", "route_stations", "route_endpoints", "route_ribbon"]
+    assert [layer.id for layer in full.layers] == ["terrain_3d", "route_waypoints", "route_endpoints", "route_ribbon"]

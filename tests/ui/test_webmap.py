@@ -32,6 +32,7 @@ from bike_router.ui.webmap import (
     endpoint_labels,
     grade_km,
     map_remount_key,
+    map_waypoint_markers,
     output_donuts,
     output_stat_rows,
     profile_markers,
@@ -170,11 +171,13 @@ def test_point_color():
 
 
 def test_segment_tooltip():
-    # Names surface · road · signed gradient direction · est. speed for a pedalled segment.
+    # Names surface · road · signed gradient direction · est. speed · elevation for a pedalled segment.
     uphill = _line_track().points[1]  # climbs 1→2
     tip = _segment_tooltip(point=uphill)
     assert "paved" in tip and "quiet way" in tip and "km/h" in tip
     assert "uphill" in tip or "downhill" in tip or "flat" in tip
+    # the trailing elevation, same "NNN m" format the markers hover — the edge's height
+    assert tip.rstrip().endswith(f"{uphill.elevation_m:.0f} m")
 
 
 def test_ribbon_width_m():
@@ -284,14 +287,11 @@ def test_endpoint_labels():
 
 
 def test_map_remount_key():
-    # Encodes camera epoch + colour scale + whether a ribbon exists, so a route/scale change remounts.
-    assert (
-        map_remount_key(camera_epoch=3, color_scale=QUALITY_SCALE, has_ribbon=True)
-        == f"bike_map_3_{QUALITY_SCALE}_True"
-    )
-    assert (
-        map_remount_key(camera_epoch=0, color_scale=GRADE_SCALE, has_ribbon=False) == f"bike_map_0_{GRADE_SCALE}_False"
-    )
+    # Keyed ONLY on camera_epoch (bumped by Set start & end), so the map remounts to move the camera
+    # but a colour-scale toggle / fresh ribbon repaints in place — no white-frame remount.
+    assert map_remount_key(camera_epoch=3) == "bike_map_3"
+    assert map_remount_key(camera_epoch=0) == "bike_map_0"
+    assert map_remount_key(camera_epoch=1) != map_remount_key(camera_epoch=2)  # a new camera move remounts
 
 
 def test_scale_label():
@@ -355,3 +355,27 @@ def test_station_marker_points():
     points = _station_marker_points(result=result)
     assert [lab for _lat, _lon, _e, lab in points] == ["A (100 m)", "B (200 m)"]
     assert _station_marker_points(result=SimpleNamespace(rail_legs=[])) == []
+
+
+def test_map_waypoint_markers():
+    # The map's intermediate markers = stations + named gmaps waypoints as (lat, lon, elev, label).
+    # A waypoint's elevation snaps to its nearest track point; village_of None drops it; each label
+    # is the shared "Name (elev m)". A pure-bike route (no rail legs) yields just the named waypoints.
+    track = _line_track()  # nodes at lon 8.00/8.01/8.02, elevations 100/130/100 m
+    result = SimpleNamespace(track=track, rail_legs=[], waypoints=[(48.0, 8.01), (48.0, 8.02)])
+    markers = map_waypoint_markers(result=result, village_of=lambda lat, lon: "Baiersbronn" if lon == 8.01 else None)
+    assert len(markers) == 1  # the 8.02 waypoint (village_of → None) is dropped
+    lat, lon, elev, label = markers[0]
+    assert (lat, lon) == (48.0, 8.01) and elev == pytest.approx(130.0)  # snapped to node 2's elevation
+    assert label == "Baiersbronn (130 m)"  # shared place_label format, elevation from the track
+
+    # stations come first (from _station_marker_points), then the named waypoints
+    from bike_router.core.simplify import RailLeg, Station
+
+    leg = RailLeg(
+        board=Station(name="A", lat=48.0, lon=8.0, elevation_m=100.0),
+        alight=Station(name="B", lat=48.0, lon=8.02, elevation_m=100.0),
+    )
+    with_rail = SimpleNamespace(track=track, rail_legs=[leg], waypoints=[(48.0, 8.01)])
+    labels = [lab for _lat, _lon, _e, lab in map_waypoint_markers(result=with_rail, village_of=lambda lat, lon: "V")]
+    assert labels == ["A (100 m)", "B (100 m)", "V (130 m)"]  # stations, then the waypoint

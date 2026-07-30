@@ -355,11 +355,11 @@ class CostConfig:
 class GradeConfig:
     """Grade classification for the road-GRADE colour scale + grade donut.
 
-    An edge steeper than +MARGIN uphill is red, below −MARGIN downhill is green, and
-    everything between is flat blue. One threshold both the colour scale and the donut read.
+    An edge at/above +MARGIN uphill is red, at/below −MARGIN downhill is green, and everything
+    strictly between is flat blue. One threshold both the colour scale and the donut read.
     """
 
-    MARGIN = 0.03  # rise/run: |grade| within this reads as flat
+    MARGIN = 0.02  # rise/run: |grade| BELOW this reads as flat (so only ~-1/0/+1% is flat, ≥2% slopes)
 
 
 class SpeedConfig:
@@ -472,7 +472,7 @@ class WebMapConfig:
     # from the single Palette (hex), converted here via hex_to_rgb for the RGB pydeck/PNG APIs.
     START_COLOR = Palette.hex_to_rgb(hex_color=Palette.START)  # blue (start marker)
     END_COLOR = Palette.hex_to_rgb(hex_color=Palette.END)  # cyan (destination marker)
-    RAIL_COLOR = Palette.hex_to_rgb(hex_color=Palette.RAIL)  # purple — trains only
+    RAIL_COLOR = Palette.hex_to_rgb(hex_color=Palette.RAIL)  # purple — the train ribbon + donut only
     # Composition-donut mode display: two buckets only — pedalled vs train. Station
     # access-hops are negligible and fold into "bike route".
     # The ribbon/PNG use segment_color (condition-based), NOT this map.
@@ -481,11 +481,13 @@ class WebMapConfig:
         "bike route": Palette.hex_to_rgb(hex_color=Palette.START),  # blue
         "train path": RAIL_COLOR,  # purple
     }
-    MARKER_RADIUS_M = 60.0
-    MARKER_MIN_PIXELS = 8
-    # Station hop-on/hop-off markers: smaller than the start/end markers, rail-coloured.
-    STATION_MARKER_RADIUS_M = 35.0
-    STATION_MARKER_MIN_PIXELS = 5
+    # ONE colour for EVERY map marker (start, end, stations, waypoints) — the start/end blue.
+    MARKER_COLOR = Palette.hex_to_rgb(hex_color=Palette.START)  # blue — all markers
+    ENDPOINT_RADIUS_M = 70.0  # start/end: slightly bigger than the intermediate markers
+    ENDPOINT_MIN_PIXELS = 9
+    # Intermediate markers (board/alight stations AND gmaps waypoints)
+    WAYPOINT_RADIUS_M = 50.0
+    WAYPOINT_MIN_PIXELS = 7
     # Zoom, same log formula as ski-resort's MapConfig.zoom_for_span_m. Set one level below the
     # raw span fit so the framed route — which usually extends past the straight start→end span.
     VIEWING_ZOOM = 11.0

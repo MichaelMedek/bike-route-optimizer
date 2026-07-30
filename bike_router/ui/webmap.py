@@ -216,7 +216,11 @@ def _point_color(*, point: TrackPoint, scale: str) -> list[int]:
 
 
 def _segment_tooltip(point: TrackPoint) -> str:
-    """Hover text for a pedalled ribbon segment: surface · road · gradient · est. speed."""
+    """Hover text for a pedalled ribbon segment: surface · road · gradient · est. speed · elevation.
+
+    The trailing ``NNN m`` is the edge's elevation in the SAME format the markers show on hover, so
+    hovering the route reads its height just like hovering a start/end/station/waypoint marker.
+    """
     surface = "unpaved" if point.surface_bad else "paved"
     road = "main road" if point.road_bad else "quiet way"
     grade_pct = point.grade * 100
@@ -227,7 +231,7 @@ def _segment_tooltip(point: TrackPoint) -> str:
     else:
         direction = "flat"
     slope = f"{grade_pct:+.0f}% {direction}"
-    return f"{surface} · {road} · {slope} · ~{point.speed_kmh:.0f} km/h"
+    return f"{surface} · {road} · {slope} · ~{point.speed_kmh:.0f} km/h · {point.elevation_m:.0f} m"
 
 
 def ribbon_width_m(speed_kmh: float) -> float:
@@ -393,11 +397,15 @@ def endpoint_labels(
     )
 
 
-def map_remount_key(*, camera_epoch: int, color_scale: str, has_ribbon: bool) -> str:
-    """The st_deckgl remount key: camera_epoch drives the only camera move; the colour scale +
-    whether a ribbon exists fold in so a fresh route or a scale toggle remounts immediately.
+def map_remount_key(*, camera_epoch: int) -> str:
+    """The st_deckgl remount key — bumped ONLY when the camera must move (Set start & end).
+
+    A colour-scale toggle or a fresh ribbon is just new layer DATA: deck.gl repaints it in place
+    on the same-key rerun. Folding those into the key forced a full remount, and a freshly-mounted
+    deck.gl paints one white frame before its WebGL context repaints — hence the "white on first
+    toggle" bug. Keying on camera_epoch alone keeps the map mounted, so recolours show immediately.
     """
-    return f"bike_map_{camera_epoch}_{color_scale}_{has_ribbon}"
+    return f"bike_map_{camera_epoch}"
 
 
 def scale_label(scale: str) -> str:
@@ -465,3 +473,27 @@ def _station_marker_points(*, result: "RouteResult") -> list[tuple[float, float,
     from bike_router.core.simplify import route_station_markers
 
     return route_station_markers(rail_legs=result.rail_legs)
+
+
+def map_waypoint_markers(
+    *, result: "RouteResult", village_of: "Callable[[float, float], str | None]"
+) -> list[tuple[float, float, float, str]]:
+    """(lat, lon, elevation_m, label) for every INTERMEDIATE map marker — stations + gmaps waypoints.
+
+    The SAME named points the elevation profile shows (minus the endpoints, which get their own
+    bigger markers): each board/alight station, plus every interior gmaps waypoint named via
+    ``village_of`` (a None result drops it). Each waypoint's elevation is snapped to its nearest
+    track point so its "Name (elev m)" hover matches the profile; stations carry their own.
+    """
+    markers = list(_station_marker_points(result=result))
+    points = result.track.points
+    plats = np.array([p.lat for p in points], dtype=np.float64)
+    plons = np.array([p.lon for p in points], dtype=np.float64)
+    for lat, lon in result.waypoints:
+        name = village_of(lat, lon)
+        if name is None:  # no village found → no unnamed marker (mirrors profile_markers)
+            continue
+        idx = int(haversine_vec(lat_a=lat, lon_a=lon, lat_b=plats, lon_b=plons).argmin())
+        elev = points[idx].elevation_m
+        markers.append((lat, lon, elev, place_label(name=name, elevation_m=elev)))
+    return markers

@@ -178,14 +178,14 @@ def classify_condition(*, mode: str, surface_bad: bool, road_bad: bool) -> str:
 def classify_grade(*, mode: str, grade: float) -> str:
     """Canonical road-GRADE label for a segment — the SINGLE grade branch point.
 
-    A train keeps its own "train" label (purple, no rider-felt grade). Bike/station: uphill
-    above +MARGIN, downhill below −MARGIN, else flat (mirrors the GradeConfig threshold).
+    A train keeps its own "train" label (purple, no rider-felt grade). Bike/station: uphill at
+    or above +MARGIN, downhill at or below −MARGIN, else flat (so only |grade| < MARGIN is flat).
     """
     if mode == Mode.RAIL:
         return "train"
-    elif grade > GradeConfig.MARGIN:
+    elif grade >= GradeConfig.MARGIN:
         return "uphill"
-    elif grade < -GradeConfig.MARGIN:
+    elif grade <= -GradeConfig.MARGIN:
         return "downhill"
     else:
         return "flat"
@@ -206,15 +206,14 @@ def grade_color(*, mode: str, grade: float) -> list[int]:
     return list(Palette.hex_to_rgb(hex_color=Palette.GRADE_COLORS[classify_grade(mode=mode, grade=grade)]))
 
 
-def _track_point(*, at: RouteNode, edge: RouteEdge, other_elev: float, elapsed_s: float) -> TrackPoint:
+def _track_point(*, at: RouteNode, edge: RouteEdge, elev_from: float, elev_to: float, elapsed_s: float) -> TrackPoint:
     """A TrackPoint at ``at``, carrying ``edge``'s condition/grade/speed — the ONE point builder.
 
-    ``other_elev`` is the edge's OTHER endpoint elevation (for grade + condition); the start
-    point passes the far node, every arriving point passes its own source node.
+    ``elev_from``/``elev_to`` are the edge's elevations in its TRAVEL direction (node_a → node_b),
+    so grade + speed always reflect the direction actually ridden — NOT which endpoint the point
+    happens to sit at. (Getting this backwards made every climb read as a descent and vice-versa.)
     """
-    surface_bad, road_bad, speed_kmh = edge_condition_speed(
-        edge=edge, elev_source=at.elevation_m, elev_target=other_elev
-    )
+    surface_bad, road_bad, speed_kmh = edge_condition_speed(edge=edge, elev_source=elev_from, elev_target=elev_to)
     return TrackPoint(
         lat=at.lat,
         lon=at.lon,
@@ -223,7 +222,7 @@ def _track_point(*, at: RouteNode, edge: RouteEdge, other_elev: float, elapsed_s
         mode=edge.mode,
         surface_bad=surface_bad,
         road_bad=road_bad,
-        grade=edge_grade(elev_source=at.elevation_m, elev_target=other_elev, length_m=edge.length_m),
+        grade=edge_grade(elev_source=elev_from, elev_target=elev_to, length_m=edge.length_m),
         speed_kmh=speed_kmh,
     )
 
@@ -236,8 +235,16 @@ def build_track(route: RoutePath) -> Track:
     + alight sum to one full wait (mirrors the cost split). All leg times are DERIVED.
     """
     first_node, second_node, first_edge = next(route.iter_edges())
-    # Start point: at the first node, oriented by the first edge (grade sign matches the arriving legs).
-    points = [_track_point(at=first_node, edge=first_edge, other_elev=second_node.elevation_m, elapsed_s=0.0)]
+    # Start point: at the first node, oriented in the first edge's travel direction (a→b).
+    points = [
+        _track_point(
+            at=first_node,
+            edge=first_edge,
+            elev_from=first_node.elevation_m,
+            elev_to=second_node.elevation_m,
+            elapsed_s=0.0,
+        )
+    ]
     total_m = total_s = 0.0
     total_deltas: list[float] = []  # Δelevation of EVERY edge (whole-journey climb)
     bike_deltas: list[float] = []  # Δelevation of pedalled edges only
@@ -265,8 +272,17 @@ def build_track(route: RoutePath) -> Track:
             raise AssertionError(f"unknown edge mode: {edge.mode!r}")
         total_s += leg_s
         total_m += length_m
-        # The arriving point sits at node_b, carrying THIS edge's condition (other endpoint = node_a).
-        points.append(_track_point(at=node_b, edge=edge, other_elev=node_a.elevation_m, elapsed_s=total_s))
+        # The arriving point sits at node_b but carries THIS edge's grade/speed in its travel
+        # direction (node_a → node_b), so a climb reads as uphill, not as the reverse descent.
+        points.append(
+            _track_point(
+                at=node_b,
+                edge=edge,
+                elev_from=node_a.elevation_m,
+                elev_to=node_b.elevation_m,
+                elapsed_s=total_s,
+            )
+        )
 
     assert total_m > 0, "route distance must be positive"
     assert total_s > 0, "route duration must be positive"

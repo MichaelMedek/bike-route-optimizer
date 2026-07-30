@@ -199,10 +199,12 @@ def test_classify_condition():
 
 
 def test_classify_grade():
-    # The SINGLE grade branch: a train keeps its own label; else uphill/downhill past ±MARGIN, flat inside.
+    # The SINGLE grade branch: a train keeps its own label; uphill/downhill at OR past ±MARGIN,
+    # flat only STRICTLY inside (so exactly ±MARGIN slopes; ±1% < 2% margin is flat).
     assert classify_grade(mode=Mode.RAIL, grade=0.5) == "train"
-    assert classify_grade(mode=Mode.BIKE, grade=GradeConfig.MARGIN + 0.01) == "uphill"
-    assert classify_grade(mode=Mode.BIKE, grade=-(GradeConfig.MARGIN + 0.01)) == "downhill"
+    assert classify_grade(mode=Mode.BIKE, grade=GradeConfig.MARGIN) == "uphill"  # exactly at → sloped
+    assert classify_grade(mode=Mode.BIKE, grade=-GradeConfig.MARGIN) == "downhill"
+    assert classify_grade(mode=Mode.BIKE, grade=GradeConfig.MARGIN - 0.005) == "flat"  # just under → flat
     assert classify_grade(mode=Mode.BIKE, grade=0.0) == "flat"
 
 
@@ -223,13 +225,18 @@ def test_grade_color():
 
 
 def test_track_point():
-    # The ONE point builder: carries its node position/elevation + the arriving edge's condition.
+    # The ONE point builder: carries its node position/elevation + the edge's condition/grade in
+    # its TRAVEL direction (elev_from → elev_to), NOT the reversed direction of where it sits.
     at = RouteNode(osmid=1, lat=48.0, lon=8.0, elevation_m=100.0, node_type=NodeType.BIKE, station_name=None)
     edge = _bike_edge(surface="gravel", highway="primary", length_m=1000.0)
-    pt = _track_point(at=at, edge=edge, other_elev=150.0, elapsed_s=42.0)
+    pt = _track_point(at=at, edge=edge, elev_from=100.0, elev_to=150.0, elapsed_s=42.0)
     assert (pt.lat, pt.lon, pt.elevation_m, pt.elapsed_s) == (48.0, 8.0, 100.0, 42.0)
     assert pt.surface_bad is True and pt.road_bad is True  # gravel + primary
-    assert pt.grade == pytest.approx(0.05)  # (150-100)/1000
+    assert pt.grade == pytest.approx(0.05)  # climb 100→150 over 1000 m → +5% (uphill, not the reverse)
+    # REGRESSION: an arriving point sits at node_b but the grade must follow the ridden direction
+    # a→b — a climb reads +, never the reversed − (the "uphill shown as downhill" bug).
+    climbing = _track_point(at=at, edge=edge, elev_from=100.0, elev_to=200.0, elapsed_s=0.0)
+    assert climbing.grade > 0  # ascending a→b → positive grade
 
 
 # --- build_track (bike + rail + station timing) ------------------------------

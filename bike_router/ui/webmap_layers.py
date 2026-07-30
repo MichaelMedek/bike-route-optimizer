@@ -85,41 +85,45 @@ def _marker_row(*, lat: float, lon: float, elev: float, color: list[int], toolti
 def create_endpoint_layer(
     start: tuple[float, float, float], end: tuple[float, float, float], start_label: str, end_label: str
 ) -> pdk.Layer:
-    """ScatterplotLayer with the start (blue) and end (cyan) markers, each with a name+elev tooltip.
+    """ScatterplotLayer with the start + end markers — the ONE blue, slightly bigger than waypoints.
 
     Each endpoint is ``(lat, lon, elevation_m)`` (snapped to its graph node); the marker hovers
-    RIBBON_FLOAT_ABOVE_M above that elevation. Colors match the debug PNG.
+    RIBBON_FLOAT_ABOVE_M above that elevation. All markers share MARKER_COLOR (blue); role is told
+    apart by SIZE (endpoints are the biggest), never by colour.
     """
+    blue = list(WebMapConfig.MARKER_COLOR)
     markers = [
-        _marker_row(
-            lat=start[0], lon=start[1], elev=start[2], color=list(WebMapConfig.START_COLOR), tooltip=start_label
-        ),
-        _marker_row(lat=end[0], lon=end[1], elev=end[2], color=list(WebMapConfig.END_COLOR), tooltip=end_label),
+        _marker_row(lat=start[0], lon=start[1], elev=start[2], color=blue, tooltip=start_label),
+        _marker_row(lat=end[0], lon=end[1], elev=end[2], color=blue, tooltip=end_label),
     ]
     return _marker_layer(
         layer_id="route_endpoints",
         markers=markers,
-        radius_m=WebMapConfig.MARKER_RADIUS_M,
-        min_pixels=WebMapConfig.MARKER_MIN_PIXELS,
+        radius_m=WebMapConfig.ENDPOINT_RADIUS_M,
+        min_pixels=WebMapConfig.ENDPOINT_MIN_PIXELS,
     )
 
 
-def create_station_layer(stations: list[tuple[float, float, float, str]]) -> pdk.Layer:
-    """Rail-coloured markers at each hop-on/hop-off station, smaller than the start/end markers.
+def create_waypoint_layer(waypoints: list[tuple[float, float, float, str]]) -> pdk.Layer:
+    """Blue round markers at each intermediate point — board/alight STATIONS AND gmaps WAYPOINTS.
+
+    Same blue as the endpoints but SLIGHTLY SMALLER (they read as "along the way", endpoints as
+    anchors). One layer for both kinds — a station and a village waypoint look identical, differing
+    only in their hover label.
 
     Args:
-        stations: ``(lat, lon, elevation_m, label)`` per boarded/alighted station; the label is
-            the shared "Name (elev m)" text shown on hover.
+        waypoints: ``(lat, lon, elevation_m, label)`` per intermediate marker; the label is the
+            shared "Name (elev m)" text shown on hover.
     """
-    rail = list(WebMapConfig.RAIL_COLOR)
+    blue = list(WebMapConfig.MARKER_COLOR)
     markers = [
-        _marker_row(lat=lat, lon=lon, elev=elev, color=rail, tooltip=label) for lat, lon, elev, label in stations
+        _marker_row(lat=lat, lon=lon, elev=elev, color=blue, tooltip=label) for lat, lon, elev, label in waypoints
     ]
     return _marker_layer(
-        layer_id="route_stations",
+        layer_id="route_waypoints",
         markers=markers,
-        radius_m=WebMapConfig.STATION_MARKER_RADIUS_M,
-        min_pixels=WebMapConfig.STATION_MARKER_MIN_PIXELS,
+        radius_m=WebMapConfig.WAYPOINT_RADIUS_M,
+        min_pixels=WebMapConfig.WAYPOINT_MIN_PIXELS,
     )
 
 
@@ -128,16 +132,16 @@ def build_deck(
     ribbon_segments: list[RibbonSegment] | None,
     endpoints: tuple[tuple[float, float, float], tuple[float, float, float]] | None = None,
     endpoint_labels: tuple[str, str] | None = None,
-    stations: list[tuple[float, float, float, str]] | None = None,
+    waypoints: list[tuple[float, float, float, str]] | None = None,
 ) -> pdk.Deck:
-    """Assemble the Deck bottom→top: terrain, stations, endpoints, then the route ribbon.
+    """Assemble the Deck bottom→top: terrain, waypoints, endpoints, then the route ribbon.
 
     One deck-level tooltip (``{tooltip}``) serves every pickable layer — each ribbon segment,
-    endpoint, and station datum carries its own ``tooltip`` string (the proven pydeck idiom).
+    endpoint, and waypoint datum carries its own ``tooltip`` string (the proven pydeck idiom).
     """
     layers = [create_terrain_layer(mesh_max_error=1.0)]
-    if stations:
-        layers.append(create_station_layer(stations=stations))
+    if waypoints:
+        layers.append(create_waypoint_layer(waypoints=waypoints))
     if endpoints is not None:
         labels = endpoint_labels or ("Start", "End")
         layers.append(

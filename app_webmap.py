@@ -19,7 +19,6 @@ from bike_router.core.simplify import (
     format_bike_legs,
     format_rail_legs,
     rail_leg_tooltips,
-    route_station_markers,
 )
 from bike_router.ui.webmap import (
     COMPUTE_LABEL,
@@ -32,6 +31,7 @@ from bike_router.ui.webmap import (
     elevation_profile_chart,
     endpoint_labels,
     map_remount_key,
+    map_waypoint_markers,
     output_donuts,
     output_stat_rows,
     profile_markers,
@@ -168,7 +168,6 @@ def main() -> None:
         "start_latlon": None,
         "end_latlon": None,
         "result": None,
-        "stations": None,
         "start_box_resolved": None,  # exact box text Set resolved (gates Compute + hides suggestions)
         "end_box_resolved": None,
         "view": default_view_state(),
@@ -203,7 +202,6 @@ def main() -> None:
                 start_box_resolved=origin,  # suppress suggestions until the box is edited again
                 end_box_resolved=destination,
                 result=None,  # stale route from the previous endpoints
-                stations=None,
                 view=route_view_state(start_latlon=start[:2], end_latlon=end[:2]),
                 camera_epoch=st.session_state.camera_epoch + 1,
             )
@@ -239,11 +237,9 @@ def main() -> None:
             with st.spinner("Planning route…"):
                 result = plan_route(origin=origin, destination=destination, params=params)
             # No camera_epoch bump → the map keeps the view set in step 2. Store the result; the
-            # ribbon is rebuilt at render time from the colour-scale radio (below the map).
-            st.session_state.update(
-                result=result,
-                stations=route_station_markers(rail_legs=result.rail_legs),
-            )
+            # ribbon is rebuilt at render time from the colour-scale radio (below the map). Markers
+            # (stations + waypoints) are assembled at render time too (map_waypoint_markers).
+            st.session_state.update(result=result)
         except BikeRouterError as error:  # too short/long, out of coverage, or no route
             st.toast(str(error), icon="⚠️")
     if not enabled:
@@ -292,16 +288,17 @@ def _render_map(*, origin: str, destination: str) -> None:
         if result is not None
         else None
     )
+    # Intermediate map markers = board/alight stations + named gmaps waypoints (the SAME points the
+    # elevation profile shows). All blue + round + smaller than the endpoints; stations no longer purple.
+    waypoints = map_waypoint_markers(result=result, village_of=_waypoint_village) if result is not None else None
     deck = build_deck(
         view=st.session_state.view,
         ribbon_segments=ribbon,
         endpoints=endpoints,
         endpoint_labels=labels,
-        stations=st.session_state.stations,
+        waypoints=waypoints,
     )
-    map_key = map_remount_key(
-        camera_epoch=st.session_state.camera_epoch, color_scale=color_scale, has_ribbon=ribbon is not None
-    )
+    map_key = map_remount_key(camera_epoch=st.session_state.camera_epoch)
     st_deckgl(deck, key=map_key, height=WebMapConfig.MAP_HEIGHT_PX)
 
 
