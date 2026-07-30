@@ -6,11 +6,15 @@ ski map) plus an optional route ribbon `PathLayer`. No 2D style, no clicks.
 """
 
 from dataclasses import asdict
+from pathlib import Path
 
 import pydeck as pdk
 
 from bike_router.core.constants import WebMapConfig
-from bike_router.ui.webmap import RibbonSegment, ViewState
+from bike_router.core.geo import haversine_distance_m
+from bike_router.core.route_path import RoutePath
+from bike_router.core.track import build_track, densify_track
+from bike_router.ui.webmap import RibbonSegment, ViewState, route_ribbon_segments, zoom_for_span_m
 
 
 def create_terrain_layer(mesh_max_error: float) -> pdk.Layer:
@@ -152,3 +156,31 @@ def build_deck(
         map_provider=None,  # TerrainLayer is the basemap; no Mapbox style needed
         tooltip={"html": "{tooltip}", "style": {"backgroundColor": "rgba(255,255,255,0.95)", "color": "#333"}},
     )
+
+
+def render_resort_html(*, routes: list[RoutePath], stations_latlon: list[tuple[float, float]], out_path: Path) -> None:
+    """Write a standalone interactive 3D map (pydeck to_html) of a resort's lift+slope routes.
+
+    Each route → Track → ribbon segments over the terrain deck; the camera frames the stations' bbox.
+
+    Args:
+        routes: every lift + slope RoutePath to draw.
+        stations_latlon: (lat, lon) of the resort's stations, for camera framing.
+        out_path: HTML file to write.
+    """
+    segments: list[RibbonSegment] = []
+    for route in routes:
+        segments += route_ribbon_segments(track=densify_track(route=route, track=build_track(route=route)))
+    lats = [lat for lat, _lon in stations_latlon]
+    lons = [lon for _lat, lon in stations_latlon]
+    span_m = haversine_distance_m(lat_a=min(lats), lon_a=min(lons), lat_b=max(lats), lon_b=max(lons)) or 1.0
+    view = ViewState(
+        latitude=(min(lats) + max(lats)) / 2.0,
+        longitude=(min(lons) + max(lons)) / 2.0,
+        zoom=zoom_for_span_m(span_m=span_m),
+        pitch=WebMapConfig.DEFAULT_PITCH,
+        bearing=WebMapConfig.DEFAULT_BEARING,
+    )
+    deck = build_deck(view=view, ribbon_segments=segments)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    deck.to_html(str(out_path), open_browser=False)
