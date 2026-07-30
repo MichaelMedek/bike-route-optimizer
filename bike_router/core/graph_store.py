@@ -91,9 +91,8 @@ def _intersecting_tiles(*, corridor: Polygon, tile_deg: float) -> list[tuple[int
 def download_graph_from_hf(target_dir: Path = GraphConfig.GRAPH_DIR, progress: ProgressFn = null_progress) -> Path:
     """Download the prebuilt DACH graph artifact from Hugging Face if missing.
 
-    Lists the repo files, then downloads them concurrently (``HF_MAX_WORKERS``) reporting
-    ``progress(done, total)`` from the main thread as each finishes. Idempotent: skips once
-    meta.json is present.
+    Lists the repo files, downloads them concurrently (``HF_MAX_WORKERS``) reporting
+    ``progress(done, total)`` on the main thread as each finishes. Idempotent via meta.json.
     """
     meta_path = target_dir / GraphConfig.META_FILENAME
     if meta_path.exists():
