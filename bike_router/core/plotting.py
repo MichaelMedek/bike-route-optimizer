@@ -116,12 +116,9 @@ def plot_route_debug(
     cmap_name: str = PlotConfig.CMAP,
     dpi: int = PlotConfig.DPI,
 ) -> None:
-    """Save a debug PNG: the route line in ROUTING colours; only special points elevation-coloured.
-
-    The route follows its condition colours (blue good / orange unpaved / red main / purple rail —
-    same as the Streamlit ribbon). ONLY ``marker_points`` (waypoints + train board/alight stations)
-    plus the start/end get the elevation-colormapped dots (the colorbar). One solid-white page with
-    a stats panel beneath. Elevation range is taken over the whole route so the scale is meaningful.
+    """Save a debug PNG: the route line in ROUTING/condition colours (blue good / orange unpaved /
+    red main / purple rail, same as the Streamlit ribbon); ONLY ``marker_points`` (waypoints + train
+    board/alight) plus start/end get elevation-colormapped dots, over the whole route's elevation range.
     """
     lons = np.array([node.lon for node in route.nodes], dtype=float)
     lats = np.array([node.lat for node in route.nodes], dtype=float)

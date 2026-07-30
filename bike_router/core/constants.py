@@ -69,11 +69,9 @@ class RailConfig:
 
 
 class GraphConfig:
-    """Prebuilt DACH bike+rail graph: on-disk layout and Hugging Face hosting.
-
-    Built offline from Geofabrik .osm.pbf, DEM elevations baked in, intersections
-    consolidated, stored as lat/lon-tiled GeoParquet read per corridor tile.
-    Mirrors the DEMConfig HF pattern.
+    """Prebuilt DACH bike+rail graph: on-disk layout and Hugging Face hosting. Built offline
+    from Geofabrik .osm.pbf with DEM elevations baked in, intersections consolidated, stored
+    as lat/lon-tiled GeoParquet read per corridor tile (mirrors the DEMConfig HF pattern).
     """
 
     # Pre-saved (bundled) in the repo — small enough to ship, so no HF download at
@@ -138,11 +136,9 @@ class CorridorConfig:
 
 
 class Palette:
-    """All display colours, defined ONCE as hex; use ``hex_to_rgb`` where RGB is needed.
-
-    Two 3-colour scales share these swatches (single source): the road-QUALITY scale
-    (blue good / orange unpaved / red main road) and the road-GRADE scale (blue flat /
-    red uphill / green downhill). Purple = trains; blue/cyan = start/end markers.
+    """All display colours, defined ONCE as hex (use ``hex_to_rgb`` where RGB is needed). Two
+    3-colour scales share these swatches: road-QUALITY (blue good / orange unpaved / red main)
+    and road-GRADE (blue flat / red uphill / green downhill); purple = trains, blue/cyan = markers.
     """
 
     BLUE = "#1565c0"  # good surface + quiet road, and flat grade (high-contrast on terrain)
@@ -224,12 +220,9 @@ class SurfaceConfig:
 
 
 class RoadConfig:
-    """Highway class → penalty TIER (0 = quiet/bike-friendly, 1 = main road).
-
-    Symmetric with SurfaceConfig: an ALLOWLIST where only listed highway classes enter
-    the graph. Any OTHER named highway (motorway/raceway/…) is dropped at build time; a
-    missing/untagged highway is assumed DEFAULT_TIER (main, pessimistic) and kept. Tier 0
-    rides free; tier 1 adds --extra_km_per_main_road_km once.
+    """Highway class → penalty TIER (0 = quiet/bike-friendly, 1 = main road). Symmetric with
+    SurfaceConfig: an ALLOWLIST — listed classes enter the graph, others (motorway/raceway/…)
+    are dropped, missing/untagged → DEFAULT_TIER (main, pessimistic). Tier 1 adds one main-road penalty.
     """
 
     ROAD_TIER = {
@@ -322,11 +315,9 @@ PARAM_SPECS = (
 
 @dataclass(frozen=True)
 class RoutingParams:
-    """User-facing routing preferences, expressed as intuitive "extra km".
-
-    Each is how many extra kilometres of virtual distance the router adds per unit
-    of the bad thing (see PARAM_SPECS). 0 is valid ("don't care"); out-of-range
-    values raise loudly (no silent clamp).
+    """User-facing routing preferences, expressed as intuitive "extra km": how many extra
+    virtual kilometres the router adds per unit of the bad thing (see PARAM_SPECS). 0 is valid
+    ("don't care"); out-of-range values raise loudly (no silent clamp).
     """
 
     extra_km_per_uphill_100m: float
@@ -363,12 +354,9 @@ class GradeConfig:
 
 
 class SpeedConfig:
-    """Surface- and grade-adaptive cycling speed (km/h) for time estimation.
-
-    Two anchors, linearly interpolated: at 0 % grade the rider does the surface's
-    base speed; at WALK_GRADE (a steep 12 %) they slow to WALK_KMH (pushing pace).
-    Flat/downhill hold the base speed; above WALK_GRADE stay at WALK_KMH. Applied
-    per edge, treating each edge as a single linear grade.
+    """Surface- and grade-adaptive cycling speed (km/h), two anchors linearly interpolated: at
+    0 % grade the rider does the surface's base speed; at WALK_GRADE (a steep 12 %) they slow to
+    WALK_KMH. Flat/downhill hold base; above WALK_GRADE stay WALK_KMH. Applied per edge as one grade.
     """
 
     BASE_KMH_BY_TIER = {0: 25.0, 1: 20.0, 2: 15.0}  # paved / loose / natural-rough surface
@@ -413,12 +401,9 @@ class NominatimConfig:
 
 
 class PhotonConfig:
-    """Search-as-you-type geocoding via Photon (photon.komoot.io).
-
-    Photon is the OSM project built for autocomplete — Nominatim's policy forbids
-    client-side typeahead, so it powers only the one-shot "Set start & end" geocode.
-    Suggestions are biased/limited to the prebuilt graph's coverage bbox (from
-    load_meta), so this holds no bbox of its own.
+    """Search-as-you-type geocoding via Photon (photon.komoot.io), the OSM autocomplete project.
+    Nominatim's policy forbids client typeahead, so Photon powers only the one-shot geocode.
+    Suggestions are biased to the graph's coverage bbox (from load_meta), so it holds no bbox.
     """
 
     BASE_URL = "https://photon.komoot.io/api"

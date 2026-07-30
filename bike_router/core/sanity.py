@@ -37,11 +37,8 @@ def check_cost_model(
     params: RoutingParams,
 ) -> None:
     """Sanity 2: on the steepest bidirectional BIKE edge, uphill must cost more than downhill.
-
-    Operates on the corridor's flat edge arrays (the CSR router's own inputs) — no networkx.
-    Only BIKE edges qualify (the terrain penalty is bike-only). If the uphill penalty is 0 the
-    rider doesn't care, so the two directions are equal and the check is skipped; if there is no
-    bidirectional non-flat bike edge the check is skipped (legitimate, not a bug).
+    Operates on the corridor's flat edge arrays (no networkx); bike-only (terrain penalty is bike-only).
+    Skipped if the uphill penalty is 0 (directions equal) or there's no bidirectional non-flat bike edge.
     """
     if params.extra_km_per_uphill_100m == 0:
         logger.info("Sanity 2 skipped (uphill penalty disabled by user)")

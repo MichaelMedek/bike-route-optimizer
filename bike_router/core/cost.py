@@ -49,11 +49,8 @@ from bike_router.core.constants import (
 
 def _as_values(tag: object) -> list[str]:
     """Normalize an OSM tag (str | list | None | float nan) to a list of lowercased strings.
-
-    A MISSING tag is skipped, not stringified: pyrosm/pandas represent absent values as float ``nan``
-    (not ``None``), and ``to_graph(simplify=True)`` yields ``nan`` INSIDE merged lists (e.g. an asphalt
-    run spliced with an untagged segment → ``['asphalt', nan]``). Treating ``nan`` as the literal string
-    "nan" would reject every untagged/mixed road — dropping the majority of the network. So drop nans.
+    pandas/pyrosm encode a missing tag as float ``nan`` and simplify splices ``nan`` INSIDE merged
+    lists (e.g. ``['asphalt', nan]``); stringifying it to "nan" would reject most roads, so drop nans.
     """
     if _is_missing(value=tag):
         return []
@@ -113,13 +110,8 @@ def road_included(highway: object) -> bool:
 
 def edge_cost_array(*, edges_df: pd.DataFrame, elev_by_osmid: dict[int, float], params: RoutingParams) -> np.ndarray:
     """Per-edge cost in metres for a whole edge table — the ONE cost formula, fully vectorized.
-
-    cost branches on mode (numpy ``np.select``):
-      bike: length + uphill + unpaved + main-road penalties (terrain-aware, uphill only).
-      rail: per-km rail charge only (no terrain penalties; boarding lives on station edges).
-      station: straight-line length + half the boarding charge (board + alight = full).
-    Tag→tier parsing is the only per-value step (surface/highway are external OSM strings/lists);
-    all arithmetic is array-wide. ``elev_by_osmid`` supplies node elevations for the uphill term.
+    Branches on mode (``np.select``): bike = length + uphill + unpaved + main-road penalties (uphill
+    only); rail = per-km charge; station = length + half the boarding charge (board + alight = full).
     """
     mpk = GpxConfig.METERS_PER_KM
     mode = edges_df["mode"].to_numpy()

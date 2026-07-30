@@ -13,10 +13,8 @@ from bike_router.core.route_path import RoutePath
 
 @dataclass(frozen=True)
 class RouteComposition:
-    """Kilometre breakdown of a route, three independent ways to slice the bike legs.
-
-    ``by_mode`` covers the WHOLE route as two display buckets ("bike route" / "train path");
-    station access-hops are negligible and fold into "bike route". The surface and road
+    """Kilometre breakdown of a route: ``by_mode`` covers the WHOLE route as two buckets
+    ("bike route" / "train path", station access-hops fold into bike); surface and road
     tallies describe the pedalled (bike) portion only.
     """
 

@@ -90,9 +90,8 @@ def resolve_endpoints(
 ) -> tuple[tuple[float, float, float], tuple[float, float, float]]:
     """Geocode two place strings and snap each to the nearest graph node.
 
-    Whatever text is passed is what's geocoded — the web app hands the box text here,
-    so a picked suggestion (its label fills the box) and free-typed text share ONE path.
-    Returns two (lat, lon, elevation_m) tuples; a bad place raises GeocodeError.
+    Whatever text is passed is geocoded, so a picked suggestion and free-typed text share ONE
+    path. Returns two (lat, lon, elevation_m) tuples; a bad place raises GeocodeError.
 
     Args:
         origin: Start place string.
@@ -117,10 +116,8 @@ def _route_node_path(
 ) -> list[tuple[int, float, float]]:
     """Load the corridor, route on a compact CSR graph, return the path as (osmid, lat, lon).
 
-    Reads ONLY the minimal routing columns (no geometry_wkt — 73% of the edge table) so the
-    whole-corridor load stays memory-lean, then routes on a scipy CSR matrix (~12 bytes/edge vs
-    ~2.8 KB/edge for networkx). Frees the corridor tables before returning; geometry for the tiny
-    chosen path is re-read by the caller. Raises RouteTooLargeError past the memory cap.
+    Reads ONLY minimal routing columns (no geometry) and routes on a scipy CSR matrix (~12 B/edge vs
+    ~2.8 KB for networkx), freeing corridor tables before return; raises RouteTooLargeError past the cap.
     """
     nodes_df, edges_df = load_route_tables(
         bike_corridor=bike_corridor, rail_corridor=rail_corridor, graph_dir=graph_dir
@@ -306,9 +303,8 @@ def plan_route(
 def format_cli_report(result: RouteResult) -> str:
     """The CLI's full stdout block for a computed route (stats, composition, files, legs).
 
-    All the text the CLI prints lives HERE (tested), so bike_route.py stays a pure I/O shell:
-    the bike-vs-total stat lines, the composition summary, GPX/PNG paths, trains to catch, and
-    one Google-Maps link per pedalled leg. Trains section is omitted for a pure-bike route.
+    All CLI text lives HERE (tested) so bike_route.py stays a pure I/O shell: stats, composition,
+    GPX/PNG paths, trains to catch, one Maps link per pedalled leg. Trains omitted for pure-bike.
     """
     track = result.track
     lines = [

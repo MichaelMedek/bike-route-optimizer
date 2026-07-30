@@ -29,9 +29,8 @@ def create_terrain_layer(mesh_max_error: float) -> pdk.Layer:
 def create_route_ribbon_layers(segments: list[RibbonSegment]) -> list[pdk.Layer]:
     """ONE pickable PathLayer holding every contiguous run as a data row (path/color/width/tooltip).
 
-    A single layer (not one-per-run) so deck.gl picking is uniform across the WHOLE ribbon —
-    stacking many single-datum PathLayers made only the first few runs hoverable. Per-row width
-    comes from the ``width`` accessor, colour from ``color``, hover text from ``tooltip``.
+    A single layer (not one-per-run) so deck.gl picking is uniform across the WHOLE ribbon — stacking
+    single-datum PathLayers left only the first few runs hoverable. Accessors read each row's fields.
 
     Args:
         segments: RibbonSegment runs from webmap.route_ribbon_segments (color RGB, width_m,
@@ -87,9 +86,8 @@ def create_endpoint_layer(
 ) -> pdk.Layer:
     """ScatterplotLayer with the start + end markers — the ONE blue, slightly bigger than waypoints.
 
-    Each endpoint is ``(lat, lon, elevation_m)`` (snapped to its graph node); the marker hovers
-    RIBBON_FLOAT_ABOVE_M above that elevation. All markers share MARKER_COLOR (blue); role is told
-    apart by SIZE (endpoints are the biggest), never by colour.
+    Each endpoint is ``(lat, lon, elevation_m)`` (snapped to its graph node), hovering above it. All
+    markers share MARKER_COLOR (blue); role is told apart by SIZE (endpoints biggest), not colour.
     """
     blue = list(WebMapConfig.MARKER_COLOR)
     markers = [
@@ -107,9 +105,8 @@ def create_endpoint_layer(
 def create_waypoint_layer(waypoints: list[tuple[float, float, float, str]]) -> pdk.Layer:
     """Blue round markers at each intermediate point — board/alight STATIONS AND gmaps WAYPOINTS.
 
-    Same blue as the endpoints but SLIGHTLY SMALLER (they read as "along the way", endpoints as
-    anchors). One layer for both kinds — a station and a village waypoint look identical, differing
-    only in their hover label.
+    Same blue as the endpoints but SLIGHTLY SMALLER (they read as "along the way"). One layer for
+    both kinds — a station and a village waypoint look identical, differing only in hover label.
 
     Args:
         waypoints: ``(lat, lon, elevation_m, label)`` per intermediate marker; the label is the

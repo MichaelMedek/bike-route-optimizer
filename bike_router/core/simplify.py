@@ -49,9 +49,8 @@ def _split_mode_runs(route: RoutePath, mode: str) -> list[list[RouteNode]]:
 def split_bike_legs(route: RoutePath) -> list[list[int]]:
     """Split a route into maximal runs of consecutive BIKE edges (rail/station cut).
 
-    Each returned sub-path is one pedalled leg the rider actually cycles (as osmids); train
-    rides and station-access hops break the route so a pure-bike trip yields one leg and a trip
-    with one train ride yields two. Sub-paths have >= 2 nodes (one usable linestring).
+    Each sub-path (osmids) is one pedalled leg; train rides and station hops break the route,
+    so a pure-bike trip yields one leg, one-train two. Sub-paths have >= 2 nodes.
     """
     return [[node.osmid for node in run] for run in _split_mode_runs(route=route, mode=Mode.BIKE)]
 
@@ -136,11 +135,10 @@ def format_rail_legs(rail_legs: list[RailLeg]) -> list[str]:
 
 @dataclass(frozen=True)
 class BikeLeg:
-    """One pedalled leg's Google Maps URL plus the place names of its two ends.
+    """One pedalled leg's Google Maps URL plus its two endpoint place names.
 
-    ``from_place``/``to_place`` are the human endpoints of THIS pedalled leg: the trip
-    origin/destination at the outer ends, and the boarding/alighting station names where a
-    train ride abuts the leg — so the link can be labelled "Route N: from → to".
+    ``from_place``/``to_place`` are the trip origin/destination at the outer ends, else the
+    boarding/alighting station names where a train ride abuts the leg ("Route N: from → to").
     """
 
     url: str
@@ -153,9 +151,8 @@ def bike_leg_endpoints(
 ) -> list[tuple[str, str]]:
     """(from_place, to_place) for each pedalled leg, derived STRUCTURALLY from the node path.
 
-    A leg's endpoint is ``origin``/``destination`` at the very ends of the whole route, else the
-    adjacent station it alighted-from / boards-at (the neighbouring node on the full path, which
-    is a rail-station node). Robust to a route that starts/ends on a train or chains two trains.
+    Endpoints are ``origin``/``destination`` at the whole route's ends, else the adjacent rail
+    station node (alighted-from / boards-at) — robust to routes starting/ending on/chaining trains.
     """
     nodes = route.nodes
     position = {node.osmid: index for index, node in enumerate(nodes)}  # osmid → its index on the path
@@ -171,9 +168,8 @@ def bike_leg_endpoints(
 def _neighbour_station_name(node: RouteNode) -> str:
     """Station name of a path-neighbour that MUST be a rail node (unnamed halt → placeholder).
 
-    A pedalled leg only ends before the route start/end when the adjacent node is the station
-    it boards/alights at — so the neighbour is invariantly a rail node. We assert that (fail
-    loud on a broken path) rather than let a stray bike node silently read as an unnamed stop.
+    A pedalled leg ends before route start/end only where the neighbour is its board/alight
+    station, so it is invariantly rail; we assert that (fail loud) rather than misread a bike node.
     """
     assert node.node_type == NodeType.RAIL, (
         f"bike-leg neighbour {node.osmid} must be a rail station, got {node.node_type}"
@@ -207,9 +203,8 @@ def route_to_linestring(route: RoutePath) -> LineString:
 def select_waypoints(line: LineString, count: int = 10) -> list[tuple[float, float]]:
     """Reduce ``line`` to at most ``count`` significant points, returned (lat, lon).
 
-    Visvalingam-Whyatt picks the ``count`` most significant points (endpoints kept), then
-    over-close interior points are thinned so a short leg isn't cluttered with near-identical
-    waypoints. Origin + destination are always kept, so the result has 2..count points.
+    Visvalingam-Whyatt keeps the ``count`` most significant points (endpoints included), then
+    over-close interior points are thinned; origin + destination always kept, so 2..count result.
     """
     coords: list[tuple[float, float]] = [(c[0], c[1]) for c in line.coords]  # (lon, lat); ignore any z
     assert count >= 2, "need at least origin + destination waypoints"

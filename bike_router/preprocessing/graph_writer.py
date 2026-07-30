@@ -37,10 +37,16 @@ def write_graph_parquet(
 ) -> None:
     """Write node/edge tables as lat/lon-tiled Parquet + meta.json under ``out_dir``.
 
-    Nodes are tiled by their own coordinate; edges by their ``from_node``'s tile, so a
-    corridor read (covering tiles + 1 margin) reliably pulls both endpoints. ``compression``
-    is the parquet codec: "snappy" (fast, for per-region intermediates) or "zstd" (~35%
-    smaller, for the final artifact uploaded to HF — readers auto-detect the codec).
+    Nodes are tiled by their own coord; edges by their ``from_node``'s tile, so a corridor
+    read (covering tiles + 1 margin) pulls both endpoints.
+
+    Args:
+        nodes_df: Node table matching the on-disk schema.
+        edges_df: Edge table matching the on-disk schema.
+        meta: Metadata dict (must carry ``tile_deg``); written to meta.json.
+        out_dir: Output artifact directory.
+        compression: Parquet codec — "snappy" (fast, intermediates) or "zstd" (~35% smaller,
+            final HF artifact); readers auto-detect the codec.
     """
     assert list(nodes_df.columns) == _NODE_COLS, f"nodes schema drift: {list(nodes_df.columns)}"
     assert list(edges_df.columns) == _EDGE_COLS, f"edges schema drift: {list(edges_df.columns)}"
@@ -101,8 +107,7 @@ def read_full_graph(graph_dir: Path = GraphConfig.GRAPH_DIR) -> nx.MultiDiGraph:
 def graph_from_tables(nodes_df: pd.DataFrame, edges_df: pd.DataFrame) -> nx.MultiDiGraph:
     """Reconstruct an OSMnx-shaped MultiDiGraph from node/edge tables.
 
-    Uses bulk add_nodes_from / add_edges_from (networkx C internals). Edges whose
-    endpoints are both present become graph edges; edges referencing a node outside
+    Bulk add_nodes/edges_from (networkx C internals). Edges referencing a node outside
     the loaded window are dropped (they dangle off the tile set).
     """
     graph = nx.MultiDiGraph(crs="EPSG:4326")
@@ -145,10 +150,8 @@ def graph_from_tables(nodes_df: pd.DataFrame, edges_df: pd.DataFrame) -> nx.Mult
 def _assert_node_edge_types_consistent(graph: nx.MultiDiGraph) -> None:
     """Hard-fail if any edge's endpoints don't match its mode's required node types.
 
-    The core structural guarantee: a BIKE edge joins two bike nodes, a RAIL edge two rail
-    nodes, and a STATION edge exactly one of each. So a bike route can NEVER pass through a
-    station node — reaching a station always crosses a station edge (which carries boarding).
-    Only rules edges the corridor window fully contains; dangling edges were already dropped.
+    The core guarantee: BIKE joins two bike nodes, RAIL two rail, STATION one of each — so a bike route
+    NEVER passes through a station node (it always crosses a station edge carrying boarding).
     """
     for u, v, data in graph.edges(data=True):
         tu, tv = graph.nodes[u]["node_type"], graph.nodes[v]["node_type"]
@@ -183,8 +186,7 @@ def graph_to_tables(graph: nx.MultiDiGraph) -> tuple[pd.DataFrame, pd.DataFrame]
     """Flatten a built MultiDiGraph into node/edge tables matching the on-disk schema.
 
     ``node_type`` and ``mode`` are internal invariants the builder sets on every node/edge
-    (fail loud if not). Bike and rail edges both keep their real polyline; only the short
-    station access-links have no geometry (straight).
+    (fail loud if not). Bike/rail edges keep real polylines; station access-links stay straight.
     """
     nodes = [
         {
@@ -224,9 +226,8 @@ def _geometry_wkt(geom: object) -> str | None:
 def _scalar(value: object) -> object:
     """Collapse a list-valued OSM tag to its first element; unknown/empty → None.
 
-    Consolidation merges parallel ways into list-valued surface/highway; routing
-    only needs one representative (surface_tier/road_tier handle scalars). An
-    absent or empty tag is stored as an explicit None, never a blank string.
+    Consolidation merges parallel ways into list-valued surface/highway; routing needs one
+    representative (surface_tier/road_tier handle scalars). Absent/empty → explicit None.
     """
     if isinstance(value, list | tuple):
         return value[0] if value else None

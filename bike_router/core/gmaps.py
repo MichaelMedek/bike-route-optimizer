@@ -11,6 +11,7 @@ from bike_router.core.constants import GmapsConfig, GraphConfig
 
 
 def _fmt(point: tuple[float, float]) -> str:
+    """Format a (lat, lon) point as the "lat,lon" string a Maps URL expects (range-checked)."""
     latitude, longitude = point
     assert -90.0 <= latitude <= 90.0, "latitude out of range"
     assert -180.0 <= longitude <= 180.0, "longitude out of range"

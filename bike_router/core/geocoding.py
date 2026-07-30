@@ -36,11 +36,9 @@ class HttpGetter(Protocol):
 
 
 def make_geocode_fn() -> GeocodeFn:
-    """Build the rate-limited Nominatim geocode callable (1 req/s).
-
-    ``swallow_exceptions=False`` + ``max_retries=0`` so a network failure raises
-    a GeocoderServiceError immediately instead of retry-logging a wall of
-    tracebacks and returning None (which masks the outage as "not found").
+    """Build the rate-limited Nominatim geocode callable (1 req/s). ``swallow_exceptions=False``
+    + ``max_retries=0`` so a network failure raises GeocoderServiceError immediately instead of
+    retry-logging a wall of tracebacks and returning None (which masks the outage as "not found").
     """
     geolocator = Nominatim(user_agent=NominatimConfig.USER_AGENT)
     fn: GeocodeFn = RateLimiter(
@@ -80,10 +78,8 @@ def geocode(place: str, geocode_fn: GeocodeFn) -> tuple[float, float]:
 
 
 def geocode_endpoint(place: str, label: str, geocode_fn: GeocodeFn) -> tuple[float, float]:
-    """Geocode one named endpoint, re-raising the same error type with the field name.
-
-    Wraps ``geocode`` so start/destination lookups fail loud with the field name in
-    the message, preserving the connection-vs-not-found distinction. Blank input is
+    """Geocode one named endpoint, re-raising the same error type with the field name so
+    start/destination lookups fail loud (connection-vs-not-found preserved). Blank input is
     rejected without a lookup.
 
     Args:
@@ -166,11 +162,9 @@ def photon_autocomplete(
 
 
 def nearest_place_name(*, lat: float, lon: float, http_get: HttpGetter = _default_http_get) -> str | None:
-    """Nearest settlement NAME to (lat, lon) via Photon reverse geocoding — village, not address.
-
-    Returns just the place ``name`` (e.g. "Baiersbronn"), never a full street address. Any
-    network/parse error or an empty result returns None (the caller drops the marker's label),
-    so a weak connection never crashes the render. Used to name the in-between gmaps waypoints.
+    """Nearest settlement NAME to (lat, lon) via Photon reverse geocoding — the place ``name``
+    (e.g. "Baiersbronn"), never a full address. Any network/parse error or empty result returns
+    None (caller drops the label) so a weak connection never crashes. Names the gmaps waypoints.
     """
     params: HttpParams = {"lat": lat, "lon": lon, "lang": PhotonConfig.LANG, "osm_tag": PhotonConfig.PLACE_OSM_TAG}
     reverse_url = PhotonConfig.BASE_URL.removesuffix("/api") + "/reverse"

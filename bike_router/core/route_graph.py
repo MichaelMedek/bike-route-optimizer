@@ -25,11 +25,9 @@ _NO_PRED = -9999  # scipy predecessor sentinel: "unreachable / no predecessor"
 
 @dataclass(frozen=True)
 class RouteGraph:
-    """A corridor as a CSR cost matrix plus parallel node arrays (index ↔ osmid).
-
-    ``matrix`` holds the MIN cost of each directed (u, v) (parallel edges collapsed to the
-    cheapest). ``osmids``/``lat``/``lon``/``node_type`` are row-aligned; ``index`` maps
-    osmid → CSR row. Built from flat node/edge arrays — no networkx at inference.
+    """A corridor as a CSR cost matrix plus parallel node arrays (index ↔ osmid). ``matrix`` holds
+    the MIN cost of each directed (u, v) (parallel edges collapsed); ``osmids``/``lat``/``lon``/
+    ``node_type`` are row-aligned and ``index`` maps osmid → CSR row (no networkx at inference).
     """
 
     matrix: csr_matrix
@@ -89,11 +87,9 @@ class RouteGraph:
 
 
 def _min_cost_matrix(*, u: np.ndarray, v: np.ndarray, cost: np.ndarray, n: int) -> csr_matrix:
-    """CSR matrix keeping the MIN cost per directed (u, v) — parallel edges collapse.
-
-    csr_matrix SUMS duplicate coordinates, so we first reduce to the minimum per (u, v)
-    (lexsort by (u, v, cost), keep the first of each group) — the cheapest parallel edge,
-    exactly what A* traversed. All costs are > 0 (length floor), so none read as "no edge".
+    """CSR matrix keeping the MIN cost per directed (u, v) — parallel edges collapse. csr_matrix
+    SUMS duplicate coords, so first reduce to the min per (u, v) (lexsort, keep first of each group):
+    the cheapest parallel edge A* traversed. All costs are > 0 (length floor), so none read as "no edge".
     """
     if len(u) == 0:
         return csr_matrix((n, n), dtype=np.float64)

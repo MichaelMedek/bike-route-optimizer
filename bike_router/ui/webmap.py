@@ -48,11 +48,10 @@ MODE_DONUT_COLORS = {label: _hex(rgb=rgb) for label, rgb in WebMapConfig.MODE_DO
 
 
 def _bike_km_by(track: Track, bucket_of: "Callable[[TrackPoint], str]") -> dict[str, float]:
-    """Bike km per bucket, ``bucket_of`` mapping each pedalled point to its bucket label.
+    """Bike km per bucket, ``bucket_of`` mapping each pedalled point to its label.
 
-    Each point (bar the start) is the far end of one edge; its leg length is the great-circle
-    gap from the previous point (vectorized once). Rail/station points are skipped. One loop
-    serves both the road-QUALITY and road-GRADE donuts (single source, no duplication).
+    Each point is one edge's far end; its leg is the great-circle gap from the prior point
+    (vectorized). Rail skipped. One loop serves both QUALITY and GRADE donuts (no duplication).
     """
     lats = np.array([p.lat for p in track.points], dtype=np.float64)
     lons = np.array([p.lon for p in track.points], dtype=np.float64)
@@ -119,10 +118,8 @@ def composition_donut(title: str, by_km: dict[str, float], colors: dict[str, str
 def elevation_profile_chart(track: Track, markers: list[tuple[float, float, str]] | None = None) -> go.Figure:
     """Plotly elevation profile: x = distance (km), y = elevation (m); line coloured bike vs train.
 
-    One Scatter per contiguous MODE run, coloured bike-route blue / train-path purple with the
-    SAME MODE_DONUT_COLORS as the "By mode" donut. ``markers`` (distance_km, elevation_m, label)
-    from project_markers_onto_track — the SAME named points the map shows (start/end, stations,
-    waypoints) — are overlaid so the profile and map agree. Distance is the shared cumulative_km.
+    One Scatter per MODE run, bike-blue / train-purple via the SAME MODE_DONUT_COLORS as the donut.
+    ``markers`` overlay the SAME named points the map shows so profile + map agree (shared cumulative_km).
     """
 
     def _label(mode: str) -> str:
@@ -252,11 +249,8 @@ def route_ribbon_segments(
 ) -> list[RibbonSegment]:
     """Split the route into contiguous runs sharing one colour + width + tooltip, for rendering.
 
-    Colour comes from the chosen scale (road-QUALITY or road-GRADE, the radio toggle). BIKE
-    segments size their width by effort (∝ 1/√speed, so slow spots are wider); RAIL + STATION
-    segments use the fixed RIBBON_REF_WIDTH_M. A pedalled segment's tooltip describes it
-    (surface/road/gradient/speed); a train run shows its whole-leg label from ``rail_tooltips``
-    (one per train ride, in order). Consecutive runs share their boundary point so the ribbon stays continuous.
+    Colour from the chosen scale (QUALITY/GRADE toggle); BIKE runs size width by effort (∝ 1/√speed),
+    RAIL/STATION use fixed width; bike tooltips describe the edge, train runs use ``rail_tooltips``.
 
     Args:
         track: The computed route track from plan_route (points carry mode/condition/speed/grade).
@@ -367,9 +361,8 @@ def compute_gate(
 ) -> tuple[bool, str]:
     """(compute_enabled, help_text) for the two-button Set→Compute workflow.
 
-    Compute is enabled ONLY when endpoints are set AND both boxes still hold the exact text
-    Set resolved; editing either box (without re-Setting) disables it again. The three states
-    map to distinct help strings — the whole gate decision, testable without Streamlit.
+    Compute enables ONLY when endpoints are set AND both boxes still hold the text Set resolved;
+    editing either box disables it. The three states map to distinct help strings, Streamlit-free.
     """
     endpoints_set = start_latlon is not None
     endpoints_match = endpoints_set and origin == start_resolved and destination == end_resolved
@@ -400,10 +393,8 @@ def endpoint_labels(
 def map_remount_key(*, camera_epoch: int) -> str:
     """The st_deckgl remount key — bumped ONLY when the camera must move (Set start & end).
 
-    A colour-scale toggle or a fresh ribbon is just new layer DATA: deck.gl repaints it in place
-    on the same-key rerun. Folding those into the key forced a full remount, and a freshly-mounted
-    deck.gl paints one white frame before its WebGL context repaints — hence the "white on first
-    toggle" bug. Keying on camera_epoch alone keeps the map mounted, so recolours show immediately.
+    Recolours/fresh ribbons are just new layer DATA repainted in place; folding them in forced a
+    remount that flashes white before WebGL repaints (the "white on first toggle" bug).
     """
     return f"bike_map_{camera_epoch}"
 
@@ -456,9 +447,8 @@ def profile_markers(
 ) -> list[tuple[float, float, str]]:
     """(distance_km, elevation_m, label) for every named marker on the elevation profile.
 
-    Endpoints use the typed start/end names, stations their station names, and each interior
-    gmaps waypoint its nearest-village name via ``village_of`` (a reverse-geocoder; a None result
-    drops that marker). Projected onto the track so profile + map agree — one shared assembler.
+    Endpoints use the typed names, stations their names, interior waypoints their nearest-village
+    via ``village_of`` (None drops it); projected onto the track so profile + map agree.
     """
     from bike_router.core.track import project_markers_onto_track
 
@@ -480,10 +470,8 @@ def map_waypoint_markers(
 ) -> list[tuple[float, float, float, str]]:
     """(lat, lon, elevation_m, label) for every INTERMEDIATE map marker — stations + gmaps waypoints.
 
-    The SAME named points the elevation profile shows (minus the endpoints, which get their own
-    bigger markers): each board/alight station, plus every interior gmaps waypoint named via
-    ``village_of`` (a None result drops it). Each waypoint's elevation is snapped to its nearest
-    track point so its "Name (elev m)" hover matches the profile; stations carry their own.
+    The SAME points the profile shows minus endpoints: each station plus interior waypoints named
+    via ``village_of`` (None drops it), elevation snapped to the nearest track point for the hover.
     """
     markers = list(_station_marker_points(result=result))
     points = result.track.points

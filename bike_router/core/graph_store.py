@@ -90,10 +90,8 @@ def _intersecting_tiles(*, corridor: Polygon, tile_deg: float) -> list[tuple[int
 def download_graph_from_hf(target_dir: Path = GraphConfig.GRAPH_DIR, progress: ProgressFn = null_progress) -> Path:
     """Download the prebuilt DACH graph artifact from Hugging Face if missing.
 
-    Uses snapshot_download (concurrent, ``HF_MAX_WORKERS`` files at once) so the ~630-file
-    artifact pulls far faster than one-at-a-time. ``progress`` reports genuine
-    (files_done, files_total) via the main-thread "Fetching N files" bar — the ONE place the
-    app/CLI show a bar. Idempotent: skips entirely once meta.json is already present locally.
+    Concurrent snapshot_download (``HF_MAX_WORKERS``) pulls the ~630-file artifact fast; ``progress``
+    forwards the main-thread "Fetching N files" bar. Idempotent: skips once meta.json is present.
     """
     meta_path = target_dir / GraphConfig.META_FILENAME
     if meta_path.exists():
@@ -141,9 +139,8 @@ def _read_tiles(
 ) -> pd.DataFrame:
     """Concatenate per-tile Parquet files in ``directory`` into one DataFrame.
 
-    ``tiles`` = the specific (row, col) tiles to read (missing skipped) for a corridor window;
-    ``tiles=None`` reads EVERY ``tile_*.parquet`` (a whole region/artifact). ``filters`` = optional
-    pyarrow predicate pushdown (e.g. by mode/node_type), so a tile yields only matching rows.
+    ``tiles`` selects specific (row, col) tiles (missing skipped); ``tiles=None`` reads EVERY
+    ``tile_*.parquet``. ``filters`` = optional pyarrow pushdown so a tile yields only matching rows.
     """
     if tiles is None:
         paths = sorted(directory.glob("tile_*.parquet"))
@@ -167,13 +164,8 @@ def _load_layer(
 ) -> tuple[pd.DataFrame, pd.DataFrame, set[int]]:
     """Read one mode-layer's nodes/edges for a corridor, keeping only nodes inside it.
 
-    Reads only tiles the corridor crosses and only rows of the requested node_type / edge
-    modes (parquet pushdown) with only ``node_columns``/``edge_columns`` (column projection).
-    Nodes are masked to those the corridor COVERS FIRST, then edges are read with a
-    ``from_node in (inside_ids ∪ extra_from_ids)`` pushdown so only corridor edges ever
-    materialize (a tile can hold 100k+ edges — masking after a whole-tile read would spike
-    memory). ``extra_from_ids`` admits station edges whose from_node is in the OTHER layer
-    (bike→rail station links, read in the rail layer). Returns (nodes, edges, inside_ids).
+    Tile/type/mode pushdown + column projection; nodes masked to those the corridor COVERS, then a
+    ``from_node in (inside_ids ∪ extra_from_ids)`` edge pushdown avoids materializing 100k-edge tiles.
     """
     tile_deg = load_meta(graph_dir=graph_dir)["tile_deg"]
     tiles = _intersecting_tiles(corridor=corridor, tile_deg=tile_deg)
@@ -211,11 +203,8 @@ def load_route_tables(
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Combined (nodes_df, edges_df) for the two-corridor routing window — the SINGLE combine.
 
-    Tight bike tube + wide rail tube (rail is sparse), recombined with the bike ring, the
-    rail↔rail edges, and the station bridges. Default columns are the minimal routing set
-    (no geometry) so the corridor load stays memory-lean; callers wanting a full networkx
-    graph pass the full schemas. Not component-pruned: a valid multi-component corridor
-    (water gap) must not be rejected — the router raises NoRouteError if truly disconnected.
+    Tight bike tube + wide sparse rail tube, recombined with bike ring, rail↔rail, and station
+    bridges; minimal columns stay memory-lean. Not component-pruned (a water-gap corridor is valid).
     """
     bike_nodes, bike_edges, bike_ids = _load_layer(
         corridor=bike_corridor,
@@ -262,10 +251,8 @@ def load_path_edges(
 ) -> RoutePath:
     """Re-read ONLY the chosen path's edges (with geometry) into an ordered RoutePath.
 
-    The route is an ultra-small subset (hundreds of edges), so re-reading their tiles WITH
-    geometry_wkt costs a few MB — vs the ~GB a full-corridor networkx graph would. For each
-    consecutive hop the CHEAPEST parallel candidate is kept (recomputed via edge_cost with the
-    SAME params the CSR router used — the single cost source), oriented from_node→to_node.
+    Re-reading the tiny path's tiles WITH geometry costs a few MB vs the ~GB of a full networkx graph;
+    per hop the CHEAPEST parallel candidate is kept via edge_cost with the SAME params the router used.
 
     Args:
         path_nodes: the route's (osmid, lat, lon) in order — coords give the tiles to read.
@@ -316,9 +303,8 @@ def load_path_edges(
 def _select_path_edges(*, nodes: list[RouteNode], edges_df: pd.DataFrame, params: RoutingParams) -> list[RouteEdge]:
     """Cheapest parallel edge per consecutive hop, oriented a→b, as an ordered RouteEdge list.
 
-    Both orientations of each hop are read (edges are directed); the cheapest matching row under
-    ``params`` is kept — the SAME min-collapse the CSR router applied — via edge_cost_array (the
-    ONE vectorized cost). Costs the whole candidate table at once, then picks per hop.
+    Both directed orientations are read; the cheapest matching row under ``params`` is kept — the SAME
+    min-collapse the CSR router applied — via edge_cost_array, costing the whole table then picking per hop.
     """
     elev = {node.osmid: node.elevation_m for node in nodes}
     known = edges_df["from_node"].isin(elev) & edges_df["to_node"].isin(elev)
@@ -364,9 +350,8 @@ def _oriented_geometry(*, wkt: object, node_a: RouteNode) -> list[tuple[float, f
 def snap_to_node(lat: float, lon: float, graph_dir: Path = GraphConfig.GRAPH_DIR) -> tuple[float, float, float]:
     """Nearest graph node to (lat, lon) as ``(lat, lon, elevation_m)``.
 
-    Routing is node-to-node, so this resolves a raw geocoded point to the node it
-    will actually start/end at — and returns its baked elevation (no DEM needed), so
-    the map marker can hover at the true terrain height.
+    Routing is node-to-node, so this resolves a raw geocoded point to its actual start/end node
+    and returns that node's baked elevation (no DEM), so the map marker hovers at true terrain height.
     """
     tile_deg = load_meta(graph_dir=graph_dir)["tile_deg"]
     tiles = _covering_tiles(bounds=(lon, lat, lon, lat), tile_deg=tile_deg, margin=1)

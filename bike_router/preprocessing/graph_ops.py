@@ -33,10 +33,8 @@ _PYROSM_EDGE_JUNK = ("osmid", "u", "v", "key", "tags", "version", "timestamp", "
 def normalize_pyrosm_graph(graph: nx.MultiDiGraph) -> None:
     """Strip pyrosm's index-colliding node/edge attributes in place.
 
-    pyrosm's ``to_graph(osmnx_compatible=True)`` keeps an ``osmid`` node attribute
-    (duplicating the node id) and raw ``u``/``v``/``osmid`` edge attributes; osmnx's
-    graph↔gdf round-trip then raises "cannot insert osmid, already exists". We keep
-    the routing-relevant attrs (x/y on nodes; length/surface/highway/geometry on edges).
+    pyrosm's duplicate ``osmid``/``u``/``v`` attrs break osmnx's graph↔gdf round-trip; we keep
+    only the routing-relevant attrs (x/y on nodes; length/surface/highway/geometry on edges).
     """
     for _node, data in graph.nodes(data=True):
         for junk in _PYROSM_NODE_JUNK:
@@ -49,10 +47,8 @@ def normalize_pyrosm_graph(graph: nx.MultiDiGraph) -> None:
 def drop_disallowed_edges(graph: nx.MultiDiGraph) -> None:
     """Remove edges whose surface OR highway tag names a category outside its allowlist.
 
-    ALLOWLIST (symmetric): only SurfaceConfig.SURFACE_TIER surfaces and RoadConfig.ROAD_TIER
-    highway classes (+ untagged) enter the graph; any other named surface (sand/dirt/…) or
-    highway (motorway/raceway/…) is dropped up front so no route uses it. Orphaned nodes are
-    removed; a later largest_component call restores connectivity.
+    Symmetric allowlist: only SURFACE_TIER surfaces + ROAD_TIER highways (+ untagged) enter, so no
+    route uses others. Orphaned nodes are removed; a later largest_component restores connectivity.
     """
     doomed = [
         (node_a, node_b, key)
@@ -66,9 +62,8 @@ def drop_disallowed_edges(graph: nx.MultiDiGraph) -> None:
 def consolidate_graph(graph: nx.MultiDiGraph, tolerance_m: float) -> nx.MultiDiGraph:
     """Merge intersection clusters within ``tolerance_m`` metres (shrinks the graph).
 
-    Projects to an auto-selected UTM zone (consolidation needs metric units),
-    merges nodes whose ``tolerance_m``-radius buffers overlap, rebuilds the topology
-    with reconnected edges + updated lengths, then unprojects back to EPSG:4326.
+    Projects to auto-selected UTM (consolidation needs metric units), merges nodes whose
+    buffers overlap with reconnected edges + updated lengths, then unprojects to EPSG:4326.
     """
     assert tolerance_m > 0, "consolidation tolerance must be positive"
     projected = ox.projection.project_graph(graph)
@@ -95,9 +90,8 @@ def _fill_nan_with_mean(values: "np.ndarray") -> tuple["np.ndarray", int]:
 def enrich_elevations(graph: nx.MultiDiGraph, dem: DEMService) -> None:
     """Attach an ``elevation`` attribute to every node via one bulk DEM sample.
 
-    OSMnx stores node coords as x=lon, y=lat. Out-of-coverage/nodata cells come
-    back NaN and are neutral-filled with the graph mean so they don't poison the
-    elevation penalty / A*. Runs at BUILD time only (baked into the artifact).
+    OSMnx stores x=lon, y=lat. Out-of-coverage/nodata cells return NaN and are neutral-filled
+    with the graph mean so they don't poison the elevation penalty. BUILD time only (baked in).
     """
     nodes = list(graph.nodes)
     assert nodes, "graph must have nodes to enrich"
@@ -119,11 +113,8 @@ def enrich_elevations(graph: nx.MultiDiGraph, dem: DEMService) -> None:
 def bake_edge_geometry_elevations(graph: nx.MultiDiGraph, dem: DEMService) -> None:
     """Replace each edge's 2D polyline with a 3D one (lon, lat, elev), in place.
 
-    Samples the DEM at EVERY geometry vertex so the baked artifact fully describes the
-    route's terrain — inference then reads these elevations directly and never touches
-    the DEM. Bike and rail edges both carry a real polyline; only the short station
-    access-links (no geometry) are left as straight hops. Runs at BUILD time only.
-    All vertices across the graph are sampled in one bulk call.
+    Samples the DEM at EVERY vertex (one bulk call) so the artifact fully describes the terrain and
+    inference never touches the DEM. Rail/bike carry real polylines; station links stay straight. BUILD only.
     """
     edges = [(u, v, k, d) for u, v, k, d in graph.edges(keys=True, data=True) if d.get("geometry") is not None]
     if not edges:

@@ -76,11 +76,8 @@ RAIL_LAYER = LayerSpec(
 def _network_graph(osm: OSM, *, custom_filter: str | None, filter_type: str | None) -> nx.MultiDiGraph:
     """Fetch a routable graph from a pbf: pyrosm ``get_network(nodes=True)`` → ``to_graph``.
 
-    ``custom_filter`` (a bracket string, e.g. ``'["railway"~"rail"]'``, with ``filter_type="keep"``)
-    selects WHICH ways are kept (a plain-dict filter is NOT used — it defaults to exclude + highway-
-    only, silently returning the whole road net). ``force_bidirectional=True``: every edge exists in
-    both directions (same length, opposite elevation delta) — a bike may ride any road up or down,
-    and trains run both ways. ``network_type="cycling"`` only sets the (overridden) directionality.
+    A bracket ``custom_filter`` + ``filter_type="keep"`` selects WHICH ways survive (a plain-dict filter
+    silently returns the whole road net). ``force_bidirectional=True``: bikes ride up/down, trains run both.
     """
     logger.info(f"    get_network (filter={custom_filter}) — parsing pbf ways/nodes ...")
     res = cast(
@@ -107,11 +104,8 @@ def _network_graph(osm: OSM, *, custom_filter: str | None, filter_type: str | No
 def build_layer_graph(osm: OSM, *, layer: LayerSpec, tolerance_m: float) -> nx.MultiDiGraph:
     """Build ONE preprocessed layer graph for EITHER mode (bike or rail) — ALL components kept.
 
-    THE one shared pipeline — no per-mode branches, only ``layer`` config differs: fetch ways (already
-    degree-2 contracted by ``to_graph(simplify=True)``) → (bike only) drop non-rideable surfaces/
-    highways → consolidate junctions (``tolerance_m``) → tag mode/node_type.
-    NOTE: this does NOT keep only the largest component — a region is a CLIP of a larger network.
-    Connectivity truncation happens ONCE globally in Phase 3, after all regions are combined and their seams dedup-stitched.
+    THE one shared pipeline (no per-mode branch, only ``layer`` config): fetch degree-2-contracted ways →
+    (bike only) drop non-rideable → consolidate junctions → tag. ALL components kept; global truncation is Phase 3.
     """
     graph = _network_graph(osm=osm, custom_filter=layer.custom_filter, filter_type=layer.filter_type)
     logger.info(f"  {layer.mode}: fetched {graph.number_of_nodes()} simplified nodes")
@@ -128,10 +122,8 @@ def build_layer_graph(osm: OSM, *, layer: LayerSpec, tolerance_m: float) -> nx.M
 def _open_osm(pbf_path: Path) -> OSM:
     """Open a pbf for parsing, dropping unused metadata to speed the parse. Bbox clip is upstream.
 
-    ``keep_metadata=False`` drops version/timestamp/changeset (never used) — routing tags (highway/
-    surface/bicycle) are kept. The in-memory engine is used deliberately: the out-of-core engine spills
-    to disk and measured SLOWER on dense slices. The node-count explosion is handled at ``to_graph``
-    (``simplify=True``), not here.
+    ``keep_metadata=False`` drops version/timestamp/changeset (unused); routing tags stay. Uses the in-memory
+    engine deliberately — the out-of-core engine spills to disk and measured SLOWER on dense slices.
     """
     return OSM(str(pbf_path), keep_metadata=False)
 
@@ -177,9 +169,8 @@ def _station_entrances(
 ) -> list[tuple[int, float]]:
     """Up to MAX_ENTRANCES bike nodes inside the station radius, as (node id, distance m).
 
-    These nearest N bike nodes within STATION_RADIUS_M (fewer if fewer exist) are declared
-    the station's ENTRANCES: reaching one and crossing its station edge puts the rider at
-    the station. Empty if the station has no bike node in range.
+    The nearest N bike nodes within STATION_RADIUS_M (fewer if fewer exist) become the station's
+    ENTRANCES: reaching one and crossing its station edge puts the rider at the station. Empty if none.
     """
     dists = haversine_vec(lat_a=lat, lon_a=lon, lat_b=node_lats, lon_b=node_lons)
     within = np.flatnonzero(dists <= RailConfig.STATION_RADIUS_M)
@@ -190,14 +181,10 @@ def _station_entrances(
 def _nearest_tracks(
     *, rail_graph: nx.MultiDiGraph, rail_proj: nx.MultiDiGraph, lats: "np.ndarray", lons: "np.ndarray"
 ) -> list[tuple[int, float, float]]:
-    """Snap MANY (lat, lon) points to their nearest track EDGE. Per point: (endpoint_node, node_dist_m,
-    line_dist_m). ONE vectorized ``nearest_edges`` call — a per-point loop rebuilds the R-tree each time
-    (~500× slower, minutes per region).
+    """Snap MANY (lat, lon) points to their nearest track EDGE via ONE vectorized ``nearest_edges``.
 
-    The query runs on the PROJECTED graph (Euclidean ``nearest_edges`` mis-picks on lat/lon at ~48°N, 1°
-    lon ≈ 0.67° lat). Returned (u, v, key) index the SAME node ids in the lat/lon ``rail_graph``, where
-    distances use haversine. ``line_dist_m`` = perpendicular distance to the rail LINE (on-network gate);
-    ``node_dist_m`` = to the nearer endpoint (wired RAIL-edge length). Stations keep their raw position.
+    Per point returns (endpoint_node, node_dist_m, line_dist_m); the query runs on the PROJECTED graph
+    (Euclidean nearest_edges mis-picks on lat/lon at ~48°N). ``line_dist_m`` gates on-network membership.
     """
     tr = pyproj.Transformer.from_crs("EPSG:4326", rail_proj.graph["crs"], always_xy=True)
     px, py = tr.transform(lons, lats)  # vectorized reprojection
@@ -232,10 +219,8 @@ def _nearest_tracks(
 def _merge_bike_rail(bike_graph: nx.MultiDiGraph, rail_graph: nx.MultiDiGraph, osm: OSM) -> int:
     """Merge the independent bike + rail graphs at stations; returns #stations.
 
-    Composes ``rail_graph`` (ids relabelled disjoint) into ``bike_graph``, then adds each station as
-    a SEPARATE RAIL node joined to its nearest track node (RAIL edge) and up-to-N nearest bike nodes
-    (STATION edges) — so a bike route reaches a station only across a station edge (graph_model.svg).
-    Node elevations (bike, track, station) are baked in ONE enrich_elevations pass AFTER this merge.
+    Composes ``rail_graph`` (ids relabelled disjoint) into ``bike_graph``, then adds each station as a SEPARATE
+    RAIL node wired to its nearest track node (RAIL edge) + up-to-N nearest bike nodes (STATION edges). Elevations baked after.
 
     Args:
         bike_graph: The tagged cycling graph; mutated in place into the merged graph.
@@ -314,9 +299,8 @@ def build_region_graph(
 ) -> nx.MultiDiGraph:
     """Build ONE region's consolidated bike+rail graph with baked elevation.
 
-    Bike and rail graphs are built by the SAME ``build_layer_graph`` (only ``LayerSpec`` differs), each
-    keeping ALL components (a region is a clip; global truncation is Phase 3), then merged at stations.
-    ``pbf_path`` is parsed whole — any bbox clipping happens upstream (osmium pre-clip in Phase 2).
+    Bike and rail are built by the SAME ``build_layer_graph`` (only ``LayerSpec`` differs), each keeping
+    ALL components (global truncation is Phase 3), then merged at stations. ``pbf_path`` is parsed whole.
 
     Args:
         pbf_path: Geofabrik .osm.pbf extract for the region (already clipped if a sub-region).
@@ -346,9 +330,8 @@ def build_region_graph(
 def stage_pbf(*, raw_pbf: Path, bbox: tuple[float, float, float, float] | None, staging_dir: Path) -> Path:
     """Stage the parse-ready pbf into ``staging_dir`` and return its path (the ONE file the build reads).
 
-    ``osmium extract`` (C++, ~5 s, multi-core) pre-clips to the bbox with complete_ways so boundary-
-    crossing ways keep all nodes — the build then parses only the corridor instead of re-decoding the
-    whole country (the ~50-min-per-half cost). Whole regions (bbox=None) are copied as-is.
+    ``osmium extract`` (C++, ~5 s) pre-clips to the bbox with complete_ways so boundary-crossing ways keep
+    all nodes — the build parses only the corridor, not the whole country. Whole regions (bbox=None) copied as-is.
     """
     staged = staging_dir / raw_pbf.name  # single source of truth for the staged path
     if bbox is None:
@@ -420,11 +403,8 @@ def reindex_region(nodes_df: pd.DataFrame, edges_df: pd.DataFrame, offset: int) 
 def dedup_by_geometry(nodes_df: pd.DataFrame, edges_df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Collapse border duplicates that appear in two regions' reference-complete extracts.
 
-    Nodes coinciding in (lat, lon, node_type) to COORD_PRECISION collapse to the lower-(lat, lon)
-    copy (others repointed onto it) — node_type is IN the key so a bike node and a station/rail node
-    at the same spot stay SEPARATE (a station is its own node reachable only via a station edge).
-    Edges collapse only if endpoints AND geometry (rounded WKT, or endpoints+mode for null-geometry
-    hops) coincide — so genuinely parallel roads both survive.
+    Nodes coinciding in (lat, lon, node_type) to COORD_PRECISION collapse to the lower copy — node_type is IN
+    the key so coincident bike and rail nodes stay SEPARATE. Edges collapse only if endpoints AND geometry coincide.
     """
     prec = GraphConfig.COORD_PRECISION
     nodes_df = nodes_df.copy()

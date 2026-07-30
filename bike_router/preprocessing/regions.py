@@ -38,9 +38,8 @@ def split_geofabrik_path(geofabrik_path: str) -> str:
 class Region:
     """One region to build: a unique output key, its Geofabrik pbf, and an optional bbox clip.
 
-    ``bbox`` splits a too-big whole-country pbf into memory-bounded halves that share one downloaded pbf.
-    Adjacent halves OVERLAP by ~0.5° (> the ~29 km longest rail edge); Phase-3 geometry-dedup then
-    collapses the duplicated seam (the same mechanism that already merges overlapping Geofabrik regions).
+    ``bbox`` splits a too-big country pbf into memory-bounded halves sharing one download; adjacent halves
+    OVERLAP ~0.5° (> the ~29 km longest rail edge) so Phase-3 geometry-dedup collapses the duplicated seam.
     """
 
     key: str
@@ -81,9 +80,8 @@ def _assert_rectangular_tiling(*, pbf: str, a_key: str, a: Bbox, b_key: str, b: 
 def _assert_split_overlaps(regions: list[Region]) -> None:
     """Import-time invariant: slices sharing one pbf must be a valid OVERLAPPING RECTANGULAR TILING.
 
-    Consecutive tiles (sorted along the split axis) must be aligned on the perpendicular axis and
-    overlap ≥0.5° on the split axis, else Phase-3 dedup can't stitch the seam. Fails loud on any
-    ragged/gapped/diagonal split. Supports lon-band and lat-band splits (auto-detected per pair).
+    Consecutive tiles (sorted along the split axis) must align on the perpendicular axis and overlap ≥0.5°
+    on the split axis, else Phase-3 dedup can't stitch the seam. Fails loud on any ragged/gapped/diagonal split.
     """
     by_pbf: dict[str, list[tuple[str, Bbox]]] = {}
     for r in regions:
@@ -181,9 +179,8 @@ def base_meta(*, nodes_df: pd.DataFrame, edges_df: pd.DataFrame, tolerance_m: fl
 def combine_regions(*, regions_dir: Path, regions: list[str]) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Phase 3: offset each region's contiguous ids into a global space, dedup the seam, re-densify.
 
-    A running offset (ΣN of earlier regions) makes ids collision-free; geometry dedup collapses
-    border duplicates; a component prune (rail strict / bike keep-if-big) drops strays; a final
-    remap closes the holes (n_nodes == max_id + 1). Returns (nodes, edges).
+    A running offset (ΣN of earlier regions) makes ids collision-free; geometry dedup collapses border
+    duplicates; a prune drops strays; a final remap closes the holes (n_nodes == max_id + 1). Returns (nodes, edges).
     """
     node_frames: list[pd.DataFrame] = []
     edge_frames: list[pd.DataFrame] = []
@@ -209,12 +206,8 @@ def combine_regions(*, regions_dir: Path, regions: list[str]) -> tuple[pd.DataFr
 def prune_components(*, nodes_df: pd.DataFrame, edges_df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Drop stray components: RAIL strict (largest comp only), BIKE keep-if-big. Endpoint-only, no geometry.
 
-    A region is a CLIP, so its bike roads legitimately split into pieces that connect only through
-    neighbours — we do NOT force one bike component. Policy:
-      • RAIL: keep ONLY the largest weakly-connected rail component (every train must reach every other).
-      • BIKE: keep EVERY weakly-connected bike component whose total edge length ≥ MIN_BIKE_COMPONENT_KM.
-      • Nodes/edges surviving = kept bike nodes ∪ kept rail nodes; any edge with both endpoints kept
-        (so a station edge survives iff both its rail node and a bike entrance survived). Both mandatory.
+    A region is a CLIP, so bike roads legitimately split into pieces connecting only via neighbours: keep the
+    largest RAIL comp but EVERY bike comp ≥ MIN_BIKE_COMPONENT_KM; an edge lives iff both endpoints survive.
     """
     bike_e = edges_df[edges_df["mode"] == Mode.BIKE]
     rail_e = edges_df[edges_df["mode"] == Mode.RAIL]

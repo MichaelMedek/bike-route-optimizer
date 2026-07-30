@@ -107,9 +107,8 @@ def project_markers_onto_track(
 ) -> list[tuple[float, float, str]]:
     """Place each (lat, lon, label) marker on the route at its nearest track point.
 
-    Returns (distance_km, elevation_m, label) so the SAME named markers the map shows
-    (start/end, stations, gmaps waypoints) also appear on the elevation profile at the
-    correct position + height. Nearest by great-circle distance to the densified track.
+    Returns (distance_km, elevation_m, label) so the same named markers the map shows appear
+    on the elevation profile at the right position + height. Nearest by great-circle distance.
     """
     dists = cumulative_km(points=track.points)
     plats = np.array([p.lat for p in track.points], dtype=np.float64)
@@ -209,9 +208,8 @@ def grade_color(*, mode: str, grade: float) -> list[int]:
 def _track_point(*, at: RouteNode, edge: RouteEdge, elev_from: float, elev_to: float, elapsed_s: float) -> TrackPoint:
     """A TrackPoint at ``at``, carrying ``edge``'s condition/grade/speed — the ONE point builder.
 
-    ``elev_from``/``elev_to`` are the edge's elevations in its TRAVEL direction (node_a → node_b),
-    so grade + speed always reflect the direction actually ridden — NOT which endpoint the point
-    happens to sit at. (Getting this backwards made every climb read as a descent and vice-versa.)
+    ``elev_from``/``elev_to`` are the edge's elevations in TRAVEL direction (node_a → node_b), so
+    grade + speed reflect the direction ridden, not which endpoint the point sits at.
     """
     surface_bad, road_bad, speed_kmh = edge_condition_speed(edge=edge, elev_source=elev_from, elev_target=elev_to)
     return TrackPoint(
@@ -230,9 +228,8 @@ def _track_point(*, at: RouteNode, edge: RouteEdge, elev_from: float, elev_to: f
 def build_track(route: RoutePath) -> Track:
     """Build the full route track with adaptive-speed timing from an ordered edge list.
 
-    Bike edges use the surface/grade speed model and count toward ascent/descent; rail
-    edges ride at RAIL_SPEED_KMH; each station edge adds half of BOARDING_WAIT_S, so board
-    + alight sum to one full wait (mirrors the cost split). All leg times are DERIVED.
+    Bike edges use the surface/grade speed model and count toward ascent/descent; rail rides at
+    RAIL_SPEED_KMH; each station edge adds half of BOARDING_WAIT_S (board + alight = one wait).
     """
     first_node, second_node, first_edge = next(route.iter_edges())
     # Start point: at the first node, oriented in the first edge's travel direction (a→b).
@@ -314,9 +311,8 @@ def build_track(route: RoutePath) -> Track:
 def edge_vertices_3d(*, node_a: RouteNode, node_b: RouteNode, edge: RouteEdge) -> list[tuple[float, float, float]]:
     """(lon, lat, elev) vertices of an edge: REAL 2D polyline, elevation LINEAR node-to-node.
 
-    z is interpolated between the two node elevations by along-edge distance (NOT a per-vertex
-    baked DEM z) — the single elevation source the optimiser + stats also use. A hop with no
-    geometry (rail/station) is a straight two-node segment.
+    z interpolates between the two node elevations by along-edge distance (the single elevation
+    source the optimiser + stats use); a geometry-less hop (rail/station) is a straight segment.
     """
     ea, eb = node_a.elevation_m, node_b.elevation_m
     if edge.geometry is None:
@@ -332,9 +328,8 @@ def edge_vertices_3d(*, node_a: RouteNode, node_b: RouteNode, edge: RouteEdge) -
 def densify_track(route: RoutePath, track: Track) -> Track:
     """Expand the node-level track into the full 3D road polyline (no DEM at inference).
 
-    Walks each edge's real 2D geometry so the profile follows the true road/track; only
-    station access-links contribute a straight segment. Each leg's time is spread by
-    along-edge distance; ascent/descent + per-leg condition/speed carry from the node track.
+    Walks each edge's real 2D geometry so the profile follows the true road (station links stay
+    straight); each leg's time spreads by along-edge distance, other fields carry from the node track.
     """
     assert len(track.points) == len(route.nodes), "track points must align with route nodes"
     out: list[TrackPoint] = []

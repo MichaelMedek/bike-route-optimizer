@@ -24,11 +24,9 @@ class RouteNode:
 
 @dataclass(frozen=True)
 class RouteEdge:
-    """One hop on the route, oriented from_node → to_node.
-
-    ``geometry`` is the real 2D polyline as ``[(lon, lat), ...]`` oriented along travel, or
-    None for a straight rail/station hop (drawn node-to-node). surface/highway stay optional
-    external OSM tags; length_m is the baked edge length.
+    """One hop on the route, oriented from_node → to_node. ``geometry`` is the real 2D polyline
+    ``[(lon, lat), ...]`` oriented along travel, or None for a straight rail/station hop; surface/
+    highway stay optional external OSM tags; length_m is the baked edge length.
     """
 
     from_node: int
