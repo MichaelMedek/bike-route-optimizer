@@ -9,25 +9,24 @@ import logging
 from dataclasses import dataclass
 from pathlib import Path
 
-import networkx as nx
 from shapely.geometry import Polygon
 
-from bike_router.composition import RouteComposition, route_composition
-from bike_router.constants import CorridorConfig, GmapsConfig, GpxConfig, GraphConfig, RoutingParams
-from bike_router.corridor import build_corridor
-from bike_router.cost import edge_cost_array
-from bike_router.errors import NoRouteError, OutOfCoverageError, RouteTooLargeError, TripTooLongError, TripTooShortError
-from bike_router.geo import haversine_distance_m
-from bike_router.geocoding import geocode_endpoint, make_geocode_fn
-from bike_router.gmaps import build_gmaps_url
-from bike_router.gpx_export import build_gpx
-from bike_router.graph_store import load_meta, load_path_edges, load_route_tables, snap_to_node
-from bike_router.naming import route_output_paths
-from bike_router.plotting import plot_route_debug
-from bike_router.progress import log_rss
-from bike_router.route_graph import RouteGraph, shortest_path
-from bike_router.sanity import check_cost_model
-from bike_router.simplify import (
+from bike_router.core.composition import RouteComposition, route_composition
+from bike_router.core.constants import CorridorConfig, GmapsConfig, GpxConfig, GraphConfig, RoutingParams
+from bike_router.core.corridor import build_corridor
+from bike_router.core.cost import edge_cost_array
+from bike_router.core.errors import NoRouteError, OutOfCoverageError, RouteTooLargeError, TripTooLongError, TripTooShortError
+from bike_router.core.geo import haversine_distance_m
+from bike_router.core.geocoding import geocode_endpoint, make_geocode_fn
+from bike_router.core.gmaps import build_gmaps_url
+from bike_router.core.gpx_export import build_gpx
+from bike_router.core.graph_store import load_meta, load_path_edges, load_route_tables, snap_to_node
+from bike_router.core.naming import route_output_paths
+from bike_router.core.plotting import plot_route_debug
+from bike_router.core.progress import log_rss
+from bike_router.core.route_graph import RouteGraph, shortest_path
+from bike_router.core.sanity import check_cost_model
+from bike_router.core.simplify import (
     BikeLeg,
     RailLeg,
     bike_leg_endpoints,
@@ -36,7 +35,7 @@ from bike_router.simplify import (
     split_bike_legs,
     split_rail_legs,
 )
-from bike_router.track import Track, build_track, densify_track
+from bike_router.core.track import Track, build_track, densify_track
 
 logger = logging.getLogger(__name__)
 
@@ -150,10 +149,8 @@ def _route_node_path(
     log_rss(label=f"CSR route graph built ({route_graph.n_edges} edges)")
     source = route_graph.snap_bike_node(lat=start_latlon[0], lon=start_latlon[1])
     target = route_graph.snap_bike_node(lat=dest_latlon[0], lon=dest_latlon[1])
-    try:
-        node_path = shortest_path(route_graph=route_graph, source_osmid=source, target_osmid=target)
-    except nx.NetworkXNoPath as exc:
-        raise NoRouteError("No bike route found between the two places within the corridor.") from exc
+    # shortest_path raises NoRouteError itself when unreachable — surfaced straight to the caller.
+    node_path = shortest_path(route_graph=route_graph, source_osmid=source, target_osmid=target)
     return [
         (int(n), float(route_graph.lat[route_graph.index[n]]), float(route_graph.lon[route_graph.index[n]]))
         for n in node_path

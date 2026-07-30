@@ -4,18 +4,20 @@ import pandas as pd
 import pytest
 from shapely.geometry import box
 
-from bike_router import graph_store
-from bike_router.constants import Mode, NodeType
-from bike_router.errors import OutOfCoverageError
-from bike_router.graph_store import (
+from bike_router.core import graph_store
+from bike_router.core.constants import Mode, NodeType
+from bike_router.core.errors import OutOfCoverageError
+from bike_router.core.graph_store import (
     _covering_tiles,
     _intersecting_tiles,
     _read_tiles,
+    load_route_tables,
+    snap_to_node,
+)
+from bike_router.preprocessing.graph_writer import (
     _scalar,
     graph_from_tables,
     graph_to_tables,
-    load_route_graph,
-    snap_to_node,
     write_graph_parquet,
 )
 from tests.conftest import FIXTURE_GRAPH_DIR, make_store_roundtrip_graph
@@ -173,7 +175,7 @@ def test_intersecting_tiles_only_cells_the_polygon_crosses():
 def test_intersecting_tiles_fewer_than_bbox_margin_on_diagonal():
     # A diagonal tube's bbox spans a big rectangle, but the tube only crosses cells near the
     # diagonal — strictly fewer than _covering_tiles(margin=1), and every returned cell truly touches.
-    from bike_router.corridor import build_corridor
+    from bike_router.core.corridor import build_corridor
 
     corridor = build_corridor(start_latlon=(48.0, 8.0), dest_latlon=(51.0, 11.0), half_width_km=10.0, extend_km=0.0)
     intersecting = _intersecting_tiles(corridor=corridor, tile_deg=0.5)
@@ -204,32 +206,31 @@ def _write_fixture_store(tmp_path):
     return tmp_path
 
 
-def test_load_route_graph_recombines_bike_rail_station(tmp_path):
-    # Both corridors cover the tiny fixture → full bike ring + rail + station edges recombine,
-    # and NO strongly-connected pruning is applied (returned as-built).
+def test_load_route_tables_recombines_bike_rail_station(tmp_path):
+    # Both corridors cover the tiny fixture → full bike ring + rail + station edges recombine
+    # into the minimal routing tables (no geometry column), returned as-built (no pruning).
     store = _write_fixture_store(tmp_path)
     wide = box(7.9, 47.9, 8.2, 48.1)  # covers all fixture nodes for both layers
-    loaded = load_route_graph(bike_corridor=wide, rail_corridor=wide, graph_dir=store)
-    assert loaded.number_of_nodes() == 6 and loaded.number_of_edges() == 14  # 4 bike + 2 rail nodes; ring+rail+station
-    modes = {d["mode"] for _u, _v, _k, d in loaded.edges(keys=True, data=True)}
-    assert modes == {Mode.BIKE, Mode.RAIL, Mode.STATION}
+    nodes_df, edges_df = load_route_tables(bike_corridor=wide, rail_corridor=wide, graph_dir=store)
+    assert len(nodes_df) == 6 and len(edges_df) == 14  # 4 bike + 2 rail nodes; ring+rail+station edges
+    assert set(edges_df["mode"]) == {Mode.BIKE, Mode.RAIL, Mode.STATION}
 
 
-def test_load_route_graph_bike_confined_rail_generous(tmp_path):
+def test_load_route_tables_bike_confined_rail_generous(tmp_path):
     # A bike corridor covering only the 4 bike nodes + a rail corridor also covering them yields the
     # bike ring plus the station/rail bridge; proves the two layers load independently and recombine.
     store = _write_fixture_store(tmp_path)
     both = box(7.999, 47.999, 8.011, 48.011)
-    loaded = load_route_graph(bike_corridor=both, rail_corridor=both, graph_dir=store)
-    node_types = {d["node_type"] for _n, d in loaded.nodes(data=True)}
+    nodes_df, _edges_df = load_route_tables(bike_corridor=both, rail_corridor=both, graph_dir=store)
+    node_types = set(nodes_df["node_type"])
     assert NodeType.BIKE in node_types and NodeType.RAIL in node_types
 
 
-def test_load_route_graph_outside_coverage_raises(tmp_path):
+def test_load_route_tables_outside_coverage_raises(tmp_path):
     store = _write_fixture_store(tmp_path)
     far = box(20.0, 60.0, 20.1, 60.1)  # no tiles there
     with pytest.raises(AssertionError, match="bike corridor is outside"):
-        load_route_graph(bike_corridor=far, rail_corridor=far, graph_dir=store)
+        load_route_tables(bike_corridor=far, rail_corridor=far, graph_dir=store)
 
 
 def test_snap_to_node_returns_nearest_node_with_elevation():

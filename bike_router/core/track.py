@@ -9,11 +9,11 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from bike_router.constants import GpxConfig, GradeConfig, Mode, Palette, RailConfig, SpeedConfig
-from bike_router.cost import road_tier, surface_tier
-from bike_router.geo import haversine_vec
-from bike_router.route_path import RouteEdge, RouteNode, RoutePath
-from bike_router.speed import effective_speed_kmh, kmh_to_ms
+from bike_router.core.constants import GpxConfig, GradeConfig, Mode, Palette, RailConfig, SpeedConfig
+from bike_router.core.cost import road_tier, surface_tier
+from bike_router.core.geo import haversine_vec
+from bike_router.core.route_path import RouteEdge, RouteNode, RoutePath
+from bike_router.core.speed import effective_speed_kmh, kmh_to_ms
 
 
 @dataclass(frozen=True)

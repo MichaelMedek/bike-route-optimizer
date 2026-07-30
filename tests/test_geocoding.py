@@ -4,8 +4,8 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from bike_router.errors import BikeRouterError, GeocodeConnectionError, GeocodeNotFoundError
-from bike_router.geocoding import (
+from bike_router.core.errors import BikeRouterError, GeocodeConnectionError, GeocodeNotFoundError
+from bike_router.core.geocoding import (
     _GEOCODE_CACHE,
     geocode,
     geocode_endpoint,
@@ -68,7 +68,7 @@ def test_geocode_service_error_raises_connection_error():
 
 def test_make_geocode_fn_builds_rate_limited_callable():
     """make_geocode_fn returns a callable wrapping Nominatim (no network here)."""
-    from bike_router.geocoding import make_geocode_fn
+    from bike_router.core.geocoding import make_geocode_fn
 
     fn = make_geocode_fn()
     assert callable(fn)

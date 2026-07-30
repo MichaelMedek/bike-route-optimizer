@@ -9,18 +9,17 @@ Two layers:
     pair with no train line bikes both ways.
 """
 
-import networkx as nx
 import pytest
 
-from bike_router.constants import GraphConfig, NodeType
-from bike_router.pipeline import plan_route
-from bike_router.routing import shortest_route
-from tests.conftest import DEFAULT_PARAMS, make_hill_vs_rail_graph
+from bike_router.core.constants import GraphConfig, NodeType
+from bike_router.core.pipeline import plan_route
+from bike_router.core.route_graph import RouteGraph, shortest_path
+from tests.conftest import DEFAULT_PARAMS, make_hill_vs_rail_edges, route_node_types
 
 
-def _uses_train_path(graph: nx.MultiDiGraph, path: list[int]) -> bool:
+def _uses_train_path(arr, path: list[int]) -> bool:
     """True iff the route visits a rail-station node (boards a train)."""
-    return any(graph.nodes[node]["node_type"] == NodeType.RAIL for node in path)
+    return NodeType.RAIL in route_node_types(arr=arr, path=path)
 
 
 # (label, climb_m, rail_alternative, downhill, expect_train) — 10 synthetic scenarios.
@@ -48,10 +47,11 @@ def test_default_params_pick_expected_mode(
     expect_train: bool,  # noqa: FBT001
 ) -> None:
     """With the DEFAULT params, the synthetic router bikes or trains as a sensible rider would."""
-    graph = make_hill_vs_rail_graph(params=DEFAULT_PARAMS, climb_m=climb_m, rail_alternative=rail)
+    arr = make_hill_vs_rail_edges(climb_m=climb_m, rail_alternative=rail)
+    rg = RouteGraph.from_arrays(**arr.route_graph_args(params=DEFAULT_PARAMS))
     source, target = (2, 1) if downhill else (1, 2)  # downhill = start at the high end
-    path = shortest_route(graph=graph, source=source, target=target)
-    assert _uses_train_path(graph=graph, path=path) is expect_train, f"{label}: got path {path}"
+    path = shortest_path(route_graph=rg, source_osmid=source, target_osmid=target)
+    assert _uses_train_path(arr=arr, path=path) is expect_train, f"{label}: got path {path}"
 
 
 # --- Real routes: FULL e2e — real dataset + real OSM geocoding, nothing stubbed ------------

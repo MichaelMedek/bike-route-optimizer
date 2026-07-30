@@ -16,7 +16,9 @@ import pyrosm
 import pytest
 from shapely.geometry import Point
 
-from bike_router.builder import (
+from bike_router.core.constants import Mode, NodeType, RailConfig
+from bike_router.core.geo import haversine_distance_m
+from bike_router.preprocessing.builder import (
     BIKE_LAYER,
     RAIL_LAYER,
     _merge_bike_rail,
@@ -33,9 +35,7 @@ from bike_router.builder import (
     remap_contiguous,
     stage_pbf,
 )
-from bike_router.constants import Mode, NodeType, RailConfig
-from bike_router.geo import haversine_distance_m
-from bike_router.graph_store import graph_to_tables, read_full_graph
+from bike_router.preprocessing.graph_writer import graph_to_tables, read_full_graph
 from tests.conftest import FIXTURE_GRAPH_DIR, MockDEMService
 
 _TEST_PBF = Path(pyrosm.get_data("test_pbf"))
@@ -135,7 +135,7 @@ def test_build_region_graph_no_dangling_nodes():
 def test_remap_contiguous_then_reindex_two_regions_disjoint():
     # Regression for the node-id COLLISION bug: two regions each remapped to 0..N-1 (which would
     # collide), then reindexed with a running offset → globally disjoint, collision-free ids.
-    from bike_router.graph_store import read_region_tables
+    from bike_router.preprocessing.graph_writer import read_region_tables
 
     tables = read_region_tables(region_dir=FIXTURE_GRAPH_DIR)
     a_nodes, a_edges = remap_contiguous(nodes_df=tables[0], edges_df=tables[1])
@@ -278,7 +278,7 @@ def test_dedup_two_rail_at_same_coord_merge_but_not_with_bike():
 def test_dedup_coincident_bike_rail_keeps_edges_type_consistent_through_rebuild():
     # END-TO-END: coincident bike+rail + their edges survive dedup AND graph_from_tables' node/edge
     # type-consistency assertion (which raised "bike edge has rail endpoint" before the fix).
-    from bike_router.graph_store import graph_from_tables
+    from bike_router.preprocessing.graph_writer import graph_from_tables
 
     nodes = _typed_nodes([(0, 48.0, 8.0, "bike"), (1, 48.0, 8.0, "rail"), (2, 48.05, 8.0, "bike")])
     edges = _edges(
@@ -299,7 +299,7 @@ def test_dedup_preserves_rail_station_types_through_graph_rebuild():
     # A realistic mixed-mode region (bike node + rail station + station/rail edges) must survive
     # dedup AND graph_from_tables' node/edge-type consistency assertions — the rail path the
     # bike-only dedup tests don't exercise. node_type is kept, edges stay type-consistent.
-    from bike_router.graph_store import graph_from_tables
+    from bike_router.preprocessing.graph_writer import graph_from_tables
 
     nodes = gpd.GeoDataFrame(
         [
@@ -490,7 +490,7 @@ def test_merge_leaves_track_and_station_nodes_for_later_elevation_bake():
     # ONE enrich_elevations pass over the whole graph). Baking before the merge left the 4016 track
     # nodes with no "elevation" → graph_to_tables raised KeyError. Here: after merge those nodes lack
     # elevation; after enrich EVERY node has it (bike + track + station), so graph_to_tables succeeds.
-    from bike_router.graph_ops import enrich_elevations
+    from bike_router.preprocessing.graph_ops import enrich_elevations
 
     bike = _bike_graph([(100, 48.0, 8.001)], [])
     rail = _synth_rail_graph([[(48.0, 8.00), (48.0, 8.025), (48.0, 8.05)]])
@@ -532,7 +532,7 @@ def test_merge_warns_and_keeps_train_only_station_with_no_bike_entrance(caplog):
     bike = _bike_graph([(100, 48.0, far_lon)], [])
     rail = _synth_rail_graph([[(48.0, 7.99), (48.0, 8.01)]])
     stations = gpd.GeoDataFrame({"name": ["Lonely"]}, geometry=[Point(8.0, 48.0)], crs="EPSG:4326")
-    with caplog.at_level(logging.WARNING, logger="bike_router.builder"):
+    with caplog.at_level(logging.WARNING, logger="bike_router.preprocessing.builder"):
         n = _merge_bike_rail(bike_graph=bike, rail_graph=rail, osm=_FakeOSM(stations=stations))
     assert n == 1  # kept
     assert any("no bike node within" in r.message for r in caplog.records)  # warned, not raised
@@ -607,7 +607,7 @@ def test_merge_no_track_station_without_entrance_warns_and_keeps(caplog):
 
     bike = _bike_graph([(0, 48.0, 8.50), (1, 48.0, 8.5001), (2, 48.0005, 8.50005)], [(0, 1), (1, 2), (0, 2)])
     stations = gpd.GeoDataFrame({"name": ["Far"]}, geometry=[Point(8.0, 48.0)], crs="EPSG:4326")  # ~37 km away
-    with caplog.at_level(logging.WARNING, logger="bike_router.builder"):
+    with caplog.at_level(logging.WARNING, logger="bike_router.preprocessing.builder"):
         n = _merge_bike_rail(bike_graph=bike, rail_graph=_empty_rail_graph(), osm=_FakeOSM(stations=stations))
     assert n == 1 and any("no bike node within" in r.message for r in caplog.records)
 
@@ -622,7 +622,7 @@ def test_merge_midline_station_without_entrance_warns_and_keeps(caplog):
     stations = gpd.GeoDataFrame(
         {"name": ["A", "B", "C"]}, geometry=[Point(8.0, 48.0), Point(8.05, 48.0), Point(8.10, 48.0)], crs="EPSG:4326"
     )
-    with caplog.at_level(logging.WARNING, logger="bike_router.builder"):
+    with caplog.at_level(logging.WARNING, logger="bike_router.preprocessing.builder"):
         n = _merge_bike_rail(bike_graph=bike, rail_graph=rail, osm=_FakeOSM(stations=stations))
     assert n == 3  # all three kept (all on rail)
     assert any("'B'" in r.message and "no bike node within" in r.message for r in caplog.records)
@@ -714,7 +714,7 @@ def test_stage_pbf_no_bbox_copies_verbatim(tmp_path):
 
 def test_stage_pbf_bbox_invokes_osmium_extract(monkeypatch, tmp_path):
     # bbox → shells out to `osmium extract` writing to the SAME path it returns (no drift).
-    from bike_router import builder
+    from bike_router.preprocessing import builder
 
     calls = []
     monkeypatch.setattr(builder.subprocess, "run", lambda cmd, check: calls.append((cmd, check)))
@@ -741,7 +741,7 @@ def test_stage_pbf_bbox_really_restricts_output_end_to_end(tmp_path):
 def test_build_region_graph_clipped_stages_then_builds(monkeypatch, tmp_path):
     # The workflow: stage_pbf (into a temp dir) → build_region_graph on the STAGED path. Verify it
     # stages with the given bbox and builds exactly what stage returned, temp dir gone afterward.
-    from bike_router import builder
+    from bike_router.preprocessing import builder
 
     staged_seen = {}
     fake_graph = nx.MultiDiGraph()

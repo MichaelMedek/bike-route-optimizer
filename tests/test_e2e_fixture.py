@@ -10,9 +10,9 @@ from pathlib import Path
 
 import pytest
 
-from bike_router import pipeline
-from bike_router.constants import Mode
-from bike_router.errors import OutOfCoverageError
+from bike_router.core import pipeline
+from bike_router.core.constants import Mode
+from bike_router.core.errors import OutOfCoverageError
 from tests.conftest import FIXTURE_GRAPH_DIR, params
 
 # Two real points inside the fixture coverage (Schwarzwald, ~18 km apart, net downhill).

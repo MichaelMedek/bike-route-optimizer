@@ -3,9 +3,9 @@
 import pandas as pd
 import pytest
 
-from bike_router import graph_store, pipeline
-from bike_router.builder import _open_osm, reindex_region, remap_contiguous
-from bike_router.errors import OutOfCoverageError
+from bike_router.core import graph_store, pipeline
+from bike_router.core.errors import OutOfCoverageError
+from bike_router.preprocessing.builder import _open_osm, reindex_region, remap_contiguous
 
 
 def test_download_graph_skips_when_present(tmp_path):
@@ -17,18 +17,49 @@ def test_download_graph_skips_when_present(tmp_path):
 def test_download_graph_pulls_when_missing(tmp_path, monkeypatch):
     called = {}
 
-    def _fake_list(repo_id, repo_type):  # noqa: ANN001, ANN202
+    def _fake_snapshot(repo_id, repo_type, local_dir, max_workers, tqdm_class):  # noqa: ANN001, ANN202
         called["repo"] = repo_id
-        return ["meta.json", "nodes/tile_0_0.parquet"]
-
-    def _fake_download(repo_id, repo_type, filename, local_dir):  # noqa: ANN001, ANN202
+        called["repo_type"] = repo_type
+        called["max_workers"] = max_workers
+        # Drive the passed tqdm_class as snapshot_download does: a file-count bar → progress fires.
+        bar = tqdm_class(total=3)
+        for _ in range(3):
+            bar.update(1)
         (tmp_path / "meta.json").write_text("{}")  # simulate meta landing
 
-    monkeypatch.setattr(graph_store, "list_repo_files", _fake_list)
-    monkeypatch.setattr(graph_store, "hf_hub_download", _fake_download)
-    result = graph_store.download_graph_from_hf(target_dir=tmp_path)
+    monkeypatch.setattr(graph_store, "snapshot_download", _fake_snapshot)
+    seen: list[tuple[int, int]] = []
+    result = graph_store.download_graph_from_hf(target_dir=tmp_path, progress=lambda d, t: seen.append((d, t)))
     assert result == tmp_path
     assert called["repo"] == graph_store.GraphConfig.HF_REPO_ID
+    assert called["repo_type"] == "dataset"
+    assert called["max_workers"] == graph_store.GraphConfig.HF_MAX_WORKERS
+    # File-count progress was forwarded and reached the total, monotonically.
+    assert seen and seen[-1] == (3, 3)
+    assert [d for d, _t in seen] == sorted(d for d, _t in seen)
+
+
+def test_download_graph_ignores_byte_bars(tmp_path, monkeypatch):
+    # snapshot_download also creates byte bars (unit='B') updated off-thread; those must NOT
+    # forward to the st.progress callback (only the main-thread file-count bar does).
+    def _fake_snapshot(repo_id, repo_type, local_dir, max_workers, tqdm_class):  # noqa: ANN001, ANN202
+        byte_bar = tqdm_class(total=1000, unit="B")
+        byte_bar.update(500)
+        (tmp_path / "meta.json").write_text("{}")
+
+    monkeypatch.setattr(graph_store, "snapshot_download", _fake_snapshot)
+    seen: list[tuple[int, int]] = []
+    graph_store.download_graph_from_hf(target_dir=tmp_path, progress=lambda d, t: seen.append((d, t)))
+    assert seen == []  # byte bar never forwarded
+
+
+def test_download_graph_propagates_failure(tmp_path, monkeypatch):
+    def _boom(repo_id, repo_type, local_dir, max_workers, tqdm_class):  # noqa: ANN001, ANN202
+        raise OSError("network died mid-download")
+
+    monkeypatch.setattr(graph_store, "snapshot_download", _boom)
+    with pytest.raises(OSError, match="network died"):
+        graph_store.download_graph_from_hf(target_dir=tmp_path)
 
 
 def test_remap_contiguous_renumbers_gapped_and_negative_ids():

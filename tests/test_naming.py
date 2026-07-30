@@ -2,8 +2,8 @@
 
 import pytest
 
-from bike_router.constants import OutputConfig
-from bike_router.naming import params_suffix, route_basename, route_output_paths, short_place, slugify
+from bike_router.core.constants import OutputConfig
+from bike_router.core.naming import params_suffix, route_basename, route_output_paths, short_place, slugify
 from tests.conftest import DEFAULT_PARAMS, zero_params
 
 

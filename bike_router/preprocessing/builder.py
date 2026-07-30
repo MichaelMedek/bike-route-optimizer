@@ -25,13 +25,13 @@ from shapely import from_wkt, to_wkt
 from shapely.geometry import LineString, Point
 from shapely.ops import nearest_points
 
-from bike_router.constants import (
+from bike_router.core.constants import (
     GraphConfig,
     Mode,
     NodeType,
     RailConfig,
 )
-from bike_router.geo import haversine_distance_m, haversine_vec
+from bike_router.core.geo import haversine_distance_m, haversine_vec
 from bike_router.preprocessing.elevation import DEMService
 from bike_router.preprocessing.graph_ops import (
     bake_edge_geometry_elevations,

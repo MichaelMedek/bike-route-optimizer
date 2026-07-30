@@ -1,0 +1,14 @@
+# DATASET-PREPROCESSING dependencies — the offline build stack, ADDED ON TOP of the
+# runtime requirements.txt. Install with:  pip install -r requirements-preprocessing.txt
+-r requirements.txt
+
+# OSM read + graph construction
+osmnx>=2.0.0  # projection + intersection consolidation (build-time graph simplification)
+networkx>=3.0  # the build-time MultiDiGraph representation (osmnx's graph type)
+pyrosm>=0.6.0  # fast local .osm.pbf reader for the offline country-graph builder
+geopandas>=0.14.0  # GeoDataFrames from pyrosm; node/edge tables
+scikit-learn>=1.3.0  # osmnx.distance.nearest_nodes needs it for unprojected graphs
+pyproj>=3.6.0  # UTM projection for metric consolidation
+
+# DEM elevation sampling
+rasterio>=1.3.0  # read the cropped EuroDEM GeoTIFF, sample node/vertex elevations

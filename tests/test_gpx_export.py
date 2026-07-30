@@ -4,13 +4,13 @@ import datetime as dt
 
 import gpxpy
 
-from bike_router.gpx_export import build_gpx
-from bike_router.track import build_track
-from tests.conftest import make_line_graph
+from bike_router.core.gpx_export import build_gpx
+from bike_router.core.track import build_track
+from tests.conftest import make_line_route
 
 
 def _track():
-    return build_track(graph=make_line_graph(), node_path=[1, 2, 3])
+    return build_track(route=make_line_route())
 
 
 def test_build_gpx_roundtrips_points_and_elevation():

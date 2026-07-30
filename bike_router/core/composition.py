@@ -6,9 +6,9 @@ travel mode for the CLI/web stats and plot legend.
 
 from dataclasses import dataclass
 
-from bike_router.constants import GpxConfig, Mode, RoadConfig, SurfaceConfig, WebMapConfig
-from bike_router.cost import road_tier, surface_tier
-from bike_router.route_path import RoutePath
+from bike_router.core.constants import GpxConfig, Mode, RoadConfig, SurfaceConfig, WebMapConfig
+from bike_router.core.cost import road_tier, surface_tier
+from bike_router.core.route_path import RoutePath
 
 
 @dataclass(frozen=True)

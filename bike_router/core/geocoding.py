@@ -15,8 +15,8 @@ from geopy.extra.rate_limiter import RateLimiter
 from geopy.geocoders import Nominatim
 from geopy.location import Location
 
-from bike_router.constants import NominatimConfig, PhotonConfig
-from bike_router.errors import GeocodeConnectionError, GeocodeNotFoundError
+from bike_router.core.constants import NominatimConfig, PhotonConfig
+from bike_router.core.errors import GeocodeConnectionError, GeocodeNotFoundError
 
 logger = logging.getLogger(__name__)
 

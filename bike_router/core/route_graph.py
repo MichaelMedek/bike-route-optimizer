@@ -10,13 +10,13 @@ Geometry/surface/highway never enter here — they only feed the FINAL chosen pa
 import logging
 from dataclasses import dataclass
 
-import networkx as nx  # only for the NetworkXNoPath exception type the pipeline already handles
 import numpy as np
 from scipy.sparse import csr_matrix
 from scipy.sparse.csgraph import dijkstra
 
-from bike_router.constants import NodeType
-from bike_router.geo import haversine_vec
+from bike_router.core.constants import NodeType
+from bike_router.core.errors import NoRouteError
+from bike_router.core.geo import haversine_vec
 
 logger = logging.getLogger(__name__)
 
@@ -107,16 +107,15 @@ def _min_cost_matrix(*, u: np.ndarray, v: np.ndarray, cost: np.ndarray, n: int) 
 def shortest_path(*, route_graph: RouteGraph, source_osmid: int, target_osmid: int) -> list[int]:
     """Optimal source→target osmid path under the stored cost (scipy Dijkstra).
 
-    Dijkstra on non-negative weights is provably optimal — identical path to the old
-    A* (the heuristic only pruned the frontier). Raises networkx.NetworkXNoPath if
-    unreachable, preserving the pipeline's existing no-route handling.
+    Dijkstra on non-negative weights is provably optimal — identical path to the old A*
+    (the heuristic only pruned the frontier). Raises NoRouteError if unreachable.
     """
     assert source_osmid in route_graph.index, "source node must be in the graph"
     assert target_osmid in route_graph.index, "target node must be in the graph"
     src, tgt = route_graph.index[source_osmid], route_graph.index[target_osmid]
     dist, pred = dijkstra(route_graph.matrix, directed=True, indices=[src], return_predecessors=True)
     if not np.isfinite(dist[0][tgt]):
-        raise nx.NetworkXNoPath(f"no path from {source_osmid} to {target_osmid} in corridor")
+        raise NoRouteError(f"no path from {source_osmid} to {target_osmid} in corridor")
     rows: list[int] = []
     cur = tgt
     while cur != src:

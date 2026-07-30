@@ -49,16 +49,16 @@ import matplotlib.pyplot as plt  # noqa: E402
 from matplotlib.collections import LineCollection  # noqa: E402
 from shapely import from_wkt, get_coordinates  # noqa: E402
 
-from bike_router.builder import (
+from bike_router.core.constants import DEMConfig, GraphConfig, Mode, NodeType, Palette
+from bike_router.preprocessing.builder import (
     build_region_graph_clipped,
     dedup_by_geometry,
     reindex_region,
     remap_contiguous,
     stage_pbf,
 )
-from bike_router.constants import DEMConfig, GraphConfig, Mode, NodeType, Palette
-from bike_router.elevation import DEMService
-from bike_router.graph_store import (
+from bike_router.preprocessing.elevation import DEMService
+from bike_router.preprocessing.graph_writer import (
     compute_bbox,
     graph_to_tables,
     read_region_tables,

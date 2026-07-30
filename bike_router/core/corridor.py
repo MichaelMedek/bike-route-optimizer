@@ -11,7 +11,7 @@ import math
 from shapely.affinity import scale
 from shapely.geometry import LineString, Polygon
 
-from bike_router.constants import GeoConfig
+from bike_router.core.constants import GeoConfig
 
 
 def build_corridor(

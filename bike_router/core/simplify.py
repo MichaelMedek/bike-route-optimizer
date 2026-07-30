@@ -11,9 +11,9 @@ from dataclasses import dataclass
 import numpy as np
 from shapely.geometry import LineString
 
-from bike_router.constants import GmapsConfig, GpxConfig, Mode, NodeType
-from bike_router.geo import haversine_distance_m
-from bike_router.route_path import RouteNode, RoutePath
+from bike_router.core.constants import GmapsConfig, GpxConfig, Mode, NodeType
+from bike_router.core.geo import haversine_distance_m
+from bike_router.core.route_path import RouteNode, RoutePath
 
 logger = logging.getLogger(__name__)
 

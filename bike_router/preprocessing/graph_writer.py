@@ -16,8 +16,8 @@ import pandas as pd
 from shapely import from_wkt, to_wkt
 from shapely.geometry import LineString
 
-from bike_router.constants import GraphConfig, Mode, NodeType
-from bike_router.graph_store import _EDGE_COLS, _NODE_COLS, _read_tiles, _str_or_none, _tile_name, tile_index
+from bike_router.core.constants import GraphConfig, Mode, NodeType
+from bike_router.core.graph_store import _EDGE_COLS, _NODE_COLS, _read_tiles, _str_or_none, _tile_name, tile_index
 
 logger = logging.getLogger(__name__)
 
@@ -109,8 +109,13 @@ def graph_from_tables(nodes_df: pd.DataFrame, edges_df: pd.DataFrame) -> nx.Mult
     graph.add_nodes_from(
         (
             int(n.osmid),
-            {"x": float(n.lon), "y": float(n.lat), "elevation": float(n.elevation_m),
-             "node_type": NodeType(n.node_type), "station_name": _str_or_none(value=n.station_name)},
+            {
+                "x": float(n.lon),
+                "y": float(n.lat),
+                "elevation": float(n.elevation_m),
+                "node_type": NodeType(n.node_type),
+                "station_name": _str_or_none(value=n.station_name),
+            },
         )
         for n in nodes_df.itertuples(index=False)
     )
@@ -120,9 +125,14 @@ def graph_from_tables(nodes_df: pd.DataFrame, edges_df: pd.DataFrame) -> nx.Mult
             int(e.from_node),
             int(e.to_node),
             int(e.key),
-            {"length": float(e.length_m), "height_diff": float(e.height_diff_m),
-             "surface": _str_or_none(value=e.surface), "highway": _str_or_none(value=e.highway), "mode": e.mode,
-             "geometry": from_wkt(e.geometry_wkt) if isinstance(e.geometry_wkt, str) else None},
+            {
+                "length": float(e.length_m),
+                "height_diff": float(e.height_diff_m),
+                "surface": _str_or_none(value=e.surface),
+                "highway": _str_or_none(value=e.highway),
+                "mode": e.mode,
+                "geometry": from_wkt(e.geometry_wkt) if isinstance(e.geometry_wkt, str) else None,
+            },
         )
         for e in edges_df.itertuples(index=False)
         if int(e.from_node) in present and int(e.to_node) in present

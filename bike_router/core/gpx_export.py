@@ -1,6 +1,6 @@
 """GPX track export via gpxpy.
 
-Builds a standard track from a Track (bike_router.track): each point carries its
+Builds a standard track from a Track (bike_router.core.track): each point carries its
 DEM elevation and cumulative ride time from the speed model, so the GPX end
 timestamp equals the reported total duration by construction.
 """
@@ -10,7 +10,7 @@ import datetime as _dt
 import gpxpy
 import gpxpy.gpx
 
-from bike_router.track import Track
+from bike_router.core.track import Track
 
 
 def build_gpx(track: Track, start_time: _dt.datetime | None = None, track_name: str = "Optimized bike route") -> str:

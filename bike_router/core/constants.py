@@ -4,10 +4,10 @@ from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
 
-from bike_router.errors import ParamOutOfRangeError
+from bike_router.core.errors import ParamOutOfRangeError
 
-# Package + project roots
-PACKAGE_DIR = Path(__file__).parent
+# Package + project roots (this file lives at bike_router/core/, so root is two levels up).
+PACKAGE_DIR = Path(__file__).parent.parent
 PROJECT_ROOT = PACKAGE_DIR.parent
 
 # The one build-data dir: the repo's gitignored data/ folder. The DEM and the prebuilt

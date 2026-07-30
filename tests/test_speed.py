@@ -2,8 +2,8 @@
 
 import pytest
 
-from bike_router.constants import SpeedConfig
-from bike_router.speed import effective_speed_kmh
+from bike_router.core.constants import SpeedConfig
+from bike_router.core.speed import effective_speed_kmh
 
 
 def test_flat_uses_surface_base_speed():

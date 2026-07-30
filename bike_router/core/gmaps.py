@@ -7,7 +7,7 @@ Uses the official Maps URLs `api=1` scheme: origin + up to 9 intermediate waypoi
 
 from urllib.parse import urlencode
 
-from bike_router.constants import GmapsConfig, GraphConfig
+from bike_router.core.constants import GmapsConfig, GraphConfig
 
 
 def _fmt(point: tuple[float, float]) -> str:

@@ -8,7 +8,7 @@ distances metres, Earth a sphere of radius 6,371 km. Used by the A* heuristic.
 import numpy as np
 import numpy.typing as npt
 
-from bike_router.constants import GeoConfig
+from bike_router.core.constants import GeoConfig
 
 
 def haversine_vec(

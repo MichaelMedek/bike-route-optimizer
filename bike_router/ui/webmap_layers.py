@@ -9,8 +9,8 @@ from dataclasses import asdict
 
 import pydeck as pdk
 
-from bike_router.constants import WebMapConfig
-from bike_router.webmap import RibbonSegment, ViewState
+from bike_router.core.constants import WebMapConfig
+from bike_router.ui.webmap import RibbonSegment, ViewState
 
 
 def create_terrain_layer(mesh_max_error: float) -> pdk.Layer:

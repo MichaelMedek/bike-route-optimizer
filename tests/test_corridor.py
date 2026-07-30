@@ -8,8 +8,8 @@ import math
 
 from shapely.geometry import Point, Polygon
 
-from bike_router.constants import CorridorConfig, GeoConfig
-from bike_router.corridor import build_corridor
+from bike_router.core.constants import CorridorConfig, GeoConfig
+from bike_router.core.corridor import build_corridor
 
 _KM_PER_DEG = GeoConfig.METERS_PER_DEGREE_EQUATOR / 1000.0  # one source of truth (as corridor.py uses)
 

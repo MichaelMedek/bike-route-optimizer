@@ -2,8 +2,8 @@
 
 import numpy as np
 
-from bike_router.constants import GeoConfig
-from bike_router.geo import haversine_distance_m, haversine_vec
+from bike_router.core.constants import GeoConfig
+from bike_router.core.geo import haversine_distance_m, haversine_vec
 
 
 def test_zero_distance():

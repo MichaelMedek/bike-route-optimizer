@@ -2,8 +2,8 @@
 
 import pytest
 
-from bike_router.constants import RoutingDefaults
-from bike_router.errors import ParamOutOfRangeError
+from bike_router.core.constants import RoutingDefaults
+from bike_router.core.errors import ParamOutOfRangeError
 from tests.conftest import params
 
 

@@ -9,8 +9,8 @@ import networkx as nx
 import pandas as pd
 import pytest
 
-from bike_router.constants import GraphConfig
-from bike_router.graph_store import read_full_graph, read_region_tables, write_graph_parquet
+from bike_router.core.constants import GraphConfig
+from bike_router.preprocessing.graph_writer import read_full_graph, read_region_tables, write_graph_parquet
 from scripts import build_dach_graph as bd
 
 _NODE_COLS = ["osmid", "lat", "lon", "elevation_m", "node_type", "station_name"]

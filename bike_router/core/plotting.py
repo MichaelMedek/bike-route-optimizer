@@ -18,10 +18,10 @@ from matplotlib.axes import Axes  # noqa: E402
 from matplotlib.colors import Normalize  # noqa: E402
 from matplotlib.ticker import MaxNLocator  # noqa: E402
 
-from bike_router.composition import RouteComposition, format_composition  # noqa: E402
-from bike_router.constants import Palette, PlotConfig, RoutingParams  # noqa: E402
-from bike_router.route_path import RoutePath  # noqa: E402
-from bike_router.track import (  # noqa: E402
+from bike_router.core.composition import RouteComposition, format_composition  # noqa: E402
+from bike_router.core.constants import Palette, PlotConfig, RoutingParams  # noqa: E402
+from bike_router.core.route_path import RoutePath  # noqa: E402
+from bike_router.core.track import (  # noqa: E402
     Track,
     classify_condition,
     edge_condition_speed,

@@ -12,7 +12,7 @@ import rasterio
 from affine import Affine
 from rasterio.crs import CRS
 
-from bike_router.elevation import (
+from bike_router.preprocessing.elevation import (
     DEMService,
     get_elevations_from_raster,
 )

@@ -17,7 +17,7 @@ import rasterio
 from pyproj import Transformer
 from rasterio.io import DatasetReader
 
-from bike_router.constants import DEMConfig
+from bike_router.core.constants import DEMConfig
 
 logger = logging.getLogger(__name__)
 

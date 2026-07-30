@@ -15,7 +15,7 @@ The dataset repo is created on first run if it does not exist.
 
 from huggingface_hub import HfApi, login
 
-from bike_router.constants import PROJECT_ROOT, GraphConfig
+from bike_router.core.constants import PROJECT_ROOT, GraphConfig
 
 
 def upload_graph_to_hf() -> None:

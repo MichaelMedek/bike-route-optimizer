@@ -1,8 +1,8 @@
 """Light smoke tests for the Streamlit map helpers (not held to the coverage gate).
 
-Confidence checks only: ribbon points are lifted 100 m and finite; the view
-states carry the expected centre/zoom; the pydeck builders return the right
-objects. The app shell itself (app_webmap.py) is not tested.
+Confidence checks only: ribbon points are lifted 100 m and finite; the view states carry
+the expected centre/zoom; the pydeck builders return the right objects; the two colour
+scales (quality + grade) map as expected. The app shell itself (app_webmap.py) is not tested.
 """
 
 import math
@@ -10,12 +10,13 @@ import math
 import pydeck as pdk
 import pytest
 
-from bike_router.constants import Mode, Palette, WebMapConfig
-from bike_router.geo import haversine_distance_m
-from bike_router.routing import shortest_route
-from bike_router.track import build_track
-from bike_router.webmap import (
+from bike_router.core.constants import Mode, Palette, WebMapConfig
+from bike_router.core.geo import haversine_distance_m
+from bike_router.core.track import build_track, grade_color, segment_color
+from bike_router.ui.webmap import (
+    GRADE_SCALE,
     MODE_DONUT_COLORS,
+    QUALITY_SCALE,
     RibbonSegment,
     ViewState,
     default_view_state,
@@ -23,17 +24,16 @@ from bike_router.webmap import (
     ribbon_width_m,
     route_ribbon_segments,
     route_view_state,
-    segment_color,
     zoom_for_span_m,
 )
-from bike_router.webmap_layers import (
+from bike_router.ui.webmap_layers import (
     build_deck,
     create_endpoint_layer,
     create_route_ribbon_layers,
     create_station_layer,
     create_terrain_layer,
 )
-from tests.conftest import make_line_graph
+from tests.conftest import make_line_route
 
 
 def _rgb(hex_color: str) -> list[int]:
@@ -42,37 +42,45 @@ def _rgb(hex_color: str) -> list[int]:
 
 
 def _line_track():
-    """A computed Track over the flat line graph (all-bike, elevations 100–130 m)."""
-    graph = make_line_graph()
-    node_path = shortest_route(graph=graph, source=1, target=3)
-    return build_track(graph=graph, node_path=node_path)
+    """A computed Track over the flat line route (all-bike, elevations 100–130 m)."""
+    return build_track(route=make_line_route())
 
 
-def test_segment_color_distinguishes_surface_road_and_both():
-    """Rail → purple; good → green; bad surface / bad road / both → three distinct reds."""
+def test_segment_color_is_quality_scale_three_colours_plus_rail():
+    """Rail → purple; good → blue; unpaved → orange; main road (or both) → red."""
     assert segment_color(mode=str(Mode.RAIL), surface_bad=False, road_bad=False) == _rgb(Palette.RAIL)
     assert segment_color(mode=str(Mode.RAIL), surface_bad=True, road_bad=True) == _rgb(Palette.RAIL)  # rail ignores
-    assert segment_color(mode=str(Mode.BIKE), surface_bad=False, road_bad=False) == _rgb(Palette.GOOD)
-    assert segment_color(mode=str(Mode.BIKE), surface_bad=True, road_bad=False) == _rgb(Palette.BAD_SURFACE)
-    assert segment_color(mode=str(Mode.BIKE), surface_bad=False, road_bad=True) == _rgb(Palette.BAD_ROAD)
-    assert segment_color(mode=str(Mode.BIKE), surface_bad=True, road_bad=True) == _rgb(Palette.BAD_BOTH)
-    # the four pedalled reds/greens are all distinct so conditions are tellable apart
+    assert segment_color(mode=str(Mode.BIKE), surface_bad=False, road_bad=False) == _rgb(Palette.BLUE)  # good
+    assert segment_color(mode=str(Mode.BIKE), surface_bad=True, road_bad=False) == _rgb(Palette.ORANGE)  # unpaved
+    assert segment_color(mode=str(Mode.BIKE), surface_bad=False, road_bad=True) == _rgb(Palette.RED)  # main road
+    assert segment_color(mode=str(Mode.BIKE), surface_bad=True, road_bad=True) == _rgb(
+        Palette.RED
+    )  # main+unpaved → red
+    # exactly three bike colours on the quality scale (good/unpaved/main), main+unpaved folds into red
     distinct = {
         tuple(segment_color(mode=str(Mode.BIKE), surface_bad=s, road_bad=r))
         for s in (False, True)
         for r in (False, True)
     }
-    assert len(distinct) == 4
+    assert len(distinct) == 3
 
 
-def test_route_ribbon_segments_green_lifted_and_width_inverse_speed():
-    """All-bike asphalt/residential track → every run green; z lifted; width ∝ 1/speed."""
+def test_grade_color_is_grade_scale_three_colours():
+    """Flat → blue; uphill (steep +) → red; downhill (steep −) → green; rail keeps purple."""
+    assert grade_color(mode=str(Mode.BIKE), grade=0.0) == _rgb(Palette.BLUE)  # flat
+    assert grade_color(mode=str(Mode.BIKE), grade=0.10) == _rgb(Palette.RED)  # steep uphill
+    assert grade_color(mode=str(Mode.BIKE), grade=-0.10) == _rgb(Palette.GREEN)  # steep downhill
+    assert grade_color(mode=str(Mode.RAIL), grade=0.10) == _rgb(Palette.RAIL)  # rail → purple (train)
+
+
+def test_route_ribbon_segments_quality_scale_blue_lifted_and_width_inverse_speed():
+    """All-bike asphalt/residential track → every run blue (good); z lifted; width ∝ 1/speed."""
     track = _line_track()
-    segments = route_ribbon_segments(track=track)
+    segments = route_ribbon_segments(track=track, color_scale=QUALITY_SCALE)
 
     assert segments, "expected at least one run"
     for seg in segments:
-        assert seg.color == _rgb(Palette.GOOD)  # good surface + quiet road → green
+        assert seg.color == _rgb(Palette.BLUE)  # good surface + quiet road → blue
         assert seg.width_m > 0
         for lon, lat, _z in seg.points:
             assert math.isfinite(lon) and math.isfinite(lat)
@@ -82,9 +90,17 @@ def test_route_ribbon_segments_green_lifted_and_width_inverse_speed():
     fastest = max(p.speed_kmh for p in track.points)  # 25 km/h (tier-0 base, flat/downhill)
     slowest = min(p.speed_kmh for p in track.points)  # the climb
     assert slowest < fastest
-    # fastest → narrowest, slowest → widest (∝ 1/√speed)
     assert min(widths) == pytest.approx(ribbon_width_m(speed_kmh=fastest))
     assert max(widths) == pytest.approx(ribbon_width_m(speed_kmh=slowest))
+
+
+def test_route_ribbon_grade_scale_colours_uphill_and_downhill_distinctly():
+    # The line route climbs 1→2 then descends 2→3, so the grade scale must show a red (uphill)
+    # run and a green (downhill) run — distinct from the quality scale's all-blue.
+    track = _line_track()
+    colors = {tuple(seg.color) for seg in route_ribbon_segments(track=track, color_scale=GRADE_SCALE)}
+    assert tuple(_rgb(Palette.RED)) in colors  # the uphill leg
+    assert tuple(_rgb(Palette.GREEN)) in colors  # the downhill leg
 
 
 def test_ribbon_width_m_pipe_flow_quarter_speed_doubles_width():
@@ -97,15 +113,14 @@ def test_ribbon_width_m_pipe_flow_quarter_speed_doubles_width():
 
 
 def test_rail_and_station_segments_use_fixed_width():
-    # make_rail_graph: bike node → station hop (walk pace) → rail ride (80 km/h). Neither the
+    # make_rail_route: bike node → station hop (walk pace) → rail ride (80 km/h). Neither the
     # station nor the rail segment should get the inverted-speed width — both draw the fixed
     # RIBBON_REF_WIDTH_M (so a 5 km/h station hop is NOT the map's fattest ribbon).
-    from bike_router.track import build_track
-    from tests.conftest import make_rail_graph
+    from tests.conftest import make_rail_route
 
-    track = build_track(graph=make_rail_graph(), node_path=[1, 2, 3])
-    segments = route_ribbon_segments(track=track)
-    non_bike = [seg for seg in segments if seg.color != _rgb(Palette.GOOD)]
+    track = build_track(route=make_rail_route())
+    segments = route_ribbon_segments(track=track, color_scale=QUALITY_SCALE)
+    non_bike = [seg for seg in segments if seg.color != _rgb(Palette.BLUE)]
     assert non_bike, "expected rail/station runs on this train route"
     assert all(seg.width_m == WebMapConfig.RIBBON_REF_WIDTH_M for seg in non_bike)
 
@@ -161,16 +176,13 @@ def test_route_view_state_centres_on_midpoint():
     assert view.longitude == pytest.approx(8.3)
     assert view.bearing == WebMapConfig.DEFAULT_BEARING
     assert view.pitch == WebMapConfig.DEFAULT_PITCH
-    # Zoom is the span fit; VIEWING_ZOOM already sits one level out (context around the route).
     span_m = haversine_distance_m(lat_a=start[0], lon_a=start[1], lat_b=end[0], lon_b=end[1])
     assert view.zoom == pytest.approx(zoom_for_span_m(span_m=span_m))
 
 
 def test_zoom_for_span_anchor_and_clamps():
     assert zoom_for_span_m(span_m=WebMapConfig.ZOOM_SPAN_ANCHOR_M) == pytest.approx(WebMapConfig.VIEWING_ZOOM)
-    # Half the span → one zoom level closer.
     assert zoom_for_span_m(span_m=WebMapConfig.ZOOM_SPAN_ANCHOR_M / 2) == pytest.approx(WebMapConfig.VIEWING_ZOOM + 1)
-    # Tiny span clamps at the zoom-in ceiling; huge span at the zoom-out floor.
     assert zoom_for_span_m(span_m=1.0) == WebMapConfig.VIEWING_ZOOM + WebMapConfig.ZOOM_STEPS_IN
     assert zoom_for_span_m(span_m=1e9) == WebMapConfig.VIEWING_ZOOM - WebMapConfig.ZOOM_STEPS_OUT
 
@@ -185,7 +197,7 @@ def test_layer_builders_return_expected_pydeck_layers():
     assert terrain.type == "TerrainLayer" and terrain.id == "terrain_3d"
 
     segments = [
-        _seg(_rgb(Palette.GOOD), 20.0, [[8.0, 48.0, 1100.0], [8.01, 48.0, 1100.0]], tooltip="paved · quiet way"),
+        _seg(_rgb(Palette.BLUE), 20.0, [[8.0, 48.0, 1100.0], [8.01, 48.0, 1100.0]], tooltip="paved · quiet way"),
         _seg(list(WebMapConfig.RAIL_COLOR), 8.0, [[8.01, 48.0, 1100.0], [8.02, 48.0, 1100.0]], tooltip="Train: A → B"),
     ]
     ribbons = create_route_ribbon_layers(segments=segments)
@@ -198,8 +210,6 @@ def test_layer_builders_return_expected_pydeck_layers():
 
 
 def test_endpoint_layer_marks_start_and_end_with_labels():
-    # endpoints are (lat, lon, elevation_m); markers hover RIBBON_FLOAT_ABOVE_M above, each
-    # carrying its name+elev tooltip.
     layer = create_endpoint_layer(
         start=(48.0, 8.0, 300.0), end=(48.4, 8.6, 500.0), start_label="A (300 m)", end_label="B (500 m)"
     )
@@ -226,13 +236,11 @@ def test_build_deck_layer_count_and_camera():
     assert len(deck_terrain_only.layers) == 1  # terrain only
     assert deck_terrain_only.initial_view_state.latitude == pytest.approx(WebMapConfig.DEFAULT_LAT)
 
-    # Endpoints set but no route yet → terrain + endpoint markers.
     deck_endpoints = build_deck(view=view, ribbon_segments=None, endpoints=((48.0, 8.0, 300.0), (48.4, 8.6, 500.0)))
     assert len(deck_endpoints.layers) == 2
 
-    # Endpoints + stations + a two-run route → terrain + stations + markers + the single ribbon layer.
     two_run = [
-        _seg(_rgb(Palette.GOOD), 20.0, [[8.0, 48.0, 1100.0], [8.01, 48.0, 1100.0]]),
+        _seg(_rgb(Palette.BLUE), 20.0, [[8.0, 48.0, 1100.0], [8.01, 48.0, 1100.0]]),
         _seg(list(WebMapConfig.RAIL_COLOR), 8.0, [[8.01, 48.0, 1100.0], [8.02, 48.0, 1100.0]]),
     ]
     deck_full = build_deck(

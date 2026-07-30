@@ -1,28 +1,62 @@
 """Pipeline orchestration test — plan_route wired with mocks (no network).
 
-Monkeypatches the network-bound steps (geocode, corridor-graph load) with the tiny
-in-memory line graph so the whole flow runs offline. No DEM is involved — elevation
-is baked into the graph. Asserts a single route is produced with real artifacts.
+Monkeypatches the network-bound steps (geocode, corridor-table load, path re-read) with
+tiny in-memory fixtures so the whole flow runs offline. No DEM is involved — elevation is
+baked into the fixture. Asserts a single route is produced with real artifacts.
 """
 
 from pathlib import Path
 
+import pandas as pd
 import pytest
 from shapely.geometry import box
 
-from bike_router import pipeline
-from bike_router.constants import CorridorConfig, GeoConfig
-from bike_router.errors import (
+from bike_router.core import pipeline
+from bike_router.core.constants import CorridorConfig, GeoConfig, Mode, NodeType
+from bike_router.core.errors import (
     GeocodeConnectionError,
     NoRouteError,
     OutOfCoverageError,
+    RouteTooLargeError,
     TripTooLongError,
     TripTooShortError,
 )
-from tests.conftest import DEFAULT_PARAMS, make_line_graph
+from bike_router.core.route_path import RoutePath
+from tests.conftest import DEFAULT_PARAMS, make_line_edges, make_line_route
+
+_ROUTE_NODE_COLS = ["osmid", "lat", "lon", "elevation_m", "node_type"]
+_ROUTE_EDGE_COLS = ["from_node", "to_node", "length_m", "surface", "highway", "mode"]
 
 
-def _wire_offline(monkeypatch, tmp_path, graph):
+def _line_tables() -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Minimal routing tables (no geometry) for the line graph 1→2→3, as load_route_tables returns."""
+    arr = make_line_edges()
+    args = arr.route_graph_args(params=DEFAULT_PARAMS)
+    nodes_df = pd.DataFrame(
+        {
+            "osmid": args["osmids"],
+            "lat": args["lat"],
+            "lon": args["lon"],
+            "elevation_m": [100.0, 130.0, 100.0],
+            "node_type": [NodeType.BIKE, NodeType.BIKE, NodeType.BIKE],
+        },
+        columns=_ROUTE_NODE_COLS,
+    )
+    edges_df = pd.DataFrame(
+        {
+            "from_node": args["from_osmid"],
+            "to_node": args["to_osmid"],
+            "length_m": [800.0, 800.0, 800.0, 800.0],
+            "surface": ["asphalt"] * 4,
+            "highway": ["residential"] * 4,
+            "mode": [Mode.BIKE] * 4,
+        },
+        columns=_ROUTE_EDGE_COLS,
+    )
+    return nodes_df, edges_df
+
+
+def _wire_offline(monkeypatch, tmp_path, *, nodes_df, edges_df, route: RoutePath):
     monkeypatch.setattr(pipeline, "make_geocode_fn", lambda: lambda place: None)
     monkeypatch.setattr(
         pipeline, "geocode_endpoint", lambda place, label, geocode_fn: (48.0, 8.0) if label == "Start" else (48.0, 8.2)
@@ -33,15 +67,20 @@ def _wire_offline(monkeypatch, tmp_path, graph):
         lambda start_latlon, dest_latlon, half_width_km, extend_km: box(7.9, 47.9, 8.1, 48.1),
     )
     monkeypatch.setattr(pipeline, "_assert_within_coverage", lambda start_latlon, dest_latlon, graph_dir: None)
-    monkeypatch.setattr(pipeline, "load_route_graph", lambda bike_corridor, rail_corridor, graph_dir: graph)
-    monkeypatch.setattr(pipeline, "snap_endpoints", lambda graph, start_latlon, dest_latlon: (1, 3))
+    # The CSR router loads corridor tables then re-reads the chosen path's edges into a RoutePath —
+    # stub BOTH with the fixtures so the whole flow runs offline (no dataset).
+    monkeypatch.setattr(
+        pipeline, "load_route_tables", lambda bike_corridor, rail_corridor, graph_dir: (nodes_df, edges_df)
+    )
+    monkeypatch.setattr(pipeline, "load_path_edges", lambda path_nodes, params, graph_dir: route)
     monkeypatch.setattr(
         pipeline, "route_output_paths", lambda origin, destination, params: (tmp_path / "r.gpx", tmp_path / "r.png")
     )
 
 
 def test_plan_route_end_to_end_offline(tmp_path: Path, monkeypatch):
-    _wire_offline(monkeypatch, tmp_path, make_line_graph())
+    nodes_df, edges_df = _line_tables()
+    _wire_offline(monkeypatch, tmp_path, nodes_df=nodes_df, edges_df=edges_df, route=make_line_route())
     result = pipeline.plan_route(origin="Start", destination="End", params=DEFAULT_PARAMS)
 
     assert len(result.bike_legs) == 1  # pure-bike line graph → exactly one pedalled leg
@@ -116,12 +155,27 @@ def test_plan_route_rejects_outside_coverage(monkeypatch):
 
 
 def test_plan_route_no_route_raises_no_route_error(tmp_path: Path, monkeypatch):
-    graph = make_line_graph()
-    graph.add_node(99, x=20.0, y=60.0, elevation=100.0)  # isolated target
-    _wire_offline(monkeypatch, tmp_path, graph)
-    # No strongly-connected pre-check: a disconnected corridor is legitimate; A* raises NoRouteError.
-    monkeypatch.setattr(pipeline, "snap_endpoints", lambda graph, start_latlon, dest_latlon: (1, 99))
+    # Isolated bike node AT the destination (48.0, 8.2) so snap picks it, but no edge reaches it.
+    nodes_df, edges_df = _line_tables()
+    nodes_df = pd.concat(
+        [
+            nodes_df,
+            pd.DataFrame([{"osmid": 99, "lat": 48.0, "lon": 8.2, "elevation_m": 100.0, "node_type": NodeType.BIKE}]),
+        ],
+        ignore_index=True,
+    )
+    _wire_offline(monkeypatch, tmp_path, nodes_df=nodes_df, edges_df=edges_df, route=make_line_route())
     with pytest.raises(NoRouteError):
+        pipeline.plan_route(origin="Start", destination="End", params=DEFAULT_PARAMS)
+
+
+def test_plan_route_rejects_corridor_over_edge_cap(tmp_path: Path, monkeypatch):
+    # A corridor whose edge count exceeds the memory cap must raise RouteTooLargeError
+    # (the hard OOM guard) instead of attempting the load.
+    nodes_df, edges_df = _line_tables()
+    _wire_offline(monkeypatch, tmp_path, nodes_df=nodes_df, edges_df=edges_df, route=make_line_route())
+    monkeypatch.setattr(CorridorConfig, "MAX_ROUTE_EDGES", 2)  # line graph has 4 edges > 2
+    with pytest.raises(RouteTooLargeError, match="too large"):
         pipeline.plan_route(origin="Start", destination="End", params=DEFAULT_PARAMS)
 
 

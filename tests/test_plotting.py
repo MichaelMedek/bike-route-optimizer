@@ -1,11 +1,11 @@
-"""Debug-heatmap plotting test — renders to a temp PNG headlessly."""
+"""Debug route-PNG plotting test — renders to a temp PNG headlessly."""
 
 from pathlib import Path
 
-from bike_router.constants import PlotConfig
-from bike_router.plotting import _figsize_for_route, plot_elevation_heatmap
-from bike_router.track import build_track
-from tests.conftest import DEFAULT_PARAMS, make_line_graph
+from bike_router.core.constants import PlotConfig
+from bike_router.core.plotting import _figsize_for_route, plot_route_debug
+from bike_router.core.track import build_track
+from tests.conftest import DEFAULT_PARAMS, make_line_route
 
 
 def test_figsize_matches_route_aspect_for_any_orientation():
@@ -24,22 +24,19 @@ def test_figsize_degenerate_span_does_not_divide_by_zero():
 
 
 def test_plot_writes_png(tmp_path: Path):
-    graph = make_line_graph()
-    track = build_track(graph=graph, node_path=[1, 2, 3])
-    out_path = tmp_path / "heatmap.png"
-    plot_elevation_heatmap(
-        graph=graph, route_nodes=[1, 2, 3], track=track, params=DEFAULT_PARAMS, out_path=str(out_path), dpi=50
-    )
+    route = make_line_route()
+    track = build_track(route=route)
+    out_path = tmp_path / "route.png"
+    plot_route_debug(route=route, track=track, params=DEFAULT_PARAMS, out_path=str(out_path), dpi=50)
     assert out_path.exists() and out_path.stat().st_size > 0
 
 
 def test_plot_handles_uniform_elevation(tmp_path: Path):
-    graph = make_line_graph()
-    track = build_track(graph=graph, node_path=[1, 2, 3])
-    for node in graph.nodes:
-        graph.nodes[node]["elevation"] = 500.0  # vmin == vmax branch
+    from dataclasses import replace
+
+    route = make_line_route()
+    route = replace(route, nodes=[replace(node, elevation_m=500.0) for node in route.nodes])  # vmin == vmax branch
+    track = build_track(route=route)
     out_path = tmp_path / "flat.png"
-    plot_elevation_heatmap(
-        graph=graph, route_nodes=[1, 2, 3], track=track, params=DEFAULT_PARAMS, out_path=str(out_path), dpi=50
-    )
+    plot_route_debug(route=route, track=track, params=DEFAULT_PARAMS, out_path=str(out_path), dpi=50)
     assert out_path.exists()

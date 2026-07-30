@@ -2,8 +2,8 @@
 
 import pytest
 
-from bike_router.constants import GmapsConfig
-from bike_router.gmaps import build_gmaps_url
+from bike_router.core.constants import GmapsConfig
+from bike_router.core.gmaps import build_gmaps_url
 
 
 def _waypoints() -> list[tuple[float, float]]:

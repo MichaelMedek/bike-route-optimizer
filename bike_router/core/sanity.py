@@ -8,7 +8,7 @@ import logging
 
 import numpy as np
 
-from bike_router.constants import Mode, RoutingParams, SanityConfig
+from bike_router.core.constants import Mode, RoutingParams, SanityConfig
 
 logger = logging.getLogger(__name__)
 

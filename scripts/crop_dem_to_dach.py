@@ -18,7 +18,7 @@ import rasterio
 from rasterio.mask import mask
 from shapely.geometry import box
 
-from bike_router.constants import DEMConfig, GraphConfig
+from bike_router.core.constants import DEMConfig, GraphConfig
 
 _DEFAULT_INPUT = Path.home() / "Downloads" / "euro-dem-tif" / "data" / "eurodem" / "eurodem.tif"
 

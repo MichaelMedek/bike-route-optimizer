@@ -22,12 +22,12 @@ from huggingface_hub.utils import tqdm as hf_tqdm
 from shapely import covers, from_wkt, points
 from shapely.geometry import Polygon, box
 
-from bike_router.constants import GraphConfig, Mode, NodeType, RoutingParams
-from bike_router.cost import edge_cost_array
-from bike_router.errors import OutOfCoverageError
-from bike_router.geo import haversine_vec
-from bike_router.progress import ProgressFn, null_progress
-from bike_router.route_path import RouteEdge, RouteNode, RoutePath
+from bike_router.core.constants import GraphConfig, Mode, NodeType, RoutingParams
+from bike_router.core.cost import edge_cost_array
+from bike_router.core.errors import OutOfCoverageError
+from bike_router.core.geo import haversine_vec
+from bike_router.core.progress import ProgressFn, null_progress
+from bike_router.core.route_path import RouteEdge, RouteNode, RoutePath
 
 logger = logging.getLogger(__name__)
 

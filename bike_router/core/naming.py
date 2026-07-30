@@ -7,7 +7,7 @@ output/pforzheim__to__bad_wildbad__uphill-12-000_unpaved-1-000_main-1-000_rail-1
 import re
 from pathlib import Path
 
-from bike_router.constants import PARAM_SPECS, OutputConfig, RoutingParams
+from bike_router.core.constants import PARAM_SPECS, OutputConfig, RoutingParams
 
 # Each PARAM_SPECS field → short filename token (order = the abbreviation order in the stem).
 _PARAM_ABBREV = {

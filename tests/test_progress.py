@@ -2,7 +2,7 @@
 
 import pytest
 
-from bike_router.progress import null_progress, tqdm_progress
+from bike_router.core.progress import null_progress, tqdm_progress
 
 
 def test_null_progress_is_noop():

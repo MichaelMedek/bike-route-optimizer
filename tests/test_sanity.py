@@ -1,24 +1,24 @@
-"""Sanity-check tests (spec §5) + assign_edge_costs on a real graph."""
+"""Sanity-check tests (spec §5) — cost-model + simplify-shrink checks on edge arrays."""
 
-import networkx as nx
+import numpy as np
 import pytest
 
-from bike_router.constants import CostConfig, Mode, RoutingParams
-from bike_router.cost import assign_edge_costs
-from bike_router.sanity import (
-    check_simplify_shrunk,
-    check_uphill_costlier,
-    find_steepest_bidirectional_edge,
-)
-from tests.conftest import DEFAULT_PARAMS, make_line_graph
+from bike_router.core.constants import Mode, RoutingParams
+from bike_router.core.sanity import check_cost_model, check_simplify_shrunk
+from tests.conftest import DEFAULT_PARAMS, make_line_edges
 
 
-def test_assign_edge_costs_writes_cost_and_is_asymmetric():
-    graph = make_line_graph()
-    for _a, _b, data in graph.edges(data=True):
-        assert CostConfig.EDGE_COST in data
-    # 1→2 climbs (100→130), 2→1 descends → uphill costs more (default params penalise uphill)
-    assert graph.get_edge_data(1, 2)[0][CostConfig.EDGE_COST] > graph.get_edge_data(2, 1)[0][CostConfig.EDGE_COST]
+def _line_bike_edges(*, params):
+    """Flat (from, to, mode, cost) arrays for the costed bike line graph's edges."""
+    args = make_line_edges().route_graph_args(params=params)
+    return args["from_osmid"], args["to_osmid"], np.array([Mode.BIKE] * len(args["cost"]), dtype=object), args["cost"]
+
+
+def test_edge_cost_array_is_asymmetric_uphill_costlier():
+    # 1→2 climbs (100→130), 2→1 descends → uphill costs more (default params penalise uphill).
+    frm, to, _mode, cost = _line_bike_edges(params=DEFAULT_PARAMS)
+    by_pair = {(int(u), int(v)): float(c) for u, v, c in zip(frm, to, cost, strict=True)}
+    assert by_pair[(1, 2)] > by_pair[(2, 1)]
 
 
 def test_check_simplify_shrunk_pass_and_fail():
@@ -31,15 +31,20 @@ def test_check_simplify_shrunk_skips_tiny_graph():
     check_simplify_shrunk(nodes_before=10, nodes_after=10)  # too small → no assertion
 
 
-def test_find_steepest_and_uphill_costlier():
-    graph = make_line_graph()
-    steepest = find_steepest_bidirectional_edge(graph=graph)
-    assert steepest is not None and set(steepest) == {1, 2}  # 1↔2 is the only non-flat edge (100↔130 m)
-    check_uphill_costlier(graph=graph, node_lower=steepest[0], node_upper=steepest[1], params=DEFAULT_PARAMS)
+def test_check_cost_model_passes_on_uphill_costlier():
+    frm, to, mode, cost = _line_bike_edges(params=DEFAULT_PARAMS)
+    # steepest bidirectional bike edge is 1↔2 (100↔130); uphill 1→2 costs more → passes.
+    check_cost_model(
+        from_osmid=frm,
+        to_osmid=to,
+        mode=mode,
+        cost=cost,
+        elev_by_osmid={1: 100.0, 2: 130.0, 3: 100.0},
+        params=DEFAULT_PARAMS,
+    )
 
 
-def test_uphill_check_skipped_when_penalty_disabled():
-    # uphill penalty 0 → both directions cost the same → check must skip, not fail
+def test_check_cost_model_skipped_when_penalty_disabled():
     params = RoutingParams(
         extra_km_per_uphill_100m=0.0,
         extra_km_per_unpaved_km=1.0,
@@ -47,44 +52,51 @@ def test_uphill_check_skipped_when_penalty_disabled():
         extra_km_per_rail_km=0.0,
         extra_km_per_boarding=0.0,
     )
-    graph = make_line_graph(params=params)
-    steepest = find_steepest_bidirectional_edge(graph=graph)
-    assert steepest is not None
-    check_uphill_costlier(graph=graph, node_lower=steepest[0], node_upper=steepest[1], params=params)  # no raise
+    frm, to, mode, cost = _line_bike_edges(params=params)
+    # uphill penalty 0 → both directions equal → check must skip, not fail.
+    check_cost_model(
+        from_osmid=frm,
+        to_osmid=to,
+        mode=mode,
+        cost=cost,
+        elev_by_osmid={1: 100.0, 2: 130.0, 3: 100.0},
+        params=params,
+    )
 
 
-def test_find_steepest_ignores_rail_picks_bike_edge():
+def test_check_cost_model_ignores_rail_uses_bike_edge():
     """Regression: the steepest bidirectional edge may be RAIL (terrain-blind cost → up==down),
-    which would spuriously fail Sanity 2. The selector must consider only BIKE edges.
+    which would spuriously fail. The check must consider only BIKE edges.
     """
-    graph = nx.MultiDiGraph()
-    graph.add_node(1, x=8.0, y=48.0, elevation=100.0)
-    graph.add_node(2, x=8.1, y=48.0, elevation=140.0)  # bike edge: 40 m climb
-    graph.add_node(3, x=8.2, y=48.0, elevation=1000.0)  # rail edge: 900 m Δelev (steeper by |Δ|)
-    for node_a, node_b in [(1, 2), (2, 1)]:
-        graph.add_edge(node_a, node_b, key=0, length=100.0, surface="asphalt", highway="residential", mode=Mode.BIKE)
-    for node_a, node_b in [(2, 3), (3, 2)]:
-        graph.add_edge(node_a, node_b, key=0, length=100.0, mode=Mode.RAIL)
-    assign_edge_costs(graph=graph, params=DEFAULT_PARAMS)
-    steepest = find_steepest_bidirectional_edge(graph=graph)
-    assert steepest is not None and set(steepest) == {1, 2}  # the BIKE edge, NOT the steeper rail edge
-    check_uphill_costlier(graph=graph, node_lower=steepest[0], node_upper=steepest[1], params=DEFAULT_PARAMS)
+    # 1↔2 bike (40 m climb, asymmetric cost); 2↔3 rail (900 m Δelev but symmetric terrain-blind cost).
+    frm = np.array([1, 2, 2, 3], dtype="int64")
+    to = np.array([2, 1, 3, 2], dtype="int64")
+    mode = np.array([Mode.BIKE, Mode.BIKE, Mode.RAIL, Mode.RAIL], dtype=object)
+    cost = np.array([150.0, 100.0, 100.0, 100.0], dtype=float)
+    elev = {1: 100.0, 2: 140.0, 3: 1000.0}
+    check_cost_model(from_osmid=frm, to_osmid=to, mode=mode, cost=cost, elev_by_osmid=elev, params=DEFAULT_PARAMS)
 
 
-def test_find_steepest_returns_none_when_no_bidirectional_edge():
-    graph = nx.MultiDiGraph()
-    graph.add_node(1, x=8.0, y=48.0, elevation=100.0)
-    graph.add_node(2, x=8.1, y=48.0, elevation=200.0)
-    graph.add_edge(1, 2, key=0, length=100.0, mode=Mode.BIKE)  # one-way only
-    assert find_steepest_bidirectional_edge(graph=graph) is None
+def test_check_cost_model_skipped_when_no_bidirectional_bike_edge():
+    # Only a one-way bike edge → no bidirectional pair → skip (legitimate, not a failure).
+    check_cost_model(
+        from_osmid=np.array([1], dtype="int64"),
+        to_osmid=np.array([2], dtype="int64"),
+        mode=np.array([Mode.BIKE], dtype=object),
+        cost=np.array([100.0], dtype=float),
+        elev_by_osmid={1: 100.0, 2: 200.0},
+        params=DEFAULT_PARAMS,
+    )
 
 
-def test_check_uphill_costlier_rejects_flat_edge():
-    graph = nx.MultiDiGraph()
-    graph.add_node(1, x=8.0, y=48.0, elevation=100.0)
-    graph.add_node(2, x=8.1, y=48.0, elevation=100.0)  # flat
-    for node_a, node_b in [(1, 2), (2, 1)]:
-        graph.add_edge(node_a, node_b, key=0, length=100.0, surface="asphalt", highway="residential", mode=Mode.BIKE)
-    assign_edge_costs(graph=graph, params=DEFAULT_PARAMS)
-    with pytest.raises(AssertionError):
-        check_uphill_costlier(graph=graph, node_lower=1, node_upper=2, params=DEFAULT_PARAMS)
+def test_check_cost_model_raises_when_uphill_not_costlier():
+    # A broken cost model where uphill (1→2) is CHEAPER than downhill (2→1) must fail loud.
+    with pytest.raises(AssertionError, match="Sanity 2 failed"):
+        check_cost_model(
+            from_osmid=np.array([1, 2], dtype="int64"),
+            to_osmid=np.array([2, 1], dtype="int64"),
+            mode=np.array([Mode.BIKE, Mode.BIKE], dtype=object),
+            cost=np.array([100.0, 150.0], dtype=float),
+            elev_by_osmid={1: 100.0, 2: 200.0},
+            params=DEFAULT_PARAMS,
+        )

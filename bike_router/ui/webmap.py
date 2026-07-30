@@ -14,10 +14,10 @@ import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 
-from bike_router.constants import Mode, Palette, WebMapConfig
-from bike_router.geo import haversine_vec
-from bike_router.simplify import place_label  # single source; re-exported for the app shell
-from bike_router.track import Track, TrackPoint, classify_condition, classify_grade, grade_color, segment_color
+from bike_router.core.constants import Mode, Palette, WebMapConfig
+from bike_router.core.geo import haversine_vec
+from bike_router.core.simplify import place_label  # single source; re-exported for the app shell
+from bike_router.core.track import Track, TrackPoint, classify_condition, classify_grade, grade_color, segment_color
 
 __all__ = ["place_label"]  # noqa: F822 — re-export so app_webmap imports it from here
 

@@ -10,19 +10,19 @@ Run:  streamlit run app_webmap.py
 import streamlit as st
 from streamlit_deckgl import st_deckgl
 
-from bike_router.constants import PARAM_SPECS, RoutingDefaults, RoutingParams, WebMapConfig
-from bike_router.errors import BikeRouterError
-from bike_router.geocoding import photon_autocomplete
-from bike_router.graph_store import download_graph_from_hf, load_meta
-from bike_router.pipeline import plan_route, resolve_endpoints
-from bike_router.simplify import (
+from bike_router.core.constants import PARAM_SPECS, RoutingDefaults, RoutingParams, WebMapConfig
+from bike_router.core.errors import BikeRouterError
+from bike_router.core.geocoding import photon_autocomplete
+from bike_router.core.graph_store import download_graph_from_hf, load_meta
+from bike_router.core.pipeline import plan_route, resolve_endpoints
+from bike_router.core.simplify import (
     format_bike_legs,
     format_rail_legs,
     place_label,
     rail_leg_tooltips,
     route_station_markers,
 )
-from bike_router.webmap import (
+from bike_router.ui.webmap import (
     GRADE_DONUT_COLORS,
     GRADE_SCALE,
     MODE_DONUT_COLORS,
@@ -36,7 +36,7 @@ from bike_router.webmap import (
     route_ribbon_segments,
     route_view_state,
 )
-from bike_router.webmap_layers import build_deck
+from bike_router.ui.webmap_layers import build_deck
 
 # Fixed button labels, defined ONCE — referenced by the buttons AND the help/caption text
 SET_LABEL = "📍 Set start & end"

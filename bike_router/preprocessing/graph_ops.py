@@ -15,7 +15,7 @@ import numpy as np
 import osmnx as ox
 from shapely.geometry import LineString
 
-from bike_router.cost import road_included, surface_included
+from bike_router.core.cost import road_included, surface_included
 from bike_router.preprocessing.elevation import DEMService
 
 logger = logging.getLogger(__name__)

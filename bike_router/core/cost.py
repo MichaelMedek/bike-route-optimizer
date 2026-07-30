@@ -36,7 +36,7 @@ import math
 import numpy as np
 import pandas as pd
 
-from bike_router.constants import (
+from bike_router.core.constants import (
     CostConfig,
     GpxConfig,
     Mode,
