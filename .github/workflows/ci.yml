@@ -24,7 +24,8 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt
+          # preprocessing reqs pull in runtime reqs via `-r requirements.txt`
+          pip install -r requirements-preprocessing.txt
       # Lint/format/hygiene + mypy gate — pre-commit owns ruff (pinned v0.9.1) and
       # mypy (pinned v1.13.0). Fails CI if any hook errors OR modifies a file.
       - name: Pre-commit
