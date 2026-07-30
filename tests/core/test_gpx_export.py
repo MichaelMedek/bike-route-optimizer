@@ -3,10 +3,19 @@
 import datetime as dt
 
 import gpxpy
+import pytest
 
 from bike_router.core.gpx_export import build_gpx
-from bike_router.core.track import build_track, densify_track
+from bike_router.core.track import RouteStats, Track, build_track, densify_track
 from tests.conftest import make_line_route
+
+
+def test_build_gpx_empty_track_fails_loud():
+    # No points is an internal invariant violation, not user input → assert, not silent empty GPX.
+    zero = RouteStats(distance_km=0.0, duration_min=0.0, ascent_m=0.0, descent_m=0.0)
+    empty = Track(points=[], bike=zero, total=zero)
+    with pytest.raises(AssertionError, match="at least one point"):
+        build_gpx(track=empty, track_name="r")
 
 
 def test_build_gpx():
