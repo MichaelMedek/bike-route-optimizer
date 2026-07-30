@@ -357,6 +357,7 @@ class SkiResortConfig:
     """Ski-resort extraction (build-time; scripts/build_ski_resort.py). Slopes use ONLY GradeConfig.MARGIN."""
 
     LIFT_MIN_GAIN_M = 200.0  # a lift must gain at least this much bottom→top, else it is invalid/dropped
+    SLOPE_MAX_ASCENT_FRACTION = 0.10  # a slope's total climb may be at most this fraction of its total drop
 
 
 class SpeedConfig:
