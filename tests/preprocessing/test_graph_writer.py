@@ -211,5 +211,4 @@ def test_write_store_roundtrip_fixture(tmp_path: Path):
     committed_nodes, committed_edges = _tables(FIXTURE_ROUNDTRIP_STORE)
     pd.testing.assert_frame_equal(fresh_nodes, committed_nodes)
     pd.testing.assert_frame_equal(fresh_edges, committed_edges)
-    meta_name = graph_store.GraphConfig.META_FILENAME
-    assert (FIXTURE_ROUNDTRIP_STORE / meta_name).read_text() == (fresh / meta_name).read_text()
+    assert graph_store.load_meta(graph_dir=FIXTURE_ROUNDTRIP_STORE) == graph_store.load_meta(graph_dir=fresh)
