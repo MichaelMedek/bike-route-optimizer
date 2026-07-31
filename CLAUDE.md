@@ -25,3 +25,5 @@ Guidance for AI agents working in this repo. These are **non-negotiable** engine
 
 - Tests, `ruff`, and `mypy` must stay green; coverage gate must be met. Run the suite before declaring done.
 - When you change behaviour, update the tests that encoded the old behaviour AND add a regression test for the specific bug — don't just make existing tests pass.
+- After any complete batch of code changes, run `pre-commit run --all-files` to let ruff reformat the code. No manual import sorting or other such busywork needed.
+- The meta tests `tests/test_import_boundaries.py` and `tests/test_unit_test_coverage.py` are ultra-strict code- and test-quality guards; all code must strictly satisfy them.
