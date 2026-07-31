@@ -158,15 +158,23 @@ def build_deck(
     )
 
 
-def render_resort_html(*, routes: list[RoutePath], stations_latlon: list[tuple[float, float]], out_path: Path) -> None:
+def render_resort_html(
+    *,
+    routes: list[RoutePath],
+    stations_latlon: list[tuple[float, float]],
+    out_path: Path,
+    lift_markers: list[tuple[float, float, float, str]] | None = None,
+) -> None:
     """Write a standalone interactive 3D map (pydeck to_html) of a resort's lift+slope routes.
 
-    Each route → Track → ribbon segments over the terrain deck; the camera frames the stations' bbox.
+    Each route → Track → ribbon segments over the terrain deck; ``lift_markers`` places a hoverable
+    marker per lift station (label e.g. "Lift: bottom → top"). Camera frames the stations' bbox.
 
     Args:
         routes: every lift + slope RoutePath to draw.
         stations_latlon: (lat, lon) of the resort's stations, for camera framing.
         out_path: HTML file to write.
+        lift_markers: (lat, lon, elev, label) per lift station marker (hover text), or None.
     """
     segments: list[RibbonSegment] = []
     for route in routes:
@@ -181,6 +189,6 @@ def render_resort_html(*, routes: list[RoutePath], stations_latlon: list[tuple[f
         pitch=WebMapConfig.DEFAULT_PITCH,
         bearing=WebMapConfig.DEFAULT_BEARING,
     )
-    deck = build_deck(view=view, ribbon_segments=segments)
+    deck = build_deck(view=view, ribbon_segments=segments, waypoints=lift_markers)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     deck.to_html(str(out_path), open_browser=False)

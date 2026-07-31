@@ -6,7 +6,8 @@ types, ids, and per-row data (position lifted above terrain, colours, tooltips) 
 
 import pydeck as pdk
 
-from bike_router.core.constants import Palette, WebMapConfig
+from bike_router.core.constants import Mode, NodeType, Palette, WebMapConfig
+from bike_router.core.route_path import RouteEdge, RouteNode, RoutePath
 from bike_router.ui.webmap import RibbonSegment, default_view_state
 from bike_router.ui.webmap_layers import (
     _marker_layer,
@@ -16,6 +17,7 @@ from bike_router.ui.webmap_layers import (
     create_route_ribbon_layers,
     create_terrain_layer,
     create_waypoint_layer,
+    render_resort_html,
 )
 
 
@@ -116,3 +118,26 @@ def test_build_deck():
         waypoints=[(48.01, 8.01, 500.0, "S (500 m)")],
     )
     assert [layer.id for layer in full.layers] == ["terrain_3d", "route_waypoints", "route_endpoints", "route_ribbon"]
+
+
+def test_render_resort_html(tmp_path):
+    # Writes a standalone HTML from a lift/slope RoutePath — file exists and is non-empty (no server).
+    nodes = [
+        RouteNode(osmid=1, lat=48.0, lon=8.0, elevation_m=400.0, node_type=NodeType.BIKE, station_name=None),
+        RouteNode(osmid=2, lat=48.01, lon=8.01, elevation_m=100.0, node_type=NodeType.BIKE, station_name=None),
+    ]
+    edges = [
+        RouteEdge(
+            from_node=1,
+            to_node=2,
+            mode=Mode.BIKE,
+            length_m=800.0,
+            surface="asphalt",
+            highway="residential",
+            geometry=None,
+        )
+    ]
+    route = RoutePath(nodes=nodes, edges=edges)
+    out = tmp_path / "resort.html"
+    render_resort_html(routes=[route], stations_latlon=[(48.0, 8.0), (48.01, 8.01)], out_path=out)
+    assert out.exists() and out.stat().st_size > 0

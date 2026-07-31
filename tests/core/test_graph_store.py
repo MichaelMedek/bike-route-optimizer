@@ -25,6 +25,7 @@ from bike_router.core.graph_store import (
     _select_path_edges,
     _str_or_none,
     _tile_name,
+    build_route_path,
     download_graph_from_hf,
     load_meta,
     load_path_edges,
@@ -177,6 +178,39 @@ def test_load_path_edges(roundtrip_store: Path):
     route = load_path_edges(path_nodes=path_nodes, params=DEFAULT_PARAMS, graph_dir=store)
     assert route.osmids == [1, 2, 3]
     assert [e.mode for e in route.edges] == [Mode.BIKE, Mode.BIKE]
+    assert [(e.from_node, e.to_node) for e in route.edges] == [(1, 2), (2, 3)]
+
+
+def test_build_route_path():
+    # Builds a RoutePath from IN-MEMORY node/edge tables (no parquet): 1→2→3 over two bike edges.
+    nodes_df = pd.DataFrame(
+        [
+            (1, 48.0, 8.00, 100.0, NodeType.BIKE, None),
+            (2, 48.0, 8.01, 110.0, NodeType.BIKE, None),
+            (3, 48.0, 8.02, 120.0, NodeType.BIKE, None),
+        ],
+        columns=["osmid", "lat", "lon", "elevation_m", "node_type", "station_name"],
+    )
+    edge_cols = [
+        "from_node",
+        "to_node",
+        "key",
+        "length_m",
+        "height_diff_m",
+        "surface",
+        "highway",
+        "mode",
+        "geometry_wkt",
+    ]
+    edges_df = pd.DataFrame(
+        [
+            (1, 2, 0, 800.0, 10.0, "asphalt", "residential", Mode.BIKE, None),
+            (2, 3, 0, 800.0, 10.0, "asphalt", "residential", Mode.BIKE, None),
+        ],
+        columns=edge_cols,
+    )
+    route = build_route_path(path_osmids=[1, 2, 3], nodes_df=nodes_df, edges_df=edges_df, params=DEFAULT_PARAMS)
+    assert route.osmids == [1, 2, 3]
     assert [(e.from_node, e.to_node) for e in route.edges] == [(1, 2), (2, 3)]
 
 

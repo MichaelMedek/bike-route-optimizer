@@ -333,6 +333,35 @@ def load_path_edges(
     return RoutePath(nodes=nodes, edges=_select_path_edges(nodes=nodes, edges_df=edges_df, params=params))
 
 
+def build_route_path(
+    *, path_osmids: list[int], nodes_df: pd.DataFrame, edges_df: pd.DataFrame, params: RoutingParams
+) -> RoutePath:
+    """A RoutePath from an ordered osmid path over IN-MEMORY node/edge tables (no parquet reload).
+
+    Shares the exact geometry-selection the corridor path re-read uses (_select_path_edges), but the
+    node/edge tables are supplied in memory (region build) instead of re-read per tile.
+
+    Args:
+        path_osmids: the route's node osmids in order.
+        nodes_df: node table containing every path node (full schema).
+        edges_df: edge table containing the path's edges (full schema).
+        params: rider preferences (picks the same parallel edge per hop as routing).
+    """
+    indexed = nodes_df.set_index("osmid").reindex(path_osmids)
+    nodes = [
+        RouteNode(
+            osmid=int(osmid),
+            lat=float(row.lat),
+            lon=float(row.lon),
+            elevation_m=float(row.elevation_m),
+            node_type=str(row.node_type),
+            station_name=_str_or_none(value=row.station_name),
+        )
+        for osmid, row in zip(path_osmids, indexed.itertuples(index=False), strict=True)
+    ]
+    return RoutePath(nodes=nodes, edges=_select_path_edges(nodes=nodes, edges_df=edges_df, params=params))
+
+
 def _select_path_edges(*, nodes: list[RouteNode], edges_df: pd.DataFrame, params: RoutingParams) -> list[RouteEdge]:
     """Cheapest parallel edge per consecutive hop, oriented a→b, as an ordered RouteEdge list.
 

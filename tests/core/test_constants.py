@@ -168,10 +168,9 @@ class TestGradeConfig:
 
 class TestSkiResortConfig:
     def test_thresholds_are_internally_consistent(self):
-        # A lift must climb at least its prominence; all gates are positive; dip tolerance ≥ 0.
-        assert SkiResortConfig.LIFT_MIN_CLIMB_M >= SkiResortConfig.LIFT_PROMINENCE_M > 0
-        assert SkiResortConfig.LIFT_DIP_TOLERANCE_M >= 0
-        assert SkiResortConfig.SLOPE_MAX_PAIR_KM > 0 and SkiResortConfig.SLOPE_MIN_DROP_M > 0
+        # A lift needs a real gain; a slope's climb budget is a positive fraction below 1.
+        assert SkiResortConfig.LIFT_MIN_GAIN_M > 0
+        assert 0 < SkiResortConfig.SLOPE_MAX_ASCENT_FRACTION < 1
 
 
 class TestSpeedConfig:
