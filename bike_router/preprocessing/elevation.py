@@ -16,6 +16,8 @@ import rasterio
 from pyproj import Transformer
 from rasterio.io import DatasetReader
 
+from bike_router.core.constants import WGS84_CRS
+
 logger = logging.getLogger(__name__)
 
 
@@ -87,8 +89,8 @@ class DEMService:
             self._dem_crs = dataset.crs.to_string()
             self._dem_array = dem_array
             self._dem_nodata = dataset.nodata
-            if self._dem_crs != "EPSG:4326":
-                self._to_dem = Transformer.from_crs("EPSG:4326", self._dem_crs, always_xy=True)
+            if self._dem_crs != WGS84_CRS:
+                self._to_dem = Transformer.from_crs(WGS84_CRS, self._dem_crs, always_xy=True)
             self._wgs84_bounds = self._compute_wgs84_bounds(native_bounds=dataset.bounds)
             self._dem_transform = dataset.transform  # set LAST — is_loaded checks this
             logger.info(f"DEM loaded in {time.time() - start:.2f}s (shape={dem_array.shape}, CRS={self._dem_crs})")

@@ -11,7 +11,15 @@ from pathlib import Path
 from shapely.geometry import Polygon
 
 from bike_router.core.composition import RouteComposition, format_composition, route_composition
-from bike_router.core.constants import CorridorConfig, GmapsConfig, GpxConfig, PlotConfig, RoutingParams
+from bike_router.core.constants import (
+    DESTINATION_LABEL,
+    START_LABEL,
+    CorridorConfig,
+    GmapsConfig,
+    GpxConfig,
+    PlotConfig,
+    RoutingParams,
+)
 from bike_router.core.corridor import build_corridor
 from bike_router.core.cost import edge_cost_array
 from bike_router.core.errors import (
@@ -87,8 +95,8 @@ def _geocode_both(*, origin: str, destination: str) -> tuple[tuple[float, float]
     Fail-fast: a bad Start raises before Destination is looked up.
     """
     geocode_fn = make_geocode_fn()
-    start_ll = geocode_endpoint(place=origin, label="Start", geocode_fn=geocode_fn)
-    dest_ll = geocode_endpoint(place=destination, label="Destination", geocode_fn=geocode_fn)
+    start_ll = geocode_endpoint(place=origin, label=START_LABEL, geocode_fn=geocode_fn)
+    dest_ll = geocode_endpoint(place=destination, label=DESTINATION_LABEL, geocode_fn=geocode_fn)
     return start_ll, dest_ll
 
 

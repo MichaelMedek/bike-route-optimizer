@@ -14,7 +14,7 @@ import pandas as pd
 from shapely import from_wkt, to_wkt
 from shapely.geometry import LineString
 
-from bike_router.core.constants import GraphConfig, Mode, NodeType
+from bike_router.core.constants import WGS84_CRS, GraphConfig, Mode, NodeType, Schema
 from bike_router.core.graph_store import _EDGE_COLS, _NODE_COLS, _read_tiles, _str_or_none, _tile_name, tile_index
 
 logger = logging.getLogger(__name__)
@@ -70,11 +70,11 @@ def write_graph_parquet(
 
     for (row, col), group in nodes_df.groupby("_tile"):
         group[_NODE_COLS].to_parquet(
-            nodes_dir / f"{_tile_name(row=row, col=col)}.parquet", index=False, compression=compression
+            nodes_dir / f"{_tile_name(row=row, col=col)}{GraphConfig.TILE_SUFFIX}", index=False, compression=compression
         )
     for (row, col), group in edges_df.groupby("_tile"):
         group[_EDGE_COLS].to_parquet(
-            edges_dir / f"{_tile_name(row=row, col=col)}.parquet", index=False, compression=compression
+            edges_dir / f"{_tile_name(row=row, col=col)}{GraphConfig.TILE_SUFFIX}", index=False, compression=compression
         )
 
     (out_dir / GraphConfig.META_FILENAME).write_text(json.dumps(meta, indent=2))
@@ -108,7 +108,7 @@ def graph_from_tables(nodes_df: pd.DataFrame, edges_df: pd.DataFrame) -> nx.Mult
     Bulk add_nodes/edges_from (networkx C internals). Edges referencing a node outside
     the loaded window are dropped (they dangle off the tile set).
     """
-    graph = nx.MultiDiGraph(crs="EPSG:4326")
+    graph = nx.MultiDiGraph(crs=WGS84_CRS)
     graph.add_nodes_from(
         (
             int(n.osmid),
@@ -116,8 +116,8 @@ def graph_from_tables(nodes_df: pd.DataFrame, edges_df: pd.DataFrame) -> nx.Mult
                 "x": float(n.lon),
                 "y": float(n.lat),
                 "elevation": float(n.elevation_m),
-                "node_type": NodeType(n.node_type),
-                "station_name": _str_or_none(value=n.station_name),
+                Schema.NODE_TYPE: NodeType(n.node_type),
+                Schema.STATION_NAME: _str_or_none(value=n.station_name),
             },
         )
         for n in nodes_df.itertuples(index=False)
@@ -131,10 +131,10 @@ def graph_from_tables(nodes_df: pd.DataFrame, edges_df: pd.DataFrame) -> nx.Mult
             {
                 "length": float(e.length_m),
                 "height_diff": float(e.height_diff_m),
-                "surface": _str_or_none(value=e.surface),
-                "highway": _str_or_none(value=e.highway),
-                "mode": e.mode,
-                "geometry": from_wkt(e.geometry_wkt) if isinstance(e.geometry_wkt, str) else None,
+                Schema.SURFACE: _str_or_none(value=e.surface),
+                Schema.HIGHWAY: _str_or_none(value=e.highway),
+                Schema.MODE: e.mode,
+                Schema.GEOMETRY: from_wkt(e.geometry_wkt) if isinstance(e.geometry_wkt, str) else None,
             },
         )
         for e in edges_df.itertuples(index=False)
@@ -188,26 +188,26 @@ def graph_to_tables(graph: nx.MultiDiGraph) -> tuple[pd.DataFrame, pd.DataFrame]
     """
     nodes = [
         {
-            "osmid": int(n),
-            "lat": float(d["y"]),  # OSMnx stores y = latitude
-            "lon": float(d["x"]),  # x = longitude
-            "elevation_m": float(d["elevation"]),
-            "node_type": str(d["node_type"]),  # internal invariant: builder types every node
-            "station_name": d["station_name"],  # internal invariant: str for stations, None otherwise
+            Schema.OSMID: int(n),
+            Schema.LAT: float(d["y"]),  # OSMnx stores y = latitude
+            Schema.LON: float(d["x"]),  # x = longitude
+            Schema.ELEVATION_M: float(d["elevation"]),
+            Schema.NODE_TYPE: str(d["node_type"]),  # internal invariant: builder types every node
+            Schema.STATION_NAME: d["station_name"],  # internal invariant: str for stations, None otherwise
         }
         for n, d in graph.nodes(data=True)
     ]
     edges = [
         {
-            "from_node": int(u),
-            "to_node": int(v),
-            "key": int(k),
-            "length_m": float(d["length"]),
-            "height_diff_m": float(graph.nodes[v]["elevation"] - graph.nodes[u]["elevation"]),
-            "surface": _scalar(d.get("surface")),  # unknown → explicit None (external OSM)
-            "highway": _scalar(d.get("highway")),  # ditto (genuinely optional)
-            "mode": d["mode"],  # internal invariant: builder tags every edge (fail loud if not)
-            "geometry_wkt": _geometry_wkt(d.get("geometry")),
+            Schema.FROM_NODE: int(u),
+            Schema.TO_NODE: int(v),
+            Schema.KEY: int(k),
+            Schema.LENGTH_M: float(d["length"]),
+            Schema.HEIGHT_DIFF_M: float(graph.nodes[v]["elevation"] - graph.nodes[u]["elevation"]),
+            Schema.SURFACE: _scalar(d.get(Schema.SURFACE)),  # unknown → explicit None (external OSM)
+            Schema.HIGHWAY: _scalar(d.get(Schema.HIGHWAY)),  # ditto (genuinely optional)
+            Schema.MODE: d["mode"],  # internal invariant: builder tags every edge (fail loud if not)
+            Schema.GEOMETRY_WKT: _geometry_wkt(d.get(Schema.GEOMETRY)),
         }
         for u, v, k, d in graph.edges(keys=True, data=True)
     ]

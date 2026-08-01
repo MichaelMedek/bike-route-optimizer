@@ -7,7 +7,7 @@ Used by the A* heuristic.
 import numpy as np
 import numpy.typing as npt
 
-from bike_router.core.constants import GeoConfig
+from bike_router.core.constants import LAT_OUT_OF_RANGE, LON_OUT_OF_RANGE, GeoConfig
 
 
 def haversine_vec(
@@ -17,8 +17,8 @@ def haversine_vec(
     lon_b: "npt.NDArray[np.float64] | float",
 ) -> "npt.NDArray[np.float64]":
     """Vectorized great-circle distance in metres (elementwise over broadcastable arrays)."""
-    assert np.all(np.abs(lat_a) <= 90.0) and np.all(np.abs(lat_b) <= 90.0), "latitude out of range"
-    assert np.all(np.abs(lon_a) <= 180.0) and np.all(np.abs(lon_b) <= 180.0), "longitude out of range"
+    assert np.all(np.abs(lat_a) <= 90.0) and np.all(np.abs(lat_b) <= 90.0), LAT_OUT_OF_RANGE
+    assert np.all(np.abs(lon_a) <= 180.0) and np.all(np.abs(lon_b) <= 180.0), LON_OUT_OF_RANGE
     delta_lat = np.radians(lat_b - lat_a)
     delta_lon = np.radians(lon_b - lon_a)
     chord = (

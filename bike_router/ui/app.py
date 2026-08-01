@@ -14,11 +14,15 @@ from streamlit_deckgl import st_deckgl
 from streamlit_js_eval import get_geolocation
 
 from bike_router.core.constants import (
+    LOG_FORMAT,
     PARAM_SPECS,
+    ST_PRIMARY,
+    START_LABEL,
     GraphConfig,
     PhotonConfig,
     RoutingDefaults,
     RoutingParams,
+    SessionKey,
     WebMapConfig,
 )
 from bike_router.core.errors import BikeRouterError
@@ -160,7 +164,7 @@ def place_input(field: str, label: str, placeholder: str, bbox: tuple[float, flo
         st.button(
             f"🚉 {bahnhof}",
             key=f"{field}_sug_bahnhof",
-            type="primary",  # red button, first position
+            type=ST_PRIMARY,  # red button, first position
             on_click=fill_box,
             kwargs={"field": field, "value": bahnhof},
             width="stretch",
@@ -266,7 +270,7 @@ def configure_logging() -> None:
     package_logger.propagate = False  # our level applies to our code alone; root/libraries stay default
     if not package_logger.handlers:
         handler = logging.StreamHandler()
-        handler.setFormatter(logging.Formatter("%(levelname)s %(name)s: %(message)s"))
+        handler.setFormatter(logging.Formatter(LOG_FORMAT))
         package_logger.addHandler(handler)
 
 
@@ -277,11 +281,11 @@ def seed_state() -> None:
     we apply it to start_box HERE, before the box is instantiated this run.
     """
     for key, initial in {
-        "start_latlon": None,
-        "end_latlon": None,
-        "result": None,
-        "start_box_resolved": None,  # exact box text Set resolved (gates Compute + hides suggestions)
-        "end_box_resolved": None,
+        SessionKey.START_LATLON: None,
+        SessionKey.END_LATLON: None,
+        SessionKey.RESULT: None,
+        SessionKey.START_BOX_RESOLVED: None,  # exact box text Set resolved (gates Compute + hides suggestions)
+        SessionKey.END_BOX_RESOLVED: None,
         "view": default_view_state(),
         "camera_epoch": 0,
         "show_top_stations": False,  # rail-purple top-station inspiration markers toggle
@@ -300,12 +304,12 @@ def render_controls() -> tuple[str, str]:
     bbox = tuple(load_meta(graph_dir=GraphConfig.GRAPH_DIR)["bbox"])  # coverage box biases + limits suggestions
     col_start, col_swap, col_end = st.columns([1, 0.18, 1])
     with col_start:
-        origin = place_input(field="start_box", label="Start", placeholder="Start location", bbox=bbox)
+        origin = place_input(field=SessionKey.START_BOX, label=START_LABEL, placeholder="Start location", bbox=bbox)
     with col_swap:
         st.markdown("<div style='height:1.75rem'></div>", unsafe_allow_html=True)  # drop below the label
         st.button("⇄", help="Swap Start and End", on_click=swap_endpoints, width="stretch")
     with col_end:
-        destination = place_input(field="end_box", label="End", placeholder="End location", bbox=bbox)
+        destination = place_input(field=SessionKey.END_BOX, label="End", placeholder="End location", bbox=bbox)
 
     col_set, col_gps, col_top = st.columns([4, 1, 1])
     with col_set:

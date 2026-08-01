@@ -8,12 +8,14 @@ import pytest
 
 from bike_router.core.constants import (
     PARAM_SPECS,
+    Condition,
     CorridorConfig,
     CostConfig,
     DEMConfig,
     GeoConfig,
     GmapsConfig,
     GpxConfig,
+    Grade,
     GradeConfig,
     GraphConfig,
     Mode,
@@ -29,8 +31,11 @@ from bike_router.core.constants import (
     RoutingParams,
     RoutingParamSpec,
     SanityConfig,
+    Schema,
+    SessionKey,
     SpeedConfig,
     SurfaceConfig,
+    SurfaceLabel,
     WebMapConfig,
 )
 from bike_router.core.errors import ParamOutOfRangeError
@@ -210,3 +215,64 @@ class TestWebMapConfig:
         assert set(WebMapConfig.MODE_DONUT_LABELS.values()) == {"bike route", "train path"}
         assert Palette.hex_to_rgb(hex_color=Palette.RAIL) == WebMapConfig.RAIL_COLOR
         assert WebMapConfig.MAP_HEIGHT_PX > 0
+
+
+class TestSchema:
+    def test_on_disk_column_names(self):
+        # The single-source parquet column names both the writer and reader share.
+        assert Schema.OSMID == "osmid" and Schema.NODE_TYPE == "node_type"
+        assert {Schema.FROM_NODE, Schema.TO_NODE, Schema.MODE} == {"from_node", "to_node", "mode"}
+
+    def test_names_are_unique(self):
+        cols = [Schema.OSMID, Schema.LAT, Schema.LON, Schema.ELEVATION_M, Schema.NODE_TYPE, Schema.STATION_NAME]
+        assert len(cols) == len(set(cols))
+
+
+class TestCondition:
+    def test_labels_are_the_condition_colour_keys(self):
+        # Every Condition label must key into the QUALITY colour scale (no drift).
+        assert Condition.GOOD in Palette.CONDITION_COLORS and Condition.MAIN_ROAD_UNPAVED in Palette.CONDITION_COLORS
+        assert Condition.TRAIN == "train"
+
+
+class TestGrade:
+    def test_labels_are_the_grade_colour_keys(self):
+        assert {Grade.FLAT, Grade.UPHILL, Grade.DOWNHILL, Grade.TRAIN} <= set(Palette.GRADE_COLORS)
+
+
+class TestSurfaceLabel:
+    def test_human_surface_and_road_words(self):
+        assert SurfaceLabel.PAVED == "paved" and SurfaceLabel.UNPAVED == "unpaved"
+        assert SurfaceLabel.QUIET_WAY == "quiet way" and SurfaceLabel.MAIN_ROAD == "main road"
+
+
+class TestSessionKey:
+    def test_keys_are_distinct(self):
+        keys = [
+            SessionKey.START_BOX,
+            SessionKey.END_BOX,
+            SessionKey.START_BOX_RESOLVED,
+            SessionKey.END_BOX_RESOLVED,
+            SessionKey.START_LATLON,
+            SessionKey.END_LATLON,
+            SessionKey.RESULT,
+        ]
+        assert len(keys) == len(set(keys))
+
+    def test_box_keys_match_their_widget_names(self):
+        # The start/end box keys ARE the text_input widget keys; resolved keys extend them by suffix.
+        assert SessionKey.START_BOX == "start_box" and SessionKey.END_BOX == "end_box"
+        assert f"{SessionKey.START_BOX}_resolved" == SessionKey.START_BOX_RESOLVED
+        assert f"{SessionKey.END_BOX}_resolved" == SessionKey.END_BOX_RESOLVED
+
+
+def test_condition_and_grade_labels_are_exactly_the_palette_scale_keys():
+    # Cross-check: the label constants ARE the Palette scale keys, so classify/colour never drift.
+    assert set(Palette.CONDITION_COLORS) == {
+        Condition.TRAIN,
+        Condition.GOOD,
+        Condition.UNPAVED,
+        Condition.MAIN_ROAD,
+        Condition.MAIN_ROAD_UNPAVED,
+    }
+    assert set(Palette.GRADE_COLORS) == {Grade.TRAIN, Grade.FLAT, Grade.UPHILL, Grade.DOWNHILL}

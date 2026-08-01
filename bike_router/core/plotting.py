@@ -18,7 +18,7 @@ from matplotlib.colors import Normalize  # noqa: E402
 from matplotlib.ticker import MaxNLocator  # noqa: E402
 
 from bike_router.core.composition import RouteComposition, format_composition  # noqa: E402
-from bike_router.core.constants import Palette, PlotConfig, RoutingParams  # noqa: E402
+from bike_router.core.constants import ELEVATION_AXIS_LABEL, PLOT_BG, Palette, PlotConfig, RoutingParams  # noqa: E402
 from bike_router.core.geo import haversine_vec  # noqa: E402
 from bike_router.core.route_path import RoutePath  # noqa: E402
 from bike_router.core.track import (  # noqa: E402
@@ -145,7 +145,7 @@ def plot_route_debug(
         figsize=(fig_w, fig_h),
         layout="constrained",
     )
-    figure.set_facecolor("white")
+    figure.set_facecolor(PLOT_BG)
     axes, cbar_ax, stats_ax = mosaic["map"], mosaic["cbar"], mosaic["stats"]
     # adjustable="box" keeps our explicit x/y limits (set below) AND equal aspect by fitting the
     # axes box — "datalim" would instead override those limits (matplotlib warns + ignores them).
@@ -185,7 +185,7 @@ def plot_route_debug(
     mappable = cm.ScalarMappable(norm=norm, cmap=cmap)
     mappable.set_array([])
     colorbar = figure.colorbar(mappable, cax=cbar_ax)
-    colorbar.set_label("Elevation (m)", fontsize=11, weight="bold", labelpad=10)
+    colorbar.set_label(ELEVATION_AXIS_LABEL, fontsize=11, weight="bold", labelpad=10)
     colorbar.ax.yaxis.set_major_locator(MaxNLocator(nbins=8))
 
     stats_ax.axis("off")
@@ -206,9 +206,9 @@ def plot_route_debug(
     )
     handles, labels = axes.get_legend_handles_labels()
     stats_ax.legend(
-        handles, labels, loc="upper right", fontsize=9, framealpha=0.95, facecolor="white", edgecolor="#999999"
+        handles, labels, loc="upper right", fontsize=9, framealpha=0.95, facecolor=PLOT_BG, edgecolor="#999999"
     )
 
-    figure.savefig(out_path, dpi=dpi, facecolor="white", bbox_inches="tight", pad_inches=0.3)
+    figure.savefig(out_path, dpi=dpi, facecolor=PLOT_BG, bbox_inches="tight", pad_inches=0.3)
     plt.close(figure)
     logger.info(f"Wrote debug route PNG to {out_path}")

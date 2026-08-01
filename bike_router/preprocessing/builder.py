@@ -24,10 +24,13 @@ from shapely.geometry import LineString, Point
 from shapely.ops import nearest_points
 
 from bike_router.core.constants import (
+    NAME_KEY,
+    WGS84_CRS,
     GraphConfig,
     Mode,
     NodeType,
     RailConfig,
+    Schema,
 )
 from bike_router.core.geo import haversine_distance_m, haversine_vec
 from bike_router.preprocessing.elevation import DEMService
@@ -134,7 +137,7 @@ def _station_points(osm: OSM) -> list[tuple[str, float, float]]:
     stations = osm.get_data_by_custom_criteria(
         custom_filter={"railway": list(RailConfig.STATION_TAGS)},
         filter_type="keep",
-        tags_as_columns=["name"],  # promote the OSM name tag to a column
+        tags_as_columns=[NAME_KEY],  # promote the OSM name tag to a column
         keep_nodes=True,
         keep_ways=True,
         keep_relations=False,
@@ -142,9 +145,9 @@ def _station_points(osm: OSM) -> list[tuple[str, float, float]]:
     if stations is None or stations.empty:
         return []
     points = stations.geometry.representative_point()
-    names = stations["name"] if "name" in stations.columns else [None] * len(stations)
+    names = stations[NAME_KEY] if NAME_KEY in stations.columns else [None] * len(stations)
     return [
-        (name if isinstance(name, str) else "station", float(pt.y), float(pt.x))
+        (name if isinstance(name, str) else Mode.STATION, float(pt.y), float(pt.x))
         for name, pt in zip(names, points, strict=True)
     ]
 
@@ -184,7 +187,7 @@ def _nearest_tracks(
     Per point returns (endpoint_node, node_dist_m, line_dist_m); the query runs on the PROJECTED graph
     (Euclidean nearest_edges mis-picks on lat/lon at ~48°N). ``line_dist_m`` gates on-network membership.
     """
-    tr = pyproj.Transformer.from_crs("EPSG:4326", rail_proj.graph["crs"], always_xy=True)
+    tr = pyproj.Transformer.from_crs(WGS84_CRS, rail_proj.graph["crs"], always_xy=True)
     px, py = tr.transform(lons, lats)  # vectorized reprojection
     edges = ox.distance.nearest_edges(
         rail_proj, X=np.asarray(px), Y=np.asarray(py)
@@ -200,7 +203,7 @@ def _nearest_tracks(
         node_dist = haversine_distance_m(
             lat_a=lat, lon_a=lon, lat_b=rail_graph.nodes[node]["y"], lon_b=rail_graph.nodes[node]["x"]
         )
-        geom = rail_graph.get_edge_data(u, v)[key].get("geometry")
+        geom = rail_graph.get_edge_data(u, v)[key].get(Schema.GEOMETRY)
         if geom is None:
             geom = LineString(
                 [
@@ -408,7 +411,7 @@ def dedup_by_geometry(nodes_df: pd.DataFrame, edges_df: pd.DataFrame) -> tuple[p
     # Canonical node per rounded (lat, lon, node_type): the row with the lowest (lat, lon), then id.
     # node_type MUST be in the key — else a coincident bike+rail node would merge, leaving a bike
     # edge pointing at a rail node (breaks the type invariant the graph model guarantees).
-    nodes_df = nodes_df.sort_values(["lat", "lon", "osmid"], kind="stable")
+    nodes_df = nodes_df.sort_values([Schema.LAT, Schema.LON, Schema.OSMID], kind="stable")
     key_lat = nodes_df["lat"].round(prec)
     key_lon = nodes_df["lon"].round(prec)
     nodes_df["_key"] = list(zip(key_lat, key_lon, nodes_df["node_type"], strict=True))

@@ -8,7 +8,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from bike_router.core.constants import GpxConfig, GradeConfig, Mode, Palette, RailConfig, SpeedConfig
+from bike_router.core.constants import Condition, GpxConfig, Grade, GradeConfig, Mode, Palette, RailConfig, SpeedConfig
 from bike_router.core.cost import road_tier, surface_tier
 from bike_router.core.geo import haversine_vec
 from bike_router.core.route_path import RouteEdge, RouteNode, RoutePath
@@ -161,15 +161,15 @@ def edge_condition_speed(*, edge: RouteEdge, elev_source: float, elev_target: fl
 def classify_condition(*, mode: str, surface_bad: bool, road_bad: bool) -> str:
     """Canonical road-QUALITY label for a route segment — the SINGLE branch point."""
     if mode == Mode.RAIL:
-        return "train"
+        return Condition.TRAIN
     elif surface_bad and road_bad:
-        return "main road + unpaved"
+        return Condition.MAIN_ROAD_UNPAVED
     elif road_bad and not surface_bad:
-        return "main road"
+        return Condition.MAIN_ROAD
     elif surface_bad and not road_bad:
-        return "unpaved"
+        return Condition.UNPAVED
     elif not surface_bad and not road_bad:
-        return "good"
+        return Condition.GOOD
     else:
         raise AssertionError(f"unclassified segment: mode={mode!r} surface_bad={surface_bad} road_bad={road_bad}")
 
@@ -181,13 +181,13 @@ def classify_grade(*, mode: str, grade: float) -> str:
     or above +MARGIN, downhill at or below −MARGIN, else flat (so only |grade| < MARGIN is flat).
     """
     if mode == Mode.RAIL:
-        return "train"
+        return Grade.TRAIN
     elif grade >= GradeConfig.MARGIN:
-        return "uphill"
+        return Grade.UPHILL
     elif grade <= -GradeConfig.MARGIN:
-        return "downhill"
+        return Grade.DOWNHILL
     else:
-        return "flat"
+        return Grade.FLAT
 
 
 def segment_color(*, mode: str, surface_bad: bool, road_bad: bool) -> list[int]:

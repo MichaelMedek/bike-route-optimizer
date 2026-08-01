@@ -11,7 +11,7 @@ planning, and report assembly are the tested bike_router.core.pipeline.run_route
 import argparse
 import logging
 
-from bike_router.core.constants import PARAM_SPECS, GraphConfig, RoutingParams
+from bike_router.core.constants import LOG_FORMAT, PARAM_SPECS, GraphConfig, RoutingParams
 from bike_router.core.pipeline import run_route
 
 
@@ -26,7 +26,7 @@ def main(argv: list[str] | None = None) -> int:
 
     logging.basicConfig(
         level=logging.INFO if arguments.verbose else logging.WARNING,
-        format="%(levelname)s %(name)s: %(message)s",
+        format=LOG_FORMAT,
     )
     # Expected failures raise a BikeRouterError — its class name + message already explain.
     params = RoutingParams(**{spec.field: getattr(arguments, spec.field) for spec in PARAM_SPECS})

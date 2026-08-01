@@ -15,7 +15,16 @@ import pandas as pd
 import plotly.graph_objects as go
 
 from bike_router.core.composition import MODE_COLORS, composition_rows
-from bike_router.core.constants import Mode, Palette, WebMapConfig
+from bike_router.core.constants import (
+    ELEVATION_AXIS_LABEL,
+    PLOT_BG,
+    Grade,
+    Mode,
+    Palette,
+    SessionKey,
+    SurfaceLabel,
+    WebMapConfig,
+)
 from bike_router.core.geo import haversine_vec
 from bike_router.core.geocoding import as_bahnhof
 from bike_router.core.simplify import place_label, route_station_markers  # place_label re-exported for the app shell
@@ -130,11 +139,11 @@ def elevation_profile_chart(track: Track, markers: list[tuple[float, float, str]
         title="Elevation profile",
         height=220,
         margin={"l": 0, "r": 0, "t": 30, "b": 0},
-        plot_bgcolor="white",
+        plot_bgcolor=PLOT_BG,
         legend={"orientation": "h", "yanchor": "bottom", "y": -0.3},
         xaxis={"title": "Distance (km)", "showgrid": True, "gridcolor": "rgba(200,200,200,0.3)"},
         yaxis={
-            "title": "Elevation (m)",
+            "title": ELEVATION_AXIS_LABEL,
             "range": [lo - pad, hi + pad],
             "showgrid": True,
             "gridcolor": "rgba(200,200,200,0.3)",
@@ -180,15 +189,15 @@ def _segment_tooltip(point: TrackPoint) -> str:
     The trailing ``NNN m`` is the edge's elevation in the SAME format the markers show on hover, so
     hovering the route reads its height just like hovering a start/end/station/waypoint marker.
     """
-    surface = "unpaved" if point.surface_bad else "paved"
-    road = "main road" if point.road_bad else "quiet way"
+    surface = SurfaceLabel.UNPAVED if point.surface_bad else SurfaceLabel.PAVED
+    road = SurfaceLabel.MAIN_ROAD if point.road_bad else SurfaceLabel.QUIET_WAY
     grade_pct = point.grade * 100
     if grade_pct > 0.5:
-        direction = "uphill"
+        direction = Grade.UPHILL
     elif grade_pct < -0.5:
-        direction = "downhill"
+        direction = Grade.DOWNHILL
     else:
-        direction = "flat"
+        direction = Grade.FLAT
     slope = f"{grade_pct:+.0f}% {direction}"
     return f"{surface} · {road} · {slope} · ~{point.speed_kmh:.0f} km/h · {point.elevation_m:.0f} m"
 
@@ -368,13 +377,13 @@ def swapped_endpoint_state(state: dict[str, object]) -> dict[str, object]:
     st.session_state. The previous route ran the other direction, so it is cleared to None.
     """
     return {
-        "start_box": state["end_box"],
-        "end_box": state["start_box"],
-        "start_box_resolved": state["end_box_resolved"],
-        "end_box_resolved": state["start_box_resolved"],
-        "start_latlon": state["end_latlon"],
-        "end_latlon": state["start_latlon"],
-        "result": None,
+        SessionKey.START_BOX: state[SessionKey.END_BOX],
+        SessionKey.END_BOX: state[SessionKey.START_BOX],
+        SessionKey.START_BOX_RESOLVED: state[SessionKey.END_BOX_RESOLVED],
+        SessionKey.END_BOX_RESOLVED: state[SessionKey.START_BOX_RESOLVED],
+        SessionKey.START_LATLON: state[SessionKey.END_LATLON],
+        SessionKey.END_LATLON: state[SessionKey.START_LATLON],
+        SessionKey.RESULT: None,
     }
 
 

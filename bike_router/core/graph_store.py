@@ -17,7 +17,7 @@ from huggingface_hub import list_repo_files, snapshot_download
 from shapely import covers, from_wkt, points
 from shapely.geometry import Polygon, box
 
-from bike_router.core.constants import GraphConfig, Mode, NodeType, RailConfig, RoutingParams
+from bike_router.core.constants import GraphConfig, Mode, NodeType, RailConfig, RoutingParams, Schema
 from bike_router.core.cost import edge_cost_array
 from bike_router.core.errors import OutOfCoverageError
 from bike_router.core.geo import haversine_vec
@@ -28,18 +28,22 @@ logger = logging.getLogger(__name__)
 
 _DOWNLOAD_POLL_S = 0.5  # how often the main thread samples on-disk file count for progress
 
-_NODE_COLS = ["osmid", "lat", "lon", "elevation_m", "node_type", "station_name"]
+_NODE_COLS = [Schema.OSMID, Schema.LAT, Schema.LON, Schema.ELEVATION_M, Schema.NODE_TYPE, Schema.STATION_NAME]
 _EDGE_COLS = [
-    "from_node",
-    "to_node",
-    "key",
-    "length_m",
-    "height_diff_m",
-    "surface",
-    "highway",
-    "mode",
-    "geometry_wkt",
+    Schema.FROM_NODE,
+    Schema.TO_NODE,
+    Schema.KEY,
+    Schema.LENGTH_M,
+    Schema.HEIGHT_DIFF_M,
+    Schema.SURFACE,
+    Schema.HIGHWAY,
+    Schema.MODE,
+    Schema.GEOMETRY_WKT,
 ]
+# Minimal columns the CSR routing pass needs (no geometry/station_name/key — those are re-read per
+# chosen edge in load_path_edges). Keeps the corridor window memory-lean.
+_ROUTE_NODE_COLS = [Schema.OSMID, Schema.LAT, Schema.LON, Schema.ELEVATION_M, Schema.NODE_TYPE]
+_ROUTE_EDGE_COLS = [Schema.FROM_NODE, Schema.TO_NODE, Schema.LENGTH_M, Schema.SURFACE, Schema.HIGHWAY, Schema.MODE]
 
 
 def tile_index(lat: float, lon: float, tile_deg: float) -> tuple[int, int]:
@@ -135,9 +139,13 @@ def _read_tiles(
     ``tile_*.parquet``. ``filters`` = optional pyarrow pushdown so a tile yields only matching rows.
     """
     if tiles is None:
-        paths = sorted(directory.glob("tile_*.parquet"))
+        paths = sorted(directory.glob(f"tile_*{GraphConfig.TILE_SUFFIX}"))
     else:
-        paths = [p for row, col in tiles if (p := directory / f"{_tile_name(row=row, col=col)}.parquet").exists()]
+        paths = [
+            p
+            for row, col in tiles
+            if (p := directory / f"{_tile_name(row=row, col=col)}{GraphConfig.TILE_SUFFIX}").exists()
+        ]
     frames = [pd.read_parquet(path, filters=filters) for path in paths]
     if not frames:
         return pd.DataFrame(columns=columns)
@@ -165,7 +173,7 @@ def _load_layer(
         directory=graph_dir / GraphConfig.NODES_SUBDIR,
         columns=node_columns,
         tiles=tiles,
-        filters=[("node_type", "==", node_type)],
+        filters=[(Schema.NODE_TYPE, "==", node_type)],
     )
     inside_mask = covers(corridor, points(nodes_df["lon"].to_numpy(dtype=float), nodes_df["lat"].to_numpy(dtype=float)))
     nodes_df = nodes_df[inside_mask].reset_index(drop=True)
@@ -174,15 +182,9 @@ def _load_layer(
         directory=graph_dir / GraphConfig.EDGES_SUBDIR,
         columns=edge_columns,
         tiles=tiles,
-        filters=[("mode", "in", edge_modes), ("from_node", "in", list(inside_ids | extra_from_ids))],
+        filters=[(Schema.MODE, "in", edge_modes), (Schema.FROM_NODE, "in", list(inside_ids | extra_from_ids))],
     )
     return nodes_df, edges_df, inside_ids
-
-
-# Minimal columns the CSR router needs: node coords+elev+type, edge endpoints+length+tags+mode.
-# geometry_wkt (73% of the edge table) and key/height_diff are read ONLY for the final path.
-_ROUTE_NODE_COLS = ["osmid", "lat", "lon", "elevation_m", "node_type"]
-_ROUTE_EDGE_COLS = ["from_node", "to_node", "length_m", "surface", "highway", "mode"]
 
 
 def load_route_tables(
@@ -266,9 +268,9 @@ def load_path_edges(*, path_nodes: list[tuple[int, float, float]], params: Routi
             directory=graph_dir / GraphConfig.NODES_SUBDIR,
             columns=_NODE_COLS,
             tiles=tiles,
-            filters=[("osmid", "in", list(set(path_osmids)))],
+            filters=[(Schema.OSMID, "in", list(set(path_osmids)))],
         )
-        .set_index("osmid")
+        .set_index(Schema.OSMID)
         .reindex(path_osmids)
     )
     nodes = [
@@ -286,7 +288,7 @@ def load_path_edges(*, path_nodes: list[tuple[int, float, float]], params: Routi
         directory=graph_dir / GraphConfig.EDGES_SUBDIR,
         columns=_EDGE_COLS,
         tiles=tiles,
-        filters=[("from_node", "in", list(set(path_osmids)))],
+        filters=[(Schema.FROM_NODE, "in", list(set(path_osmids)))],
     )
     return RoutePath(nodes=nodes, edges=_select_path_edges(nodes=nodes, edges_df=edges_df, params=params))
 
