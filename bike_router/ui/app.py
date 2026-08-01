@@ -255,19 +255,19 @@ def swap_endpoints() -> None:
 
 
 def configure_logging() -> None:
-    """Set up app logging ONCE (guarded against Streamlit reruns stacking handlers).
+    """Configure ONLY the bike_router package logger (never root), INFO by default.
 
-    INFO by default (the per-action trail); set BIKE_ROUTER_DEBUG=1 for DEBUG.
+    Own StreamHandler + propagate=False, so our level applies to our code alone and Streamlit's root
+    handler is untouched; set BIKE_ROUTER_DEBUG=1 for DEBUG. Idempotent across reruns.
     """
-    if st.session_state.get("_logging_ready"):
-        return
     level = logging.DEBUG if os.environ.get("BIKE_ROUTER_DEBUG") == "1" else logging.INFO
-    # force=True: Streamlit Cloud pre-installs a root handler, so a plain basicConfig would no-op and
-    # our INFO level would never take — reconfigure the root logger regardless.
-    logging.basicConfig(level=level, format="%(levelname)s %(name)s: %(message)s", force=True)
-    logging.getLogger("bike_router").setLevel(level)
-    logger.setLevel(level)
-    st.session_state._logging_ready = True
+    package_logger = logging.getLogger("bike_router")
+    package_logger.setLevel(level)
+    package_logger.propagate = False  # our level applies to our code alone; root/libraries stay default
+    if not package_logger.handlers:
+        handler = logging.StreamHandler()
+        handler.setFormatter(logging.Formatter("%(levelname)s %(name)s: %(message)s"))
+        package_logger.addHandler(handler)
 
 
 def seed_state() -> None:

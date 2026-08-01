@@ -299,15 +299,19 @@ def test_village_lookup():
 
 
 def test_configure_logging():
-    # Sets up logging ONCE (guarded by a session flag) at INFO by default, so the app's per-action
-    # info trail shows (not just warnings); Streamlit reruns don't stack/re-level handlers.
-    original = logging.getLogger().level
+    # Configures ONLY the bike_router package logger at INFO (info trail visible, not just warnings),
+    # with its own handler + propagate=False; idempotent — reruns don't stack handlers.
+    pkg = logging.getLogger("bike_router")
+    saved = (pkg.level, pkg.propagate, list(pkg.handlers))
     try:
-        with patch.object(app, "st") as fake_st:
-            fake_st.session_state = _State()
+        pkg.handlers.clear()
+        with patch.object(app, "st"):
             app.configure_logging()
-            assert fake_st.session_state["_logging_ready"] is True
-            assert logging.getLogger("bike_router").level == logging.INFO  # info visible by default
-            app.configure_logging()  # second call is a guarded no-op
+            assert pkg.level == logging.INFO and pkg.propagate is False  # info by default, no root cascade
+            assert len(pkg.handlers) == 1
+            app.configure_logging()  # idempotent: still one handler, not stacked
+            assert len(pkg.handlers) == 1
     finally:
-        logging.getLogger().setLevel(original)  # restore root level mutated by force=True
+        pkg.setLevel(saved[0])
+        pkg.propagate = saved[1]
+        pkg.handlers[:] = saved[2]
