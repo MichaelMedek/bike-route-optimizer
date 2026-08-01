@@ -9,15 +9,8 @@ from pathlib import Path
 
 from bike_router.core.constants import PARAM_SPECS, OutputConfig, RoutingParams
 
-# Each PARAM_SPECS field → short filename token (order = the abbreviation order in the stem).
-_PARAM_ABBREV = {
-    "extra_km_per_uphill_100m": "uphill",
-    "extra_km_per_unpaved_km": "unpaved",
-    "extra_km_per_main_road_km": "main",
-    "extra_km_per_rail_km": "rail",
-    "extra_km_per_boarding": "boarding",
-}
-assert set(_PARAM_ABBREV) == {spec.field for spec in PARAM_SPECS}, "abbrev keys must match PARAM_SPECS fields"
+# Each PARAM_SPECS field → short filename token, derived from the ONE source (no duplicated names).
+_PARAM_ABBREV = {spec.field: spec.abbrev for spec in PARAM_SPECS}
 
 
 def slugify(text: str) -> str:

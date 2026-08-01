@@ -269,16 +269,17 @@ class RoutingDefaults:
 
 @dataclass(frozen=True)
 class RoutingParamSpec:
-    """One user-facing routing knob — the SINGLE source both CLI and web read.
+    """One user-facing routing knob — the SINGLE source CLI, web, and filename naming read.
 
-    ``field`` is the RoutingParams attribute / CLI flag name; ``label`` + ``help``
-    drive the web slider and CLI --help; ``default`` seeds both.
+    ``field`` is the RoutingParams attribute / CLI flag name; ``label`` + ``help`` drive the web
+    slider and CLI --help; ``default`` seeds both; ``abbrev`` is the short filename token.
     """
 
     field: str
     label: str
     help: str
     default: float
+    abbrev: str
 
 
 # The five "extra km" preferences, defined ONCE — CLI args and web sliders both iterate this (no
@@ -290,30 +291,35 @@ PARAM_SPECS = (
         label="Hill avoidance (extra km per 100 m climb)",
         help="How far out of your way you'd ride to dodge 100 m of climbing. 0 = shortest route, ignore hills; higher = detour to stay flat.",
         default=12.0,
+        abbrev="uphill",
     ),
     RoutingParamSpec(
         field="extra_km_per_unpaved_km",
         label="Unpaved avoidance (extra km per unpaved km)",
         help="Extra km you'd ride to swap 1 km of gravel/dirt for pavement. 0 = don't avoid unpaved; higher = detour to stay paved.",
         default=1.0,
+        abbrev="unpaved",
     ),
     RoutingParamSpec(
         field="extra_km_per_main_road_km",
         label="Main-road avoidance (extra km per km)",
         help="Extra km you'd ride to swap 1 km of busy road for a quiet one. 0 = don't avoid main roads; higher = detour for quiet ways.",
         default=1.0,
+        abbrev="main",
     ),
     RoutingParamSpec(
         field="extra_km_per_rail_km",
         label="Train-distance cost (extra km per rail km)",
         help="Per-km cost of riding the train, like a fare. 0 = don't mind trains over similar-length biking; higher = avoid long train legs, bike instead.",
         default=1.0,
+        abbrev="rail",
     ),
     RoutingParamSpec(
         field="extra_km_per_boarding",
         label="Train-boarding cost (extra km per boarding)",
         help="Flat cost of getting on a train once (a transfer boards again). 0 = board freely at any station, even multiple train legs; higher = avoid trains however long.",
         default=15.0,
+        abbrev="boarding",
     ),
 )
 
