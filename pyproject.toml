@@ -5,7 +5,7 @@
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]  # so bare `pytest` finds the bike_router package (not just `python -m pytest`)
-addopts = "-q --cov=bike_router --cov=app_webmap --cov=bike_route --cov-report=term-missing --cov-fail-under=93"
+addopts = "-q --cov=bike_router --cov=app_webmap --cov=bike_route --cov-report=term-missing --cov-fail-under=95"
 
 [tool.coverage.run]
 branch = true
