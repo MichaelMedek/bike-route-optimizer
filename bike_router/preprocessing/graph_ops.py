@@ -1,11 +1,7 @@
 """Source-agnostic graph transforms shared by the offline builder and inference.
 
-These operate on an OSMnx-shaped ``nx.MultiDiGraph`` (node attrs ``x``/``y``, edge
-attrs ``length``/``surface``/``highway``/``geometry``) regardless of whether the graph
-came from a pyrosm ``.osm.pbf`` read or a reconstructed corridor subset — so the same
-code path enforces surface filtering, intersection consolidation, and elevation baking
-everywhere (no duplicated logic). Degree-2 contraction happens upstream in pyrosm's
-``to_graph(simplify=True)``.
+Operate on an OSMnx-shaped nx.MultiDiGraph regardless of whether it came from a pyrosm .osm.pbf read or a
+reconstructed corridor — so surface filtering, consolidation, and elevation baking share ONE code path.
 """
 
 import logging
@@ -21,11 +17,9 @@ from bike_router.preprocessing.elevation import DEMService
 logger = logging.getLogger(__name__)
 
 
-# Node/edge attributes pyrosm attaches that COLLIDE with the (osmid) node index or
-# the (u, v, key) edge index when osmnx converts a graph to/from GeoDataFrames.
-# Stripping them makes pyrosm graphs safe for ox.projection / ox.simplification.
-# NOTE: ``geometry`` is deliberately KEPT — the real edge polyline is what makes the
-# 3D path and DEM-draped elevation follow the true road instead of a straight line.
+# pyrosm attaches node/edge attrs that COLLIDE with the (osmid) / (u, v, key) index when osmnx
+# converts to/from GeoDataFrames; stripping them makes pyrosm graphs safe for ox.projection.
+# ``geometry`` is deliberately KEPT — the real polyline drives the 3D path + DEM-draped elevation.
 _PYROSM_NODE_JUNK = ("osmid", "geometry", "tags", "version", "visible", "changeset", "timestamp")
 _PYROSM_EDGE_JUNK = ("osmid", "u", "v", "key", "tags", "version", "timestamp", "osm_type")
 

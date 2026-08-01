@@ -1,8 +1,7 @@
-"""Google Maps directions-URL builder.
+"""Google Maps directions-URL builder (the official `api=1` scheme, travelmode=bicycling).
 
-Uses the official Maps URLs `api=1` scheme: origin + up to 9 intermediate waypoints
-+ destination, travelmode=bicycling. With N=10 Visvalingam-selected points that is
-8 intermediate waypoints, within the api=1 limit.
+Origin + up to 9 intermediate waypoints + destination; with N=10 Visvalingam-selected points
+that is 8 intermediate waypoints, within the api=1 limit.
 """
 
 from urllib.parse import urlencode

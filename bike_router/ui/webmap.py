@@ -1,13 +1,12 @@
-"""Pure helpers for the Streamlit 3D map viewer (app_webmap.py).
+"""Pure helpers for the Streamlit 3D map viewer (unit-testable, no streamlit imports).
 
-Kept out of the UI shell so the map wiring is unit-testable: ribbon points, the
-deck.gl camera for the default/post-route views, and the composition donut chart.
-No streamlit imports here — these are pure builders the app shell merely calls.
+Ribbon points, the deck.gl camera for the default/post-route views, and the composition donut chart —
+pure builders the app shell merely calls.
 """
 
 import math
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING
 
 import altair as alt
@@ -16,15 +15,17 @@ import pandas as pd
 import plotly.graph_objects as go
 
 from bike_router.core.composition import MODE_COLORS, composition_rows
-from bike_router.core.constants import Mode, WebMapConfig
+from bike_router.core.constants import Mode, Palette, WebMapConfig
 from bike_router.core.geo import haversine_vec
-from bike_router.core.simplify import place_label  # single source; re-exported for the app shell
+from bike_router.core.geocoding import as_bahnhof
+from bike_router.core.simplify import place_label, route_station_markers  # place_label re-exported for the app shell
 from bike_router.core.track import (
     RouteStats,
     Track,
     TrackPoint,
     cumulative_km,
     grade_color,
+    project_markers_onto_track,
     segment_color,
 )
 
@@ -70,7 +71,7 @@ def composition_donut(title: str, by_km: dict[str, float], colors: dict[str, str
     return chart
 
 
-def elevation_profile_chart(track: Track, markers: list[tuple[float, float, str]] | None = None) -> go.Figure:
+def elevation_profile_chart(track: Track, markers: list[tuple[float, float, str]] | None) -> go.Figure:
     """Plotly elevation profile: x = distance (km), y = elevation (m); line coloured bike vs train.
 
     One Scatter per MODE run, bike-blue / train-purple via the SAME MODE_DONUT_COLORS as the donut.
@@ -158,7 +159,13 @@ GRADE_SCALE = "grade"  # blue flat / red uphill / green downhill
 
 
 def _point_color(*, point: TrackPoint, scale: str) -> list[int]:
-    """RGB for one point's arriving edge on the chosen scale (both single-sourced in track)."""
+    """RGB for one point's arriving edge on the chosen scale (both single-sourced in track).
+
+    An edge whose displayed elevation is unreliable (long-edge interpolation) is drawn GRAY on both
+    scales, matching the warning banner, so the questionable stretch stands out on the map.
+    """
+    if point.unreliable_elev:
+        return list(Palette.hex_to_rgb(hex_color=Palette.GRAY))
     if scale == QUALITY_SCALE:
         return segment_color(mode=point.mode, surface_bad=point.surface_bad, road_bad=point.road_bad)
     elif scale == GRADE_SCALE:
@@ -198,9 +205,9 @@ def ribbon_width_m(speed_kmh: float) -> float:
 
 def route_ribbon_segments(
     track: Track,
-    float_above_m: float = WebMapConfig.RIBBON_FLOAT_ABOVE_M,
-    rail_tooltips: list[str] | None = None,
-    color_scale: str = QUALITY_SCALE,
+    float_above_m: float,
+    rail_tooltips: list[str] | None,
+    color_scale: str,
 ) -> list[RibbonSegment]:
     """Split the route into contiguous runs sharing one colour + width + tooltip, for rendering.
 
@@ -228,7 +235,9 @@ def route_ribbon_segments(
         if point.mode == str(Mode.RAIL):
             if prev_mode != str(Mode.RAIL):
                 rail_run += 1
-            tooltip = tips[rail_run] if rail_run < len(tips) else "Train"
+            # None tooltips → generic "Train" (documented dual-state); but if tooltips ARE supplied
+            # they must cover every rail run — a shortfall is track-vs-rail_legs drift, so index strict.
+            tooltip = "Train" if rail_tooltips is None else tips[rail_run]
         else:
             tooltip = _segment_tooltip(point=point)
         prev_mode = point.mode
@@ -311,13 +320,62 @@ SET_LABEL = "📍 Set start & end"
 COMPUTE_LABEL = "🧭 Compute route"
 
 
-def _waypoint_label(*, index: int, lat: float, lon: float, village_of: "Callable[[float, float], str | None]") -> str:
-    """A gmaps waypoint's name: its village (reverse-geocoded) else ``Waypoint #N`` (1-indexed).
+def _named_waypoints(
+    *, waypoints: list[tuple[float, float]], village_of: "Callable[[float, float], str | None]"
+) -> list[tuple[float, float, str]]:
+    """(lat, lon, name) for each gmaps waypoint that reverse-geocodes to a REAL place name.
 
-    Never None — an unnamed waypoint is KEPT with its number so the map, the elevation profile, and
-    the Google-Maps legs always show the EXACT same interior points (one fell out before when unnamed).
+    Unnamed waypoints are dropped — the map + elevation profile show only real names (the Google-Maps
+    legs and the debug PNG still keep EVERY waypoint). One filter, shared by both display builders.
     """
-    return village_of(lat, lon) or f"Waypoint #{index}"
+    named = []
+    for lat, lon in waypoints:
+        name = village_of(lat, lon)
+        if name:
+            named.append((lat, lon, name))
+    return named
+
+
+def picked_station_name(event: object) -> str | None:
+    """The clicked top-station's name from an st_deckgl click event, or None for any other click.
+
+    st_deckgl spreads the picked datum at TOP LEVEL and stamps ``eventType`` as deck.gl's
+    ``"deck-click-event"`` (NOT "click"); only that event with a non-empty ``name`` yields a value.
+    """
+    if not isinstance(event, dict) or event.get("eventType") != WebMapConfig.DECK_CLICK_EVENT:
+        return None
+    name = event.get("name")
+    return name if isinstance(name, str) and name else None
+
+
+def station_click_pending(*, event: object, last_applied: str | None) -> str | None:
+    """The "<station> Bahnhof" Start-box value for a top-station click, or None (no click / applied).
+
+    Fills the Bahnhof form (as_bahnhof) so it snaps to the platform, not the town centre. st_deckgl
+    re-returns the last event each rerun, so apply only when it differs from last_applied (dedup).
+    """
+    name = picked_station_name(event)
+    if name is None:
+        return None
+    pending = as_bahnhof(name=name)
+    return pending if pending != last_applied else None
+
+
+def swapped_endpoint_state(state: dict[str, object]) -> dict[str, object]:
+    """The session-state updates that swap Start ↔ End: box texts, resolved names, snapped latlons.
+
+    Pure mapping (no Streamlit) so the swap is unit-tested; the app applies the result to
+    st.session_state. The previous route ran the other direction, so it is cleared to None.
+    """
+    return {
+        "start_box": state["end_box"],
+        "end_box": state["start_box"],
+        "start_box_resolved": state["end_box_resolved"],
+        "end_box_resolved": state["start_box_resolved"],
+        "start_latlon": state["end_latlon"],
+        "end_latlon": state["start_latlon"],
+        "result": None,
+    }
 
 
 def compute_gate(
@@ -354,13 +412,22 @@ def endpoint_labels(
     )
 
 
-def map_remount_key(*, camera_epoch: int) -> str:
-    """The st_deckgl remount key — bumped ONLY when the camera must move (Set start & end).
+def flattened_view(view: ViewState) -> ViewState:
+    """The same camera looking straight down (pitch 0) — deck.gl picking is unreliable under pitch.
 
-    Recolours/fresh ribbons are just new layer DATA repainted in place; folding them in forced a
-    remount that flashes white before WebGL repaints (the "white on first toggle" bug).
+    The sister ski-resort project sets VIEWING_PITCH=0 for exactly this reason ("tilted views cause
+    terrain click issues"); we flatten only while clickable top-station markers are shown.
     """
-    return f"bike_map_{camera_epoch}"
+    return replace(view, pitch=0.0)
+
+
+def map_remount_key(*, camera_epoch: int, top_down: bool) -> str:
+    """The st_deckgl remount key — bumped when the camera must move (Set) OR the pitch flips.
+
+    The map is ALWAYS the same 3D terrain deck; only the camera PITCH flips (top-down for reliable
+    click-picking when top-stations show, else tilted), and a pitch change needs a remount to apply.
+    """
+    return f"bike_map_{camera_epoch}_{'topdown' if top_down else 'tilted'}"
 
 
 def scale_label(scale: str) -> str:
@@ -405,24 +472,19 @@ def profile_markers(
 ) -> list[tuple[float, float, str]]:
     """(distance_km, elevation_m, label) for every named marker on the elevation profile.
 
-    Endpoints use the typed names, stations their names; EVERY interior gmaps waypoint is kept
-    (village_of name, else the WAYPOINT_FALLBACK) so profile/map/Maps show the SAME points.
+    Endpoints use the typed names, stations their names; interior gmaps waypoints appear ONLY when
+    they reverse-geocode to a real name (unnamed ones are dropped — see _named_waypoints).
     """
-    from bike_router.core.track import project_markers_onto_track
-
     markers = [(start_latlon[0], start_latlon[1], start_name), (end_latlon[0], end_latlon[1], end_name)]
     markers += [(lat, lon, label) for lat, lon, _elev, label in _station_marker_points(result=result)]
     markers += [
-        (lat, lon, _waypoint_label(index=i, lat=lat, lon=lon, village_of=village_of))
-        for i, (lat, lon) in enumerate(result.waypoints, start=1)
+        (lat, lon, name) for lat, lon, name in _named_waypoints(waypoints=result.waypoints, village_of=village_of)
     ]
     return project_markers_onto_track(track=result.track, markers=markers)
 
 
 def _station_marker_points(*, result: "RouteResult") -> list[tuple[float, float, float, str]]:
     """Station markers for the route (delegates to the core single source)."""
-    from bike_router.core.simplify import route_station_markers
-
     return route_station_markers(rail_legs=result.rail_legs)
 
 
@@ -431,15 +493,14 @@ def map_waypoint_markers(
 ) -> list[tuple[float, float, float, str]]:
     """(lat, lon, elevation_m, label) for every INTERMEDIATE map marker — stations + gmaps waypoints.
 
-    EVERY interior gmaps waypoint is kept (village_of name, else WAYPOINT_FALLBACK) so the map shows
-    the SAME points as the profile AND the Google-Maps legs; elevation snaps to the nearest track point.
+    Interior waypoints appear ONLY when they reverse-geocode to a real name (unnamed dropped — see
+    _named_waypoints); elevation snaps to the nearest track point. Maps legs + debug PNG keep all.
     """
     markers = list(_station_marker_points(result=result))
     points = result.track.points
     plats = np.array([p.lat for p in points], dtype=np.float64)
     plons = np.array([p.lon for p in points], dtype=np.float64)
-    for i, (lat, lon) in enumerate(result.waypoints, start=1):
-        name = _waypoint_label(index=i, lat=lat, lon=lon, village_of=village_of)
+    for lat, lon, name in _named_waypoints(waypoints=result.waypoints, village_of=village_of):
         idx = int(haversine_vec(lat_a=lat, lon_a=lon, lat_b=plats, lon_b=plons).argmin())
         elev = points[idx].elevation_m
         markers.append((lat, lon, elev, place_label(name=name, elevation_m=elev)))

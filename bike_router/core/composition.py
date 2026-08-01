@@ -1,9 +1,7 @@
 """Route composition — the THREE donut breakdowns (quality / grade / mode), one source.
 
-Built once from the Track and consumed identically in all three places: the Streamlit donuts,
-the PNG overlay text, and the CLI stdout. ``composition_rows`` is the ONE helper — donuts render
-its (title, km, colour) rows, and ``format_composition`` prints the exact same rows as text, so
-the three can never drift (they used to: donuts showed quality/grade/mode, text showed surface/road/mode).
+Built once from the Track, consumed identically by the Streamlit donuts, PNG overlay, and CLI:
+``composition_rows`` yields (title, km, colour) rows, ``format_composition`` prints them — no drift.
 """
 
 from collections.abc import Callable

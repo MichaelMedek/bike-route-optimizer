@@ -1,34 +1,7 @@
-"""Per-edge cost in intuitive "extra kilometres".
+"""Per-edge cost in intuitive "extra kilometres" (real length + user-controlled penalties).
 
-The cost of a directed BIKE edge is its real length plus three user-controlled
-penalties, all measured in metres so they add cleanly:
-
-    cost = length
-         + uphill_penalty     = (climb_m / 100) * extra_km_per_uphill_100m   * 1000
-         + unpaved_penalty    = surface_tier * extra_km_per_unpaved_km       * length/1000 * 1000
-         + main_road_penalty  = road_tier * extra_km_per_main_road_km        * length/1000 * 1000
-
-A RAIL edge instead costs only a per-km rail charge (slider-controlled, in the same
-"extra km" currency), with NO terrain penalties — a train doesn't care about
-hills/surface/traffic. The boarding charge is NOT here; it lives on the two station
-edges (see below), so a board→ride→alight pays it exactly once each way:
-
-    cost = extra_km_per_rail_km * length/1000 * 1000
-
-A STATION edge (bike node ↔ station node) costs its straight-line length PLUS HALF the
-boarding charge. Entry (board) + exit (alight) each carry half, so any use of a station
-sums to the full boarding hassle — which also makes cycling THROUGH a station (in one
-entrance, out another) cost a full boarding, naturally deterring cut-through. With the
-boarding slider at 0 a cut-through is free; we accept that (the felt cost is honest):
-
-    cost = length + 0.5 * extra_km_per_boarding * 1000
-
-Each `extra_km_*` is how many extra virtual kilometres the rider will accept to
-avoid one unit of the bad thing. All penalties are >= 0, so the cheapest possible
-edge is pure distance — which keeps the A* great-circle heuristic admissible.
-
-Because the graph is directed, only the uphill direction of a street is penalised
-(the downhill direction has climb_m = 0), so uphill costs more (flat-preferring).
+BIKE edges add uphill/unpaved/main-road penalties (metres); RAIL edges cost only a per-km rail
+charge; STATION edges add half the boarding charge each way. All penalties ≥ 0 → A* heuristic stays admissible.
 """
 
 import math

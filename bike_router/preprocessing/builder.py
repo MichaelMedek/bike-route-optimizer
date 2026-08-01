@@ -1,9 +1,7 @@
 """Offline builder: a whole-region bike+rail graph from Geofabrik .osm.pbf extracts.
 
-Builds the cycling network and the rail track network INDEPENDENTLY via one shared pyrosm
-builder (only the filter differs), bakes DEM elevation, then merges them into one graph by
-wiring each station (a separate rail node) to its nearest bike nodes with station edges.
-Returns node/edge tables; the routing sliders decide if A* uses rail.
+Builds cycling + rail networks INDEPENDENTLY via one shared pyrosm builder, bakes DEM elevation, then
+merges them by wiring each station to its nearest bike nodes. Returns node/edge tables.
 """
 
 import logging
@@ -275,10 +273,9 @@ def _merge_bike_rail(bike_graph: nx.MultiDiGraph, rail_graph: nx.MultiDiGraph, o
         # Declare the nearest N bike nodes its entrances; each STATION edge costs straight-line length
         # + half the boarding charge (cost.py), so board + alight sum to a full boarding.
         entrances = _station_entrances(node_ids=bike_ids, node_lats=bike_lats, node_lons=bike_lons, lat=lat, lon=lon)
-        # A station with NO bike node within radius is rail-reachable but has no bike entrance — WARN, not
-        # fail: measured on real data, rural halts (e.g. Langen(Han) 494 m, Debstedt 342 m) sit on the rail
-        # with the nearest MAPPED road 200–500 m away (OSM sparsity, not a build bug). It stays as a
-        # train-only stop; a neighbouring region may still supply an entrance after Phase-3 stitching.
+        # A station with NO bike node within radius is rail-reachable but has no bike entrance — WARN,
+        # not fail: rural halts sit on the rail with the nearest mapped road 200–500 m away (OSM sparsity).
+        # It stays train-only; a neighbouring region may still supply an entrance after Phase-3 stitching.
         if not entrances:
             logger.warning(
                 f"station {name!r} at ({lat:.5f}, {lon:.5f}) has no bike node within "

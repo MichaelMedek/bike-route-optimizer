@@ -1,8 +1,7 @@
-"""Geodesic helpers — great-circle (Haversine) distance.
+"""Geodesic helpers — great-circle (Haversine) distance (scalar + vectorized).
 
-Refined from ski-resort-designer's `core/geo_calculator.py` (scalar + vectorized
-Haversine), dropping unused bearing code. Coords are WGS84 decimal degrees,
-distances metres, Earth a sphere of radius 6,371 km. Used by the A* heuristic.
+Coords are WGS84 decimal degrees, distances metres, Earth a sphere of radius 6,371 km.
+Used by the A* heuristic.
 """
 
 import numpy as np

@@ -66,6 +66,11 @@ class RailConfig:
     STATION_MAX_ENTRANCES = 5  # declare up to this many nearest bike nodes as entrances
     RAIL_TAGS = ("rail", "light_rail", "narrow_gauge")  # OSM railway= values kept as routable track
     STATION_TAGS = ("station", "halt")  # OSM railway= values treated as boardable stops
+    # A "top" station is a local high point graded by the TWO standard mountaineering measures
+    # Dominanz (topographic isolation): it must be the highest station within this radius.
+    # Schartenhöhe (prominence): it must rise this far above the LOWEST station in that radius.
+    TOP_STATION_DOMINANCE_KM = 10.0
+    TOP_STATION_PROMINENCE_M = 100.0
 
 
 class GraphConfig:
@@ -148,6 +153,7 @@ class Palette:
     RAIL = "#9600c8"  # purple — trains only
     START = "#0096ff"  # blue — start marker
     END = "#00e5ff"  # cyan — destination marker
+    GRAY = "#8a8a8a"  # edge whose displayed elevation is unreliable (long-edge interpolation warning)
 
     # Route-segment CONDITION → hex, the road-QUALITY scale (3 bike colours + train purple).
     # "main road + unpaved" folds into the main-road red (a main road is the dominant hazard).
@@ -275,10 +281,9 @@ class RoutingParamSpec:
     default: float
 
 
-# The five "extra km" preferences, defined ONCE. CLI args and web sliders both iterate
-# this — no duplicated label/default/help anywhere. Each value is a DETOUR willingness:
-# extra km you'd add on top of the real distance to avoid one unit of the bad thing; 0
-# never means "free" (the thing still costs its real distance) — it means "don't detour".
+# The five "extra km" preferences, defined ONCE — CLI args and web sliders both iterate this (no
+# duplicated label/default/help). Each value is a DETOUR willingness: extra km you'd add to avoid one
+# unit of the bad thing; 0 means "don't detour" (the thing still costs its real distance), not "free".
 PARAM_SPECS = (
     RoutingParamSpec(
         field="extra_km_per_uphill_100m",
@@ -351,6 +356,7 @@ class GradeConfig:
     """
 
     MARGIN = 0.02  # rise/run: |grade| BELOW this reads as flat (so only ~-1/0/+1% is flat, ≥2% slopes)
+    ELEVATION_DEVIATION_WARN_M = 50.0  # warn the user and gray that edge if below or above the ground
 
 
 class SpeedConfig:
@@ -372,7 +378,7 @@ class GmapsConfig:
     MAX_INTERMEDIATE_WAYPOINTS = 9  # hard Google Maps api=1 limit
     # Interior waypoints closer than this to the previous kept point are dropped, so a
     # short leg isn't cluttered with near-identical points (origin + destination always kept).
-    MIN_WAYPOINT_SPACING_KM = 1.0
+    MIN_WAYPOINT_SPACING_KM = 5.0
     BASE_URL = "https://www.google.com/maps/dir/?api=1"
     TRAVEL_MODE = "bicycling"
 
@@ -410,7 +416,12 @@ class PhotonConfig:
     LANG = "de"
     LIMIT = 3  # max autocomplete suggestions shown under a place box
     PLACE_OSM_TAG = "place"  # settlements, not POIs
+    # Reverse geocoding restricted to real populated places (via repeated osm_tag).
+    REVERSE_PLACE_TAGS = ("place:city", "place:town", "place:village", "place:suburb")
+    STATION_OSM_TAG = "railway:station"  # railway stations (Bahnhof) — proposed first as they're the top picks
     TIMEOUT_S = 3.0
+    # Reverse-geocode search radius (km, Photon allows 0–5000).
+    REVERSE_RADIUS_KM = 10.0
 
 
 class GpxConfig:
@@ -444,10 +455,9 @@ class WebMapConfig:
     DEFAULT_BEARING = 0.0
     # Rendered map height in the browser, pixels.
     MAP_HEIGHT_PX = 600
-    # Route ribbon floats above the terrain mesh. BIKE segments size their WIDTH by pipe-flow
-    # (water in a pipe: area×speed conserved, width = diameter so area ∝ width² → width ∝ 1/√speed):
-    # a segment at RIBBON_REF_SPEED_KMH draws RIBBON_REF_WIDTH_M, 4× slower → 2× wider. RAIL and
-    # STATION segments draw the fixed RIBBON_REF_WIDTH_M (a train's pace isn't rider "effort").
+    # Route ribbon floats above the terrain mesh. BIKE segments size WIDTH by pipe-flow (area×speed
+    # conserved, width ∝ 1/√speed): RIBBON_REF_SPEED_KMH draws RIBBON_REF_WIDTH_M, 4× slower → 2× wider.
+    # RAIL + STATION segments draw the fixed RIBBON_REF_WIDTH_M (a train's pace isn't rider effort).
     RIBBON_FLOAT_ABOVE_M = 100.0
     RIBBON_REF_SPEED_KMH = 20.0
     RIBBON_REF_WIDTH_M = 40.0  # wide so the route reads clearly against the terrain texture
@@ -479,3 +489,6 @@ class WebMapConfig:
     TERRAIN_TILES_URL = "https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png"
     TERRAIN_ELEVATION_DECODER = {"rScaler": 256, "gScaler": 1, "bScaler": 1 / 256, "offset": -32768}
     TEXTURE_TILES_URL = "https://a.tile.opentopomap.org/{z}/{x}/{y}.png"
+    # st_deckgl stamps a picked-datum event with deck.gl's OWN name — "deck-click-event", NOT
+    # "click" (the frontend maps events=["click"] → "deck-click-event"). picked_station_name gates on it.
+    DECK_CLICK_EVENT = "deck-click-event"

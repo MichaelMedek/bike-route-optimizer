@@ -1,9 +1,7 @@
-"""Spatial corridor ("Schlauch") generation.
+"""Spatial corridor ("Schlauch") generation — buffer the start→dest line into a tube.
 
-Buffers the start→dest line into a tube (avoids bbox Overpass 429s). Isotropic in
-km: scale lon by cos(lat) into a metric frame, buffer, scale back — so N-S and E-W
-get equal real width. One agnostic function serves both the tight bike tube and the
-wide rail tube; only half_width_km/extend_km differ.
+Isotropic in km: scale lon by cos(lat) into a metric frame, buffer, scale back (equal N-S/E-W width).
+One agnostic function serves both the tight bike tube and the wide rail tube; only the widths differ.
 """
 
 import math
@@ -44,14 +42,15 @@ def build_corridor(
     # Work in a frame where 1 unit ≈ 1° lat in both axes: pre-scale lon by cos(lat).
     ax, ay = start_lon * lon_scale, start_lat
     bx, by = dest_lon * lon_scale, dest_lat
-    # Extend the segment past both endpoints along its own direction.
+    # Extend the segment past both endpoints along its own direction. Coincident endpoints are an
+    # upstream invariant violation (plan_route rejects trips < MIN_TRIP_KM), so let length==0 raise.
     dx, dy = bx - ax, by - ay
     length = math.hypot(dx, dy)
-    if length > 0:
-        ux, uy = dx / length, dy / length
-        ext_deg = extend_km / km_per_deg
-        ax, ay = ax - ux * ext_deg, ay - uy * ext_deg
-        bx, by = bx + ux * ext_deg, by + uy * ext_deg
+    assert length > 0, f"coincident start/dest → degenerate corridor ({length=}); upstream must reject short trips"
+    ux, uy = dx / length, dy / length
+    ext_deg = extend_km / km_per_deg
+    ax, ay = ax - ux * ext_deg, ay - uy * ext_deg
+    bx, by = bx + ux * ext_deg, by + uy * ext_deg
 
     line = LineString([(ax, ay), (bx, by)])
     radius_deg = half_width_km / km_per_deg

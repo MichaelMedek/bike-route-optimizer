@@ -1,8 +1,7 @@
 """Route-planning pipeline orchestration.
 
-Loads the corridor subset of the prebuilt DACH bike+rail graph (elevations + baked 3D
-geometry already carry all terrain) and computes ONE route per RoutingParams. A single
-Track feeds the GPX, stats, and debug PNG so every number agrees; no DEM at inference.
+Loads the corridor subset of the prebuilt graph (elevations + baked 3D geometry carry all terrain)
+and computes ONE route per RoutingParams; a single Track feeds GPX, stats, and PNG. No DEM at inference.
 """
 
 import logging
@@ -12,7 +11,7 @@ from pathlib import Path
 from shapely.geometry import Polygon
 
 from bike_router.core.composition import RouteComposition, format_composition, route_composition
-from bike_router.core.constants import CorridorConfig, GmapsConfig, GpxConfig, GraphConfig, RoutingParams
+from bike_router.core.constants import CorridorConfig, GmapsConfig, GpxConfig, PlotConfig, RoutingParams
 from bike_router.core.corridor import build_corridor
 from bike_router.core.cost import edge_cost_array
 from bike_router.core.errors import (
@@ -25,10 +24,18 @@ from bike_router.core.geo import haversine_distance_m
 from bike_router.core.geocoding import geocode_endpoint, make_geocode_fn
 from bike_router.core.gmaps import build_gmaps_url
 from bike_router.core.gpx_export import build_gpx
-from bike_router.core.graph_store import load_meta, load_path_edges, load_route_tables, snap_to_node
+from bike_router.core.graph_store import (
+    _ROUTE_EDGE_COLS,
+    _ROUTE_NODE_COLS,
+    download_graph_from_hf,
+    load_meta,
+    load_path_edges,
+    load_route_tables,
+    snap_to_node,
+)
 from bike_router.core.naming import route_output_paths
 from bike_router.core.plotting import plot_route_debug
-from bike_router.core.progress import log_rss
+from bike_router.core.progress import log_rss, null_progress
 from bike_router.core.route_graph import RouteGraph, shortest_path
 from bike_router.core.sanity import check_cost_model
 from bike_router.core.simplify import (
@@ -86,7 +93,7 @@ def _geocode_both(*, origin: str, destination: str) -> tuple[tuple[float, float]
 
 
 def resolve_endpoints(
-    *, origin: str, destination: str, graph_dir: Path = GraphConfig.GRAPH_DIR
+    *, origin: str, destination: str, graph_dir: Path
 ) -> tuple[tuple[float, float, float], tuple[float, float, float]]:
     """Geocode two place strings and snap each to the nearest graph node.
 
@@ -120,7 +127,11 @@ def _route_node_path(
     ~2.8 KB for networkx), freeing corridor tables before return; raises RouteTooLargeError past the cap.
     """
     nodes_df, edges_df = load_route_tables(
-        bike_corridor=bike_corridor, rail_corridor=rail_corridor, graph_dir=graph_dir
+        bike_corridor=bike_corridor,
+        rail_corridor=rail_corridor,
+        graph_dir=graph_dir,
+        node_columns=_ROUTE_NODE_COLS,
+        edge_columns=_ROUTE_EDGE_COLS,
     )
     log_rss(label=f"corridor tables loaded ({len(edges_df)} edges)")
     if len(edges_df) > CorridorConfig.MAX_ROUTE_EDGES:
@@ -167,7 +178,7 @@ def plan_route(
     origin: str,
     destination: str,
     params: RoutingParams,
-    graph_dir: Path = GraphConfig.GRAPH_DIR,
+    graph_dir: Path,
 ) -> RouteResult:
     """Compute a single route between origin and destination for ``params``.
 
@@ -242,7 +253,7 @@ def plan_route(
 
     gpx_path, png_path = route_output_paths(origin=origin, destination=destination, params=params)
     gpx_path.parent.mkdir(parents=True, exist_ok=True)
-    gpx_path.write_text(build_gpx(track=track))
+    gpx_path.write_text(build_gpx(track=track, start_time=None, track_name="Optimized bike route"))
     logger.info(f"Wrote {gpx_path} ({len(track.points)} trackpoints)")
 
     # Train rides first (boarding + alighting station per ride) — they both label the bike
@@ -286,6 +297,8 @@ def plan_route(
         origin=origin,
         destination=destination,
         composition=composition,
+        cmap_name=PlotConfig.CMAP,
+        dpi=PlotConfig.DPI,
     )
     assert gpx_path.exists() and png_path.exists(), "GPX and PNG must be written"
 
@@ -324,3 +337,14 @@ def format_cli_report(result: RouteResult) -> str:
         for label, leg in zip(format_bike_legs(bike_legs=result.bike_legs), result.bike_legs, strict=True)
     ]
     return "\n".join(lines)
+
+
+def run_route(*, origin: str, destination: str, params: RoutingParams, graph_dir: Path) -> str:
+    """Download the graph, plan the route, and return the CLI report string (no argparse, no printing).
+
+    The testable orchestration behind the CLI; bike_route.py owns argument parsing + stdout. Expected
+    failures raise BikeRouterError, whose class name + message already explain the problem.
+    """
+    download_graph_from_hf(target_dir=graph_dir, progress=null_progress)  # prints its own progress
+    result = plan_route(origin=origin, destination=destination, params=params, graph_dir=graph_dir)
+    return format_cli_report(result=result)

@@ -1,9 +1,7 @@
 """Build-time GeoParquet writer + MultiDiGraph ↔ tables round-trip (dataset preprocessing).
 
-Split out of the runtime graph_store: these functions run ONLY offline (the region build,
-Phase-3 combine, Phase-4 validation) and pull in networkx. Inference never imports this —
-it reads tiles + builds a compact RoutePath, keeping the runtime import graph networkx-light.
-The tile helpers, schemas, and ``_str_or_none`` live in graph_store (shared read side).
+Runs ONLY offline (region build, Phase-3 combine, Phase-4 validation) and pulls in networkx; inference
+never imports this, keeping the runtime import graph networkx-light. Tile helpers/schemas live in graph_store.
 """
 
 import json
@@ -33,7 +31,7 @@ def compute_bbox(nodes_df: pd.DataFrame) -> tuple[float, float, float, float]:
 
 
 def write_graph_parquet(
-    nodes_df: pd.DataFrame, edges_df: pd.DataFrame, meta: dict[str, Any], out_dir: Path, compression: str = "snappy"
+    nodes_df: pd.DataFrame, edges_df: pd.DataFrame, meta: dict[str, Any], out_dir: Path, compression: str
 ) -> None:
     """Write node/edge tables as lat/lon-tiled Parquet + meta.json under ``out_dir``.
 
@@ -89,12 +87,12 @@ def read_region_tables(region_dir: Path) -> tuple[pd.DataFrame, pd.DataFrame]:
     Used by the Phase-3 combine step to re-load each per-region artifact written by
     write_graph_parquet. Returns (nodes_df, edges_df) with the standard schemas.
     """
-    nodes_df = _read_tiles(region_dir / GraphConfig.NODES_SUBDIR, columns=_NODE_COLS)
-    edges_df = _read_tiles(region_dir / GraphConfig.EDGES_SUBDIR, columns=_EDGE_COLS)
+    nodes_df = _read_tiles(region_dir / GraphConfig.NODES_SUBDIR, columns=_NODE_COLS, tiles=None, filters=None)
+    edges_df = _read_tiles(region_dir / GraphConfig.EDGES_SUBDIR, columns=_EDGE_COLS, tiles=None, filters=None)
     return nodes_df, edges_df
 
 
-def read_full_graph(graph_dir: Path = GraphConfig.GRAPH_DIR) -> nx.MultiDiGraph:
+def read_full_graph(graph_dir: Path) -> nx.MultiDiGraph:
     """Reconstruct the WHOLE graph from every tile of an artifact (Phase-4 validation).
 
     Unlike the corridor load (which reads only a corridor's covering tiles), this loads

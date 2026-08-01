@@ -72,10 +72,32 @@ def test_plot_route_debug(tmp_path: Path):
     # Renders the debug PNG headlessly; also covers the uniform-elevation (vmin == vmax) branch.
     route = make_line_route()
     out_path = tmp_path / "route.png"
-    plot_route_debug(route=route, track=build_track(route=route), params=DEFAULT_PARAMS, out_path=str(out_path), dpi=50)
+    plot_route_debug(
+        route=route,
+        track=build_track(route=route),
+        params=DEFAULT_PARAMS,
+        out_path=str(out_path),
+        marker_points=None,
+        origin="Start",
+        destination="End",
+        composition=None,
+        cmap_name=PlotConfig.CMAP,
+        dpi=50,
+    )
     assert out_path.exists() and out_path.stat().st_size > 0
 
     flat = replace(route, nodes=[replace(node, elevation_m=500.0) for node in route.nodes])  # vmin == vmax
     flat_path = tmp_path / "flat.png"
-    plot_route_debug(route=flat, track=build_track(route=flat), params=DEFAULT_PARAMS, out_path=str(flat_path), dpi=50)
+    plot_route_debug(
+        route=flat,
+        track=build_track(route=flat),
+        params=DEFAULT_PARAMS,
+        out_path=str(flat_path),
+        marker_points=None,
+        origin="Start",
+        destination="End",
+        composition=None,
+        cmap_name=PlotConfig.CMAP,
+        dpi=50,
+    )
     assert flat_path.exists()

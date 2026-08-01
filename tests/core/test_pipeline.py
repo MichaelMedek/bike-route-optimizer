@@ -79,7 +79,9 @@ def _wire_offline(monkeypatch, tmp_path, *, nodes_df, edges_df, route: RoutePath
     # The CSR router loads corridor tables then re-reads the chosen path's edges into a RoutePath —
     # stub BOTH with the fixtures so the whole flow runs offline (no dataset).
     monkeypatch.setattr(
-        pipeline, "load_route_tables", lambda bike_corridor, rail_corridor, graph_dir: (nodes_df, edges_df)
+        pipeline,
+        "load_route_tables",
+        lambda bike_corridor, rail_corridor, graph_dir, node_columns, edge_columns: (nodes_df, edges_df),
     )
     monkeypatch.setattr(pipeline, "load_path_edges", lambda path_nodes, params, graph_dir: route)
     monkeypatch.setattr(
@@ -90,7 +92,7 @@ def _wire_offline(monkeypatch, tmp_path, *, nodes_df, edges_df, route: RoutePath
 def test_plan_route(tmp_path: Path, monkeypatch):
     nodes_df, edges_df = _line_tables()
     _wire_offline(monkeypatch, tmp_path, nodes_df=nodes_df, edges_df=edges_df, route=make_line_route())
-    result = pipeline.plan_route(origin="Start", destination="End", params=DEFAULT_PARAMS)
+    result = pipeline.plan_route(origin="Start", destination="End", params=DEFAULT_PARAMS, graph_dir=FIXTURE_GRAPH_DIR)
 
     assert len(result.bike_legs) == 1  # pure-bike line graph → exactly one pedalled leg
     leg = result.bike_legs[0]
@@ -117,7 +119,7 @@ def test_plan_route_rejects_too_short_trip(monkeypatch):
         lambda place, label, geocode_fn: (48.0, 8.0) if label == "Start" else (48.001, 8.0),
     )
     with pytest.raises(TripTooShortError):
-        pipeline.plan_route(origin="A", destination="B", params=DEFAULT_PARAMS)
+        pipeline.plan_route(origin="A", destination="B", params=DEFAULT_PARAMS, graph_dir=FIXTURE_GRAPH_DIR)
 
 
 def test_plan_route_rejects_too_far_trip(monkeypatch):
@@ -131,7 +133,7 @@ def test_plan_route_rejects_too_far_trip(monkeypatch):
         lambda place, label, geocode_fn: (48.0, 8.0) if label == "Start" else (far_lat, 8.0),
     )
     with pytest.raises(TripTooLongError):
-        pipeline.plan_route(origin="A", destination="B", params=DEFAULT_PARAMS)
+        pipeline.plan_route(origin="A", destination="B", params=DEFAULT_PARAMS, graph_dir=FIXTURE_GRAPH_DIR)
 
 
 def test_plan_route_propagates_geocode_error(monkeypatch):
@@ -141,7 +143,9 @@ def test_plan_route_propagates_geocode_error(monkeypatch):
     monkeypatch.setattr(pipeline, "make_geocode_fn", lambda: lambda place: None)
     monkeypatch.setattr(pipeline, "geocode_endpoint", _boom)
     with pytest.raises(GeocodeConnectionError):
-        pipeline.plan_route(origin="Nowhere", destination="Elsewhere", params=DEFAULT_PARAMS)
+        pipeline.plan_route(
+            origin="Nowhere", destination="Elsewhere", params=DEFAULT_PARAMS, graph_dir=FIXTURE_GRAPH_DIR
+        )
 
 
 def test_plan_route_rejects_outside_coverage(monkeypatch):
@@ -160,7 +164,7 @@ def test_plan_route_rejects_outside_coverage(monkeypatch):
 
     monkeypatch.setattr(pipeline, "_assert_within_coverage", _outside)
     with pytest.raises(OutOfCoverageError, match="coverage"):
-        pipeline.plan_route(origin="Start", destination="End", params=DEFAULT_PARAMS)
+        pipeline.plan_route(origin="Start", destination="End", params=DEFAULT_PARAMS, graph_dir=FIXTURE_GRAPH_DIR)
 
 
 def test_plan_route_no_route_raises_no_route_error(tmp_path: Path, monkeypatch):
@@ -175,7 +179,7 @@ def test_plan_route_no_route_raises_no_route_error(tmp_path: Path, monkeypatch):
     )
     _wire_offline(monkeypatch, tmp_path, nodes_df=nodes_df, edges_df=edges_df, route=make_line_route())
     with pytest.raises(NoRouteError):
-        pipeline.plan_route(origin="Start", destination="End", params=DEFAULT_PARAMS)
+        pipeline.plan_route(origin="Start", destination="End", params=DEFAULT_PARAMS, graph_dir=FIXTURE_GRAPH_DIR)
 
 
 def test_plan_route_rejects_corridor_over_edge_cap(tmp_path: Path, monkeypatch):
@@ -185,7 +189,7 @@ def test_plan_route_rejects_corridor_over_edge_cap(tmp_path: Path, monkeypatch):
     _wire_offline(monkeypatch, tmp_path, nodes_df=nodes_df, edges_df=edges_df, route=make_line_route())
     monkeypatch.setattr(CorridorConfig, "MAX_ROUTE_EDGES", 2)  # line graph has 4 edges > 2
     with pytest.raises(RouteTooLargeError, match="too large"):
-        pipeline.plan_route(origin="Start", destination="End", params=DEFAULT_PARAMS)
+        pipeline.plan_route(origin="Start", destination="End", params=DEFAULT_PARAMS, graph_dir=FIXTURE_GRAPH_DIR)
 
 
 def test_resolve_endpoints(monkeypatch):
@@ -196,7 +200,7 @@ def test_resolve_endpoints(monkeypatch):
         pipeline, "geocode_endpoint", lambda place, label, geocode_fn: (48.0, 8.0) if label == "Start" else (48.5, 8.5)
     )
     monkeypatch.setattr(pipeline, "snap_to_node", lambda lat, lon, graph_dir: (lat + 0.001, lon + 0.001, 200.0))
-    start, end = pipeline.resolve_endpoints(origin="Freudenstadt", destination="Pforzheim")
+    start, end = pipeline.resolve_endpoints(origin="Freudenstadt", destination="Pforzheim", graph_dir=FIXTURE_GRAPH_DIR)
     assert start == (48.001, 8.001, 200.0)
     assert end == (48.501, 8.501, 200.0)
 
@@ -206,7 +210,9 @@ class TestRouteResult:
         # The pipeline's return bundle: track + written artifact paths + bike/rail legs + composition.
         nodes_df, edges_df = _line_tables()
         _wire_offline(monkeypatch, tmp_path, nodes_df=nodes_df, edges_df=edges_df, route=make_line_route())
-        result = pipeline.plan_route(origin="Start", destination="End", params=DEFAULT_PARAMS)
+        result = pipeline.plan_route(
+            origin="Start", destination="End", params=DEFAULT_PARAMS, graph_dir=FIXTURE_GRAPH_DIR
+        )
         assert isinstance(result, pipeline.RouteResult)
         assert result.track is not None and result.composition is not None
         assert result.gpx_path.exists() and result.png_path.exists()
@@ -220,13 +226,57 @@ def test_format_cli_report(tmp_path: Path, monkeypatch):
     # route has NO "Trains to catch" section; a train route lists it.
     nodes_df, edges_df = _line_tables()
     _wire_offline(monkeypatch, tmp_path, nodes_df=nodes_df, edges_df=edges_df, route=make_line_route())
-    result = pipeline.plan_route(origin="Start", destination="End", params=DEFAULT_PARAMS)
+    result = pipeline.plan_route(origin="Start", destination="End", params=DEFAULT_PARAMS, graph_dir=FIXTURE_GRAPH_DIR)
     report = pipeline.format_cli_report(result=result)
     assert "Total (bike + train):" in report and "Bike only:" in report
     assert "Mode:" in report  # the composition summary is embedded
     assert str(result.gpx_path) in report and str(result.png_path) in report
     assert "Bike legs in Google Maps" in report and result.bike_legs[0].url in report
     assert "Trains to catch:" not in report  # pure-bike line route → no train section
+
+
+def test_run_route(tmp_path: Path, monkeypatch):
+    # Downloads (stubbed), plans (offline), returns the CLI report string — no argparse, no printing.
+    nodes_df, edges_df = _line_tables()
+    _wire_offline(monkeypatch, tmp_path, nodes_df=nodes_df, edges_df=edges_df, route=make_line_route())
+    monkeypatch.setattr(
+        pipeline, "download_graph_from_hf", lambda target_dir, progress: FIXTURE_GRAPH_DIR
+    )  # no network
+    report = pipeline.run_route(origin="Start", destination="End", params=DEFAULT_PARAMS, graph_dir=FIXTURE_GRAPH_DIR)
+    assert "Total (bike + train):" in report and "Bike legs in Google Maps" in report
+
+
+def test_run_route_propagates_errors(monkeypatch):
+    # An expected planning failure (e.g. out of coverage) is NOT swallowed — it raises so the shell
+    # exits non-zero and the class name + message explain the problem.
+    monkeypatch.setattr(pipeline, "download_graph_from_hf", lambda target_dir, progress: FIXTURE_GRAPH_DIR)
+
+    def _boom(origin, destination, params, graph_dir):
+        raise OutOfCoverageError("outside the DACH coverage box")
+
+    monkeypatch.setattr(pipeline, "plan_route", _boom)
+    with pytest.raises(OutOfCoverageError, match="coverage"):
+        pipeline.run_route(
+            origin="Nowhere", destination="Elsewhere", params=DEFAULT_PARAMS, graph_dir=FIXTURE_GRAPH_DIR
+        )
+
+
+def test_bike_route_main(monkeypatch, capsys):
+    # The entry script parses argv HERE (argparse lives in bike_route, not module code), builds the
+    # RoutingParams from the shared specs, and prints run_route's report; returns 0.
+    import bike_route
+
+    captured = {}
+
+    def _fake_run_route(*, origin, destination, params, graph_dir):
+        captured["origin"], captured["destination"], captured["params"] = origin, destination, params
+        return "REPORT-BLOCK"
+
+    monkeypatch.setattr(bike_route, "run_route", _fake_run_route)
+    code = bike_route.main(["Freudenstadt", "Pforzheim", "-v"])
+    assert code == 0
+    assert captured["origin"] == "Freudenstadt" and captured["destination"] == "Pforzheim"
+    assert "REPORT-BLOCK" in capsys.readouterr().out
 
 
 def test_geocode_both(monkeypatch):
@@ -261,7 +311,9 @@ def test_route_node_path(monkeypatch):
     # a corridor over the edge cap raises RouteTooLargeError before building anything.
     nodes_df, edges_df = _line_tables()
     monkeypatch.setattr(
-        pipeline, "load_route_tables", lambda bike_corridor, rail_corridor, graph_dir: (nodes_df, edges_df)
+        pipeline,
+        "load_route_tables",
+        lambda bike_corridor, rail_corridor, graph_dir, node_columns, edge_columns: (nodes_df, edges_df),
     )
     corridor = box(7.9, 47.9, 8.3, 48.1)
     path = pipeline._route_node_path(
@@ -361,7 +413,9 @@ _REAL_CASES = [
 )
 def test_default_params_real_route_mode(origin: str, destination: str, expect_train: bool) -> None:  # noqa: FBT001
     """FULL e2e: DEFAULT params, real dataset, real OSM geocoding — each route bikes or trains as given."""
-    result = pipeline.plan_route(origin=origin, destination=destination, params=DEFAULT_PARAMS)
+    result = pipeline.plan_route(
+        origin=origin, destination=destination, params=DEFAULT_PARAMS, graph_dir=GraphConfig.GRAPH_DIR
+    )
     assert ("train path" in result.composition.by_mode_km) is expect_train
 
 

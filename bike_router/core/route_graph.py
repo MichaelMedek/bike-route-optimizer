@@ -1,10 +1,7 @@
 """Compact CSR routing graph + optimal path — the memory-lean inference engine.
 
-A corridor's directed edges become a single ``scipy.sparse`` cost matrix (~12 bytes/edge)
-instead of a networkx ``MultiDiGraph`` (~2.8 KB/edge, measured), so a whole-DACH-scale
-corridor routes in well under the deploy RAM ceiling. Dijkstra over non-negative costs
-returns the SAME optimal path A* did (the great-circle heuristic only sped the search).
-Geometry/surface/highway never enter here — they only feed the FINAL chosen path's draw.
+A corridor's directed edges become one scipy.sparse cost matrix (~12 bytes/edge vs ~2.8 KB/edge for
+networkx); Dijkstra over non-negative costs returns the SAME optimal path A* did. Geometry never enters here.
 """
 
 import logging

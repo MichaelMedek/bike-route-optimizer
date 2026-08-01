@@ -115,7 +115,7 @@ def test_read_region_tables(tmp_path: Path):
     # Reads a region artifact's full node + edge tables back — every tile concatenated, standard
     # schemas — even when nodes span MULTIPLE 0.5° tiles (written to separate tile files).
     nodes_df, edges_df = graph_to_tables(graph=make_store_roundtrip_graph())
-    write_graph_parquet(nodes_df=nodes_df, edges_df=edges_df, meta=_META, out_dir=tmp_path)
+    write_graph_parquet(nodes_df=nodes_df, edges_df=edges_df, meta=_META, out_dir=tmp_path, compression="snappy")
     got_nodes, got_edges = read_region_tables(region_dir=tmp_path)
     assert len(got_nodes) == len(nodes_df) and len(got_edges) == len(edges_df)
     assert list(got_nodes.columns) == graph_store._NODE_COLS
@@ -126,7 +126,9 @@ def test_read_region_tables(tmp_path: Path):
         columns=graph_store._NODE_COLS,
     )
     two_tile_edges = pd.DataFrame([_edge_row(0, 1, mode=Mode.BIKE)], columns=graph_store._EDGE_COLS)
-    write_graph_parquet(nodes_df=two_tile_nodes, edges_df=two_tile_edges, meta=_META, out_dir=multi_dir)
+    write_graph_parquet(
+        nodes_df=two_tile_nodes, edges_df=two_tile_edges, meta=_META, out_dir=multi_dir, compression="snappy"
+    )
     back_nodes, back_edges = read_region_tables(region_dir=multi_dir)
     assert len(back_nodes) == 2 and len(back_edges) == 1 and set(back_nodes["osmid"]) == {0, 1}
 
@@ -134,7 +136,7 @@ def test_read_region_tables(tmp_path: Path):
 def test_read_full_graph(tmp_path: Path):
     # Reconstructs the WHOLE graph from every tile (Phase-4 validation), matching the saved counts.
     nodes_df, edges_df = graph_to_tables(graph=make_store_roundtrip_graph())
-    write_graph_parquet(nodes_df=nodes_df, edges_df=edges_df, meta=_META, out_dir=tmp_path)
+    write_graph_parquet(nodes_df=nodes_df, edges_df=edges_df, meta=_META, out_dir=tmp_path, compression="snappy")
     graph = read_full_graph(graph_dir=tmp_path)
     assert graph.number_of_nodes() == 6 and graph.number_of_edges() == 14
 
@@ -143,13 +145,17 @@ def test_write_graph_parquet(tmp_path: Path):
     # Writes node/edge tables as lat/lon-tiled parquet + meta.json; a schema drift fails loud; the
     # zstd codec (final HF artifact) round-trips losslessly (readers auto-detect the codec).
     nodes_df, edges_df = graph_to_tables(graph=make_store_roundtrip_graph())
-    write_graph_parquet(nodes_df=nodes_df, edges_df=edges_df, meta=_META, out_dir=tmp_path)
+    write_graph_parquet(nodes_df=nodes_df, edges_df=edges_df, meta=_META, out_dir=tmp_path, compression="snappy")
     assert (tmp_path / graph_store.GraphConfig.META_FILENAME).exists()
     assert list((tmp_path / graph_store.GraphConfig.NODES_SUBDIR).glob("tile_*.parquet"))
     assert list((tmp_path / graph_store.GraphConfig.EDGES_SUBDIR).glob("tile_*.parquet"))
     with pytest.raises(AssertionError, match="nodes schema drift"):
         write_graph_parquet(
-            nodes_df=nodes_df.drop(columns=["station_name"]), edges_df=edges_df, meta=_META, out_dir=tmp_path
+            nodes_df=nodes_df.drop(columns=["station_name"]),
+            edges_df=edges_df,
+            meta=_META,
+            out_dir=tmp_path,
+            compression="snappy",
         )
 
     zstd_dir = tmp_path / "zstd"

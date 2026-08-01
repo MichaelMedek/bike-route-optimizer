@@ -1,13 +1,7 @@
 """Prebuilt DACH graph: tiled GeoParquet serialization + windowed corridor load.
 
-The builder tiles the whole DACH bike+rail graph on a coarse lat/lon grid;
-inference downloads it once from HF then reads only the corridor's tiles. On-disk
-schema uses self-documenting names (nodes/edges below); in-memory keeps OSMnx x/y.
-
-Schema — nodes: osmid, lat, lon, elevation_m, node_type (bike|rail), station_name
-(null for bike nodes). edges: from_node, to_node, key, length_m, height_diff_m, surface,
-highway, mode, geometry_wkt (WKT LINESTRING; null for straight rail/station hops). Travel
-time is NOT stored — derived from length_m + rail constants at route time.
+The builder tiles the whole bike+rail graph on a coarse lat/lon grid; inference downloads it once
+from HF then reads only the corridor's tiles (self-documenting nodes/edges schema; travel time derived).
 """
 
 import json
@@ -23,11 +17,11 @@ from huggingface_hub import list_repo_files, snapshot_download
 from shapely import covers, from_wkt, points
 from shapely.geometry import Polygon, box
 
-from bike_router.core.constants import GraphConfig, Mode, NodeType, RoutingParams
+from bike_router.core.constants import GraphConfig, Mode, NodeType, RailConfig, RoutingParams
 from bike_router.core.cost import edge_cost_array
 from bike_router.core.errors import OutOfCoverageError
 from bike_router.core.geo import haversine_vec
-from bike_router.core.progress import ProgressFn, null_progress
+from bike_router.core.progress import ProgressFn
 from bike_router.core.route_path import RouteEdge, RouteNode, RoutePath
 
 logger = logging.getLogger(__name__)
@@ -48,7 +42,7 @@ _EDGE_COLS = [
 ]
 
 
-def tile_index(lat: float, lon: float, tile_deg: float = GraphConfig.TILE_DEG) -> tuple[int, int]:
+def tile_index(lat: float, lon: float, tile_deg: float) -> tuple[int, int]:
     """(row, col) tile index for a coordinate on the coarse lat/lon grid."""
     return math.floor(lat / tile_deg), math.floor(lon / tile_deg)
 
@@ -90,7 +84,7 @@ def _intersecting_tiles(*, corridor: Polygon, tile_deg: float) -> list[tuple[int
     ]
 
 
-def download_graph_from_hf(target_dir: Path = GraphConfig.GRAPH_DIR, progress: ProgressFn = null_progress) -> Path:
+def download_graph_from_hf(target_dir: Path, progress: ProgressFn) -> Path:
     """Download the prebuilt DACH graph artifact from Hugging Face if missing.
 
     snapshot_download (HF's xet-coordinated fetch) runs in a worker thread while the main
@@ -123,7 +117,7 @@ def download_graph_from_hf(target_dir: Path = GraphConfig.GRAPH_DIR, progress: P
     return target_dir
 
 
-def load_meta(graph_dir: Path = GraphConfig.GRAPH_DIR) -> dict[str, Any]:
+def load_meta(graph_dir: Path) -> dict[str, Any]:
     """Read the artifact's meta.json (country bbox, tile grid, tolerance, counts)."""
     meta: dict[str, Any] = json.loads((graph_dir / GraphConfig.META_FILENAME).read_text())
     return meta
@@ -132,8 +126,8 @@ def load_meta(graph_dir: Path = GraphConfig.GRAPH_DIR) -> dict[str, Any]:
 def _read_tiles(
     directory: Path,
     columns: list[str],
-    tiles: list[tuple[int, int]] | None = None,
-    filters: list[tuple[str, str, object]] | None = None,
+    tiles: list[tuple[int, int]] | None,
+    filters: list[tuple[str, str, object]] | None,
 ) -> pd.DataFrame:
     """Concatenate per-tile Parquet files in ``directory`` into one DataFrame.
 
@@ -158,7 +152,7 @@ def _load_layer(
     edge_modes: list[str],
     node_columns: list[str],
     edge_columns: list[str],
-    extra_from_ids: frozenset[int] = frozenset(),
+    extra_from_ids: frozenset[int],
 ) -> tuple[pd.DataFrame, pd.DataFrame, set[int]]:
     """Read one mode-layer's nodes/edges for a corridor, keeping only nodes inside it.
 
@@ -195,9 +189,9 @@ def load_route_tables(
     *,
     bike_corridor: Polygon,
     rail_corridor: Polygon,
-    graph_dir: Path = GraphConfig.GRAPH_DIR,
-    node_columns: list[str] = _ROUTE_NODE_COLS,
-    edge_columns: list[str] = _ROUTE_EDGE_COLS,
+    graph_dir: Path,
+    node_columns: list[str],
+    edge_columns: list[str],
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Combined (nodes_df, edges_df) for the two-corridor routing window — the SINGLE combine.
 
@@ -211,6 +205,7 @@ def load_route_tables(
         edge_modes=[Mode.BIKE],
         node_columns=node_columns,
         edge_columns=edge_columns,
+        extra_from_ids=frozenset(),
     )
     # Rail layer also carries STATION edges; a bike→rail station link has from_node in the BIKE
     # layer, so admit bike_ids to the from_node pushdown or those links would be filtered out.
@@ -244,9 +239,7 @@ def load_route_tables(
     return nodes_df, edges_df
 
 
-def load_path_edges(
-    *, path_nodes: list[tuple[int, float, float]], params: RoutingParams, graph_dir: Path = GraphConfig.GRAPH_DIR
-) -> RoutePath:
+def load_path_edges(*, path_nodes: list[tuple[int, float, float]], params: RoutingParams, graph_dir: Path) -> RoutePath:
     """Re-read ONLY the chosen path's edges (with geometry) into an ordered RoutePath.
 
     Re-reading the tiny path's tiles WITH geometry costs a few MB vs the ~GB of a full networkx graph;
@@ -320,6 +313,7 @@ def _select_path_edges(*, nodes: list[RouteNode], edges_df: pd.DataFrame, params
         chosen = best.get((node_a.osmid, node_b.osmid))
         assert chosen is not None, f"no edge found for path hop {node_a.osmid}->{node_b.osmid}"
         row = df.iloc[chosen[1]]
+        geometry, geometry_z = _oriented_geometry(wkt=row["geometry_wkt"], node_a=node_a)
         edges.append(
             RouteEdge(
                 from_node=node_a.osmid,
@@ -328,24 +322,34 @@ def _select_path_edges(*, nodes: list[RouteNode], edges_df: pd.DataFrame, params
                 length_m=float(row["length_m"]),
                 surface=_str_or_none(value=row["surface"]),
                 highway=_str_or_none(value=row["highway"]),
-                geometry=_oriented_geometry(wkt=row["geometry_wkt"], node_a=node_a),
+                geometry=geometry,
+                geometry_z=geometry_z,
             )
         )
     return edges
 
 
-def _oriented_geometry(*, wkt: object, node_a: RouteNode) -> list[tuple[float, float]] | None:
-    """WKT LINESTRING → 2D ``[(lon, lat), ...]`` oriented to start at node_a, or None if absent."""
+def _oriented_geometry(
+    *, wkt: object, node_a: RouteNode
+) -> tuple[list[tuple[float, float]] | None, list[float] | None]:
+    """WKT LINESTRING → (2D ``[(lon, lat), ...]``, baked z per vertex) oriented to start at node_a.
+
+    Returns (None, None) when absent. The z list (real baked elevation) lets the display warn when
+    the linear node-to-node interpolation deviates far from the true terrain on a long edge.
+    """
     if not isinstance(wkt, str):
-        return None
-    coords = [(float(c[0]), float(c[1])) for c in from_wkt(wkt).coords]  # drop any z
+        return None, None
+    raw = list(from_wkt(wkt).coords)
+    coords = [(float(c[0]), float(c[1])) for c in raw]
+    zs = [float(c[2]) if len(c) >= 3 else float("nan") for c in raw]
     first, last = coords[0], coords[-1]
     if abs(first[0] - node_a.lon) + abs(first[1] - node_a.lat) > abs(last[0] - node_a.lon) + abs(last[1] - node_a.lat):
         coords.reverse()
-    return coords
+        zs.reverse()
+    return coords, zs
 
 
-def snap_to_node(lat: float, lon: float, graph_dir: Path = GraphConfig.GRAPH_DIR) -> tuple[float, float, float]:
+def snap_to_node(lat: float, lon: float, graph_dir: Path) -> tuple[float, float, float]:
     """Nearest graph node to (lat, lon) as ``(lat, lon, elevation_m)``.
 
     Routing is node-to-node, so this resolves a raw geocoded point to its actual start/end node
@@ -353,7 +357,9 @@ def snap_to_node(lat: float, lon: float, graph_dir: Path = GraphConfig.GRAPH_DIR
     """
     tile_deg = load_meta(graph_dir=graph_dir)["tile_deg"]
     tiles = _covering_tiles(bounds=(lon, lat, lon, lat), tile_deg=tile_deg, margin=1)
-    nodes_df = _read_tiles(directory=graph_dir / GraphConfig.NODES_SUBDIR, tiles=tiles, columns=_NODE_COLS)
+    nodes_df = _read_tiles(
+        directory=graph_dir / GraphConfig.NODES_SUBDIR, columns=_NODE_COLS, tiles=tiles, filters=None
+    )
     if nodes_df.empty:  # user-facing: a place outside the prebuilt graph's coverage
         raise OutOfCoverageError(f"No routable graph near ({lat:.4f}, {lon:.4f}) — outside the covered region.")
     lats = nodes_df["lat"].to_numpy()
@@ -361,6 +367,33 @@ def snap_to_node(lat: float, lon: float, graph_dir: Path = GraphConfig.GRAPH_DIR
     dists = haversine_vec(lat_a=lat, lon_a=lon, lat_b=lats, lon_b=lons)  # shared vectorized great-circle
     row = nodes_df.iloc[int(dists.argmin())]
     return float(row["lat"]), float(row["lon"]), float(row["elevation_m"])
+
+
+def top_stations(
+    graph_dir: Path,
+) -> list[tuple[float, float, float, str]]:
+    """Prominent local-high rail stations across the coverage area — trip-inspiration "top" stops.
+
+    A station is a top iff it has full Dominanz within TOP_STATION_DOMINANCE_KM AND clears
+    TOP_STATION_PROMINENCE_M of Schartenhöhe. Returns (lat, lon, elevation_m, name), highest first.
+    """
+    nodes_df = _read_tiles(directory=graph_dir / GraphConfig.NODES_SUBDIR, columns=_NODE_COLS, tiles=None, filters=None)
+    stations = nodes_df[(nodes_df["node_type"] == NodeType.RAIL) & nodes_df["station_name"].notna()].reset_index(
+        drop=True
+    )
+    assert not stations.empty, "no station found"
+    lats = stations["lat"].to_numpy(dtype=float)
+    lons = stations["lon"].to_numpy(dtype=float)
+    elevs = stations["elevation_m"].to_numpy(dtype=float)
+    tops: list[tuple[float, float, float, str]] = []
+    for i in range(len(stations)):
+        dists_km = haversine_vec(lat_a=lats[i], lon_a=lons[i], lat_b=lats, lon_b=lons) / 1000.0
+        near = elevs[dists_km <= RailConfig.TOP_STATION_DOMINANCE_KM]
+        dominant = elevs[i] >= near.max()  # Dominanz: highest station within the radius
+        prominent = elevs[i] - near.min() >= RailConfig.TOP_STATION_PROMINENCE_M  # Schartenhöhe: local relief
+        if dominant and prominent:
+            tops.append((float(lats[i]), float(lons[i]), float(elevs[i]), str(stations["station_name"].iloc[i])))
+    return sorted(tops, key=lambda s: s[2], reverse=True)
 
 
 def _str_or_none(value: object) -> str | None:

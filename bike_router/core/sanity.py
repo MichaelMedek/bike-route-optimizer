@@ -1,7 +1,6 @@
 """Runtime sanity checks (spec section 5) — invariants the pipeline asserts.
 
-These are intentionally cheap and fail loud, catching a broken graph or cost
-model before we emit outputs.
+Intentionally cheap and fail-loud, catching a broken graph or cost model before we emit outputs.
 """
 
 import logging

@@ -85,6 +85,8 @@ module = [
     "scipy.*",
     "psutil.*",
     "plotly.*",
+    "streamlit_js_eval.*",
+    "streamlit_deckgl.*",
 ]
 ignore_missing_imports = true
 

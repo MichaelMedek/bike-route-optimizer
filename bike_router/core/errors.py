@@ -1,8 +1,7 @@
 """Custom exceptions for every expected, user-facing failure.
 
-One base (BikeRouterError) so callers catch exactly these and nothing else — a
-bare builtin (ValueError/RuntimeError) escaping means a real bug, not a handled
-condition. Grouped: geocoding failures and route-planning failures.
+One base (BikeRouterError) so callers catch exactly these; a bare builtin escaping means a real
+bug, not a handled condition. Grouped: geocoding failures and route-planning failures.
 """
 
 

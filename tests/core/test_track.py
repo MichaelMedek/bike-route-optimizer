@@ -22,11 +22,14 @@ from bike_router.core.track import (
     cumulative_km,
     densify_track,
     edge_condition_speed,
+    edge_display_unreliable,
+    edge_elevation_deviation_m,
     edge_grade,
     edge_vertices_3d,
     grade_color,
     project_markers_onto_track,
     segment_color,
+    track_has_unreliable_elevation,
 )
 from tests.conftest import (
     make_condition_route,
@@ -64,6 +67,7 @@ class TestTrackPoint:
             road_bad=False,
             grade=0.05,
             speed_kmh=18.0,
+            unreliable_elev=False,
         )
         assert (pt.lat, pt.lon, pt.elevation_m, pt.elapsed_s) == (48.0, 8.0, 100.0, 12.0)
         assert pt.mode == Mode.BIKE and pt.surface_bad is True and pt.road_bad is False
@@ -80,6 +84,7 @@ class TestTrackPoint:
             road_bad=False,
             grade=0.0,
             speed_kmh=1.0,
+            unreliable_elev=False,
         )
         with pytest.raises(AttributeError):
             pt.elapsed_s = 1.0  # type: ignore[misc]
@@ -229,14 +234,24 @@ def test_track_point():
     # its TRAVEL direction (elev_from → elev_to), NOT the reversed direction of where it sits.
     at = RouteNode(osmid=1, lat=48.0, lon=8.0, elevation_m=100.0, node_type=NodeType.BIKE, station_name=None)
     edge = _bike_edge(surface="gravel", highway="primary", length_m=1000.0)
-    pt = _track_point(at=at, edge=edge, elev_from=100.0, elev_to=150.0, elapsed_s=42.0)
+    pt = _track_point(at=at, edge=edge, elev_from=100.0, elev_to=150.0, elapsed_s=42.0, unreliable=False)
     assert (pt.lat, pt.lon, pt.elevation_m, pt.elapsed_s) == (48.0, 8.0, 100.0, 42.0)
     assert pt.surface_bad is True and pt.road_bad is True  # gravel + primary
     assert pt.grade == pytest.approx(0.05)  # climb 100→150 over 1000 m → +5% (uphill, not the reverse)
     # REGRESSION: an arriving point sits at node_b but the grade must follow the ridden direction
     # a→b — a climb reads +, never the reversed − (the "uphill shown as downhill" bug).
-    climbing = _track_point(at=at, edge=edge, elev_from=100.0, elev_to=200.0, elapsed_s=0.0)
+    climbing = _track_point(at=at, edge=edge, elev_from=100.0, elev_to=200.0, elapsed_s=0.0, unreliable=False)
     assert climbing.grade > 0  # ascending a→b → positive grade
+
+    # INVARIANT: only a BIKE edge may be flagged unreliable — a bike edge can, a rail/station edge
+    # asserts loudly (trains legitimately tunnel/bridge; the gray flag is bike-only at its emitter).
+    bike_pt = _track_point(at=at, edge=edge, elev_from=100.0, elev_to=150.0, elapsed_s=0.0, unreliable=True)
+    assert bike_pt.unreliable_elev is True
+    rail_edge = RouteEdge(
+        from_node=1, to_node=2, mode=Mode.RAIL, length_m=1000.0, surface=None, highway=None, geometry=None
+    )
+    with pytest.raises(AssertionError, match="only bike edges may be unreliable"):
+        _track_point(at=at, edge=rail_edge, elev_from=100.0, elev_to=150.0, elapsed_s=0.0, unreliable=True)
 
 
 # --- build_track (bike + rail + station timing) ------------------------------
@@ -309,6 +324,83 @@ def test_edge_vertices_3d():
     ]
 
 
+def _elev_edge(*, geometry_z: list[float] | None, mode: str = Mode.BIKE) -> tuple:
+    """(node_a, node_b, edge) climbing 100→200 over a 3-vertex geometry with the given baked z."""
+    node_a = RouteNode(osmid=1, lat=48.0, lon=8.0, elevation_m=100.0, node_type=NodeType.BIKE, station_name=None)
+    node_b = RouteNode(osmid=2, lat=48.0, lon=8.02, elevation_m=200.0, node_type=NodeType.BIKE, station_name=None)
+    geom = [(8.0, 48.0), (8.01, 48.0), (8.02, 48.0)]
+    edge = RouteEdge(
+        from_node=1,
+        to_node=2,
+        mode=mode,
+        length_m=1500.0,
+        surface="asphalt",
+        highway="residential",
+        geometry=geom,
+        geometry_z=geometry_z,
+    )
+    return node_a, node_b, edge
+
+
+def test_edge_elevation_deviation_m():
+    # Linear display z is 100/150/200; baked terrain dips to 60 at the midpoint → max gap 90 m.
+    node_a, node_b, edge = _elev_edge(geometry_z=[100.0, 60.0, 200.0])
+    assert edge_elevation_deviation_m(node_a=node_a, node_b=node_b, edge=edge) == pytest.approx(90.0)
+    # matching terrain → 0; no baked z → 0 (nothing to compare)
+    flat_a, flat_b, flat = _elev_edge(geometry_z=[100.0, 150.0, 200.0])
+    assert edge_elevation_deviation_m(node_a=flat_a, node_b=flat_b, edge=flat) == pytest.approx(0.0)
+    na, nb, no_z = _elev_edge(geometry_z=None)
+    assert edge_elevation_deviation_m(node_a=na, node_b=nb, edge=no_z) == 0.0
+
+
+def test_edge_display_unreliable():
+    # A BIKE edge beyond the 50 m warn threshold → unreliable; a small dip stays reliable.
+    big_a, big_b, big = _elev_edge(geometry_z=[100.0, 60.0, 200.0])  # 90 m gap > 50
+    assert edge_display_unreliable(node_a=big_a, node_b=big_b, edge=big)
+    small_a, small_b, small = _elev_edge(geometry_z=[100.0, 140.0, 200.0])  # 10 m gap < 50
+    assert not edge_display_unreliable(node_a=small_a, node_b=small_b, edge=small)
+    # RAIL edge with the SAME huge gap is NEVER flagged — trains legitimately tunnel/bridge.
+    rail_a, rail_b, rail = _elev_edge(geometry_z=[100.0, 60.0, 200.0], mode=Mode.RAIL)
+    assert not edge_display_unreliable(node_a=rail_a, node_b=rail_b, edge=rail)
+    # STATION edge with the SAME huge gap is likewise never flagged — only bike edges can go gray.
+    stn_a, stn_b, stn = _elev_edge(geometry_z=[100.0, 60.0, 200.0], mode=Mode.STATION)
+    assert not edge_display_unreliable(node_a=stn_a, node_b=stn_b, edge=stn)
+
+
+def test_track_has_unreliable_elevation():
+    # True iff any track point flags an unreliable arriving edge.
+    ok = TrackPoint(
+        lat=48.0,
+        lon=8.0,
+        elevation_m=100.0,
+        elapsed_s=0.0,
+        mode=Mode.BIKE,
+        surface_bad=False,
+        road_bad=False,
+        grade=0.0,
+        speed_kmh=20.0,
+        unreliable_elev=False,
+    )
+    bad = TrackPoint(
+        lat=48.0,
+        lon=8.0,
+        elevation_m=100.0,
+        elapsed_s=0.0,
+        mode=Mode.BIKE,
+        surface_bad=False,
+        road_bad=False,
+        grade=0.0,
+        speed_kmh=20.0,
+        unreliable_elev=True,
+    )
+    assert not track_has_unreliable_elevation(
+        track=Track(points=[ok, ok], bike=RouteStats(1.0, 1.0, 0.0, 0.0), total=RouteStats(1.0, 1.0, 0.0, 0.0))
+    )
+    assert track_has_unreliable_elevation(
+        track=Track(points=[ok, bad], bike=RouteStats(1.0, 1.0, 0.0, 0.0), total=RouteStats(1.0, 1.0, 0.0, 0.0))
+    )
+
+
 def test_densify_track():
     # Detour edge: keeps the real 2D eastward bulge yet interpolates z linearly (no vertex > 140),
     # spreads timing by distance, and carries stats through unchanged. A geometry-less rail hop
@@ -327,6 +419,7 @@ def test_densify_track():
                 road_bad=False,
                 grade=0.0,
                 speed_kmh=25.0,
+                unreliable_elev=False,
             ),
             TrackPoint(
                 lat=48.02,
@@ -338,6 +431,7 @@ def test_densify_track():
                 road_bad=False,
                 grade=0.0,
                 speed_kmh=18.0,
+                unreliable_elev=False,
             ),
         ],
         bike=stats,
@@ -379,6 +473,7 @@ def test_densify_track():
                 road_bad=False,
                 grade=0.0,
                 speed_kmh=80.0,
+                unreliable_elev=False,
             ),
             TrackPoint(
                 lat=48.0,
@@ -390,6 +485,7 @@ def test_densify_track():
                 road_bad=False,
                 grade=0.0,
                 speed_kmh=80.0,
+                unreliable_elev=False,
             ),
         ],
         bike=rail_stats,

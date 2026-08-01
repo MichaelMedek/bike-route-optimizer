@@ -17,6 +17,10 @@ from bike_router.core.geocoding import (
     _GEOCODE_CACHE,
     HttpGetter,
     _default_http_get,
+    _parse_latlon,
+    as_bahnhof,
+    autocomplete_with_stations,
+    bahnhof_suggestion,
     geocode,
     geocode_endpoint,
     make_geocode_fn,
@@ -105,6 +109,21 @@ def test_geocode():
     with pytest.raises(GeocodeConnectionError, match="internet connection"):
         geocode(place="Somewhere", geocode_fn=unreachable)
 
+    # A "lat, lon" literal (from the GPS button) resolves DIRECTLY — no Nominatim call.
+    gps = MagicMock()
+    assert geocode(place="48.4633, 8.4116", geocode_fn=gps) == (48.4633, 8.4116)
+    gps.assert_not_called()  # coordinates never hit the network
+
+
+def test_parse_latlon():
+    # Two in-range comma floats → tuple (spaces optional); anything else → None (falls to Nominatim).
+    assert _parse_latlon(place="48.4633, 8.4116") == (48.4633, 8.4116)
+    assert _parse_latlon(place="48.46,8.41") == (48.46, 8.41)  # no space
+    assert _parse_latlon(place="Freudenstadt, Germany") is None  # a place, not coords
+    assert _parse_latlon(place="200, 8") is None  # lat out of range
+    assert _parse_latlon(place="48, 8, 9") is None  # wrong part count
+    assert _parse_latlon(place="Freudenstadt") is None  # no comma
+
 
 def test_geocode_endpoint():
     # Delegates to geocode with the field name in the message; blank input is rejected without a
@@ -148,25 +167,110 @@ def test_photon_autocomplete():
             _photon_feature(name="Pforzheim", lon=8.6947, lat=48.8922, state="Baden-Württemberg"),
         ]
     }
-    assert photon_autocomplete(term="Freud", bbox=_BBOX, http_get=MagicMock(return_value=payload)) == [
+    assert photon_autocomplete(
+        term="Freud",
+        bbox=_BBOX,
+        limit=PhotonConfig.LIMIT,
+        osm_tag=PhotonConfig.PLACE_OSM_TAG,
+        http_get=MagicMock(return_value=payload),
+    ) == [
         "Freudenstadt, Baden-Württemberg",
         "Pforzheim, Baden-Württemberg",
     ]
 
     blank_get = MagicMock()
-    assert photon_autocomplete(term="   ", bbox=_BBOX, http_get=blank_get) == []
+    assert (
+        photon_autocomplete(
+            term="   ", bbox=_BBOX, limit=PhotonConfig.LIMIT, osm_tag=PhotonConfig.PLACE_OSM_TAG, http_get=blank_get
+        )
+        == []
+    )
     blank_get.assert_not_called()  # a blank term must never hit the network
 
-    assert photon_autocomplete(term="zzzz", bbox=_BBOX, http_get=MagicMock(return_value={"features": []})) == []
+    assert (
+        photon_autocomplete(
+            term="zzzz",
+            bbox=_BBOX,
+            limit=PhotonConfig.LIMIT,
+            osm_tag=PhotonConfig.PLACE_OSM_TAG,
+            http_get=MagicMock(return_value={"features": []}),
+        )
+        == []
+    )
     boom = MagicMock(side_effect=requests.RequestException("timeout"))
-    assert photon_autocomplete(term="Freud", bbox=_BBOX, http_get=boom) == []  # never crashes on a weak link
+    # never crashes on a weak link
+    assert (
+        photon_autocomplete(
+            term="Freud", bbox=_BBOX, limit=PhotonConfig.LIMIT, osm_tag=PhotonConfig.PLACE_OSM_TAG, http_get=boom
+        )
+        == []
+    )
 
     params_get = MagicMock(return_value={"features": []})
-    photon_autocomplete(term="Freud", bbox=_BBOX, limit=7, http_get=params_get)
+    photon_autocomplete(term="Freud", bbox=_BBOX, limit=7, osm_tag=PhotonConfig.PLACE_OSM_TAG, http_get=params_get)
     params = params_get.call_args.kwargs["params"]
     assert params["bbox"] == "8.3,48.4,8.8,48.95"
     assert params["osm_tag"] == "place" and params["lang"] == "de" and params["limit"] == 7
     assert params["lon"] == pytest.approx((8.30 + 8.80) / 2) and params["lat"] == pytest.approx((48.40 + 48.95) / 2)
+
+
+def test_photon_autocomplete_station_tag():
+    # The osm_tag override reaches Photon so a station-only query can be issued.
+    get = MagicMock(return_value={"features": []})
+    photon_autocomplete(
+        term="Langenargen", bbox=_BBOX, limit=PhotonConfig.LIMIT, osm_tag=PhotonConfig.STATION_OSM_TAG, http_get=get
+    )
+    assert get.call_args.kwargs["params"]["osm_tag"] == PhotonConfig.STATION_OSM_TAG
+
+
+def test_as_bahnhof():
+    # Appends " Bahnhof" so a bare station name geocodes to the platform, not the town centre;
+    # a name already ending in "Bahnhof" (any case) is not doubled; surrounding space is trimmed.
+    assert as_bahnhof(name="Sauldorf") == "Sauldorf Bahnhof"
+    assert as_bahnhof(name="  Langenargen  ") == "Langenargen Bahnhof"
+    assert as_bahnhof(name="Zürich Flughafen Bahnhof") == "Zürich Flughafen Bahnhof"
+    assert as_bahnhof(name="Konstanz BAHNHOF") == "Konstanz BAHNHOF"
+
+
+def test_bahnhof_suggestion():
+    # A station match → the concatenated "<name> Bahnhof" label (the station-first OSM query);
+    # no station → None; a name already ending in "Bahnhof" is not doubled.
+    def station(*, url, params, timeout):  # noqa: ANN001, ANN202
+        assert params["osm_tag"] == PhotonConfig.STATION_OSM_TAG  # station-first query
+        return {"features": [_photon_feature(name="Langenargen", lon=9.55, lat=47.6)]}
+
+    assert bahnhof_suggestion(term="Langenargen", bbox=_BBOX, http_get=station) == "Langenargen Bahnhof"
+
+    none = MagicMock(return_value={"features": []})
+    assert bahnhof_suggestion(term="zzz", bbox=_BBOX, http_get=none) is None
+
+    already = MagicMock(
+        return_value={"features": [_photon_feature(name="Zürich Flughafen Bahnhof", lon=8.5, lat=47.5)]}
+    )
+    assert bahnhof_suggestion(term="Zürich", bbox=_BBOX, http_get=already) == "Zürich Flughafen Bahnhof"
+
+
+def test_autocomplete_with_stations():
+    # (bahnhof_label, place_labels): the red-button Bahnhof pick leads; a place duplicating it is dropped.
+    def by_tag(*, url, params, timeout):  # noqa: ANN001, ANN202  # station vs place mock
+        if params["osm_tag"] == PhotonConfig.STATION_OSM_TAG:
+            return {"features": [_photon_feature(name="Langenargen", lon=9.55, lat=47.6)]}
+        return {"features": [_photon_feature(name="Langenargen", lon=9.55, lat=47.6)]}
+
+    bahnhof, places = autocomplete_with_stations(term="Langenargen", bbox=_BBOX, limit=7, http_get=by_tag)
+    assert bahnhof == "Langenargen Bahnhof"  # concatenated red-button pick
+    assert "Langenargen, Baden-Württemberg" in places or places == ["Langenargen"]  # place kept, distinct label
+
+    # No station → no Bahnhof pick; just the place suggestions.
+    place_only = MagicMock(
+        side_effect=lambda *, url, params, timeout: (
+            {"features": []}
+            if params["osm_tag"] == PhotonConfig.STATION_OSM_TAG
+            else {"features": [_photon_feature(name="Xdorf", lon=9.0, lat=48.0)]}
+        )
+    )
+    bahnhof, places = autocomplete_with_stations(term="Xdorf", bbox=_BBOX, limit=7, http_get=place_only)
+    assert bahnhof is None and places == ["Xdorf"]
 
 
 def test_nearest_place_name():
@@ -177,8 +281,9 @@ def test_nearest_place_name():
     assert nearest_place_name(lat=48.5, lon=8.37, http_get=ok) == "Baiersbronn"
     assert ok.call_args.kwargs["url"].endswith("/reverse")  # reverse endpoint, not /api
     params = ok.call_args.kwargs["params"]
-    assert "radius" not in params  # no radius cap — Photon returns the nearest place by default
-    assert params["osm_tag"] == PhotonConfig.PLACE_OSM_TAG and params["limit"] == 1
+    assert params["radius"] == PhotonConfig.REVERSE_RADIUS_KM  # generous radius so a remote waypoint still names one
+    # restricted to real settlement types (repeated osm_tag) → a town/village, never a postcode/farm
+    assert params["osm_tag"] == PhotonConfig.REVERSE_PLACE_TAGS and params["limit"] == 1
 
     assert nearest_place_name(lat=0.0, lon=0.0, http_get=MagicMock(return_value={"features": []})) is None
     blank = MagicMock(return_value={"features": [_photon_feature(name="", lon=0.0, lat=0.0)]})

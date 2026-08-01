@@ -15,6 +15,7 @@ from bike_router.ui.webmap_layers import (
     create_endpoint_layer,
     create_route_ribbon_layers,
     create_terrain_layer,
+    create_top_station_layer,
     create_waypoint_layer,
 )
 
@@ -94,15 +95,33 @@ def test_create_waypoint_layer():
     assert layer.data[0]["tooltip"] == "Freudenstadt Stadt (700 m)"
 
 
+def test_create_top_station_layer():
+    # Rail-purple clickable markers; each datum carries a ``name`` (for click-to-fill) + hover tooltip.
+    layer = create_top_station_layer(top_stations=[(48.47, 8.41, 739.0, "Freudenstadt Stadt")])
+    assert layer.type == "ScatterplotLayer" and layer.id == "top_stations" and layer.pickable
+    assert layer.data[0]["color"] == list(WebMapConfig.RAIL_COLOR)  # rail purple
+    assert layer.data[0]["name"] == "Freudenstadt Stadt"  # picked datum → fills Start box
+    assert layer.data[0]["tooltip"] == "Freudenstadt Stadt (739 m)"
+
+
 def test_build_deck():
     # Assembles the Deck bottom→top: terrain only; +endpoints; then terrain/waypoints/endpoints/ribbon
     # in that draw order, carrying the camera pose from the ViewState.
     view = default_view_state()
-    terrain_only = build_deck(view=view, ribbon_segments=None)
+    terrain_only = build_deck(
+        view=view, ribbon_segments=None, endpoints=None, endpoint_labels=None, waypoints=None, top_stations=None
+    )
     assert len(terrain_only.layers) == 1
     assert terrain_only.initial_view_state.latitude == WebMapConfig.DEFAULT_LAT
 
-    with_endpoints = build_deck(view=view, ribbon_segments=None, endpoints=((48.0, 8.0, 300.0), (48.4, 8.6, 500.0)))
+    with_endpoints = build_deck(
+        view=view,
+        ribbon_segments=None,
+        endpoints=((48.0, 8.0, 300.0), (48.4, 8.6, 500.0)),
+        endpoint_labels=("Start (300 m)", "End (500 m)"),
+        waypoints=None,
+        top_stations=None,
+    )
     assert len(with_endpoints.layers) == 2
 
     two_run = [
@@ -113,6 +132,21 @@ def test_build_deck():
         view=view,
         ribbon_segments=two_run,
         endpoints=((48.0, 8.0, 300.0), (48.4, 8.6, 500.0)),
+        endpoint_labels=("Start (300 m)", "End (500 m)"),
         waypoints=[(48.01, 8.01, 500.0, "S (500 m)")],
+        top_stations=None,
     )
     assert [layer.id for layer in full.layers] == ["terrain_3d", "route_waypoints", "route_endpoints", "route_ribbon"]
+
+
+def test_build_deck_with_top_stations():
+    # Top-station markers layer is inserted right above the terrain when supplied.
+    deck = build_deck(
+        view=default_view_state(),
+        ribbon_segments=None,
+        endpoints=None,
+        endpoint_labels=None,
+        waypoints=None,
+        top_stations=[(48.47, 8.41, 739.0, "Freudenstadt Stadt")],
+    )
+    assert [layer.id for layer in deck.layers] == ["terrain_3d", "top_stations"]

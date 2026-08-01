@@ -32,7 +32,7 @@ def _region_artifact(region_dir, nodes: list[tuple], edges: list[tuple]) -> None
     nodes_df = pd.DataFrame(nodes, columns=_NODE_COLS)
     edges_df = pd.DataFrame(edges, columns=_EDGE_COLS)
     meta = {"tile_deg": GraphConfig.TILE_DEG, "confirmed_complete": True}
-    write_graph_parquet(nodes_df=nodes_df, edges_df=edges_df, meta=meta, out_dir=region_dir)
+    write_graph_parquet(nodes_df=nodes_df, edges_df=edges_df, meta=meta, out_dir=region_dir, compression="snappy")
 
 
 def _line(lat1, lon1, lat2, lon2) -> str:  # noqa: ANN001
