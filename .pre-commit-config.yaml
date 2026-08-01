@@ -29,6 +29,6 @@ repos:
     hooks:
       - id: mypy
         additional_dependencies: [numpy, types-requests]
-        args: [--ignore-missing-imports]
-        # Only type-check our own code; tests keep the relaxed override in pyproject.
-        files: ^(bike_router/|main\.py)
+        # Type-check our own code AND the two root entry points; missing-import handling is the
+        # EXPLICIT per-module allowlist in pyproject (no blanket --ignore-missing-imports).
+        files: ^(bike_router/|app_webmap\.py|bike_route\.py)

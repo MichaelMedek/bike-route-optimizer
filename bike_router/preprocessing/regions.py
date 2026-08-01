@@ -1,10 +1,7 @@
 """DACH region-split config + Phase-3/4 combine, prune, and validation (build-time).
 
-Extracted from the build script so the reusable graph-combination logic is unit-testable
-in the preprocessing layer: the region-split declaration + its overlap invariant, the
-per-region completion gate, the cumulative-offset combine with seam dedup, and the
-component prune (rail strict / bike keep-if-big). The script keeps only orchestration
-(download, multiprocessing, plotting, main).
+The reusable graph-combination logic, unit-testable in the preprocessing layer: region-split + overlap
+invariant, completion gate, cumulative-offset combine with seam dedup, component prune (rail strict / bike keep-if-big).
 """
 
 import json

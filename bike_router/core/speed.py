@@ -1,8 +1,7 @@
-"""Surface- and grade-adaptive cycling speed (km/h).
+"""Surface- and grade-adaptive cycling speed (km/h); each edge is a single linear grade.
 
-Each edge is treated as a single linear grade. Speed drops linearly from the
-surface's base speed at 0 % grade to walking pace at WALK_GRADE, and stays at
-walking pace on anything steeper. Flat and downhill ride at the base speed.
+Speed drops linearly from the surface's base speed at 0 % grade to walking pace at WALK_GRADE, then
+stays at walking pace on anything steeper. Flat and downhill ride at the base speed.
 """
 
 from bike_router.core.constants import GpxConfig, SpeedConfig

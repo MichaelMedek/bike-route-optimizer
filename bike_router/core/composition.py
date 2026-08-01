@@ -1,9 +1,7 @@
 """Route composition — the THREE donut breakdowns (quality / grade / mode), one source.
 
-Built once from the Track and consumed identically in all three places: the Streamlit donuts,
-the PNG overlay text, and the CLI stdout. ``composition_rows`` is the ONE helper — donuts render
-its (title, km, colour) rows, and ``format_composition`` prints the exact same rows as text, so
-the three can never drift (they used to: donuts showed quality/grade/mode, text showed surface/road/mode).
+Built once from the Track, consumed identically by the Streamlit donuts, PNG overlay, and CLI:
+``composition_rows`` yields (title, km, colour) rows, ``format_composition`` prints them — no drift.
 """
 
 from collections.abc import Callable
@@ -11,20 +9,22 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from bike_router.core.constants import Mode, Palette, WebMapConfig
+from bike_router.core.constants import Condition, Grade, Mode, Palette, WebMapConfig
 from bike_router.core.geo import haversine_vec
 from bike_router.core.track import Track, TrackPoint, classify_condition, classify_grade
 
 # The three donut label→hex-colour maps, each from a single Palette/config source (no re-typed labels).
-QUALITY_COLORS = {label: Palette.CONDITION_COLORS[label] for label in ("good", "unpaved", "main road")}
-GRADE_COLORS = {label: Palette.GRADE_COLORS[label] for label in ("flat", "uphill", "downhill")}
+_QUALITY_LABELS = (Condition.GOOD, Condition.UNPAVED, Condition.MAIN_ROAD)
+_GRADE_LABELS = (Grade.FLAT, Grade.UPHILL, Grade.DOWNHILL)
+QUALITY_COLORS = {label: Palette.CONDITION_COLORS[label] for label in _QUALITY_LABELS}
+GRADE_COLORS = {label: Palette.GRADE_COLORS[label] for label in _GRADE_LABELS}
 MODE_COLORS = {
     WebMapConfig.MODE_DONUT_LABELS[Mode.BIKE]: Palette.START,  # bike route → blue
     WebMapConfig.MODE_DONUT_LABELS[Mode.RAIL]: Palette.RAIL,  # train path → purple
 }
 # Fixed display order per donut (mirrors best→worst / bike→train); labels absent from a route are skipped.
-_QUALITY_ORDER = {label: i for i, label in enumerate(("good", "unpaved", "main road"))}
-_GRADE_ORDER = {label: i for i, label in enumerate(("flat", "uphill", "downhill"))}
+_QUALITY_ORDER = {label: i for i, label in enumerate(_QUALITY_LABELS)}
+_GRADE_ORDER = {label: i for i, label in enumerate(_GRADE_LABELS)}
 _MODE_ORDER = {label: i for i, label in enumerate(WebMapConfig.MODE_DONUT_LABELS.values())}
 
 
@@ -62,7 +62,7 @@ def _leg_km_by(*, track: Track, bucket_of: Callable[[TrackPoint], str], bike_onl
 def _quality_bucket(point: TrackPoint) -> str:
     """Quality label for a pedalled point; main-road (± unpaved) folds into the dominant "main road"."""
     condition = classify_condition(mode=point.mode, surface_bad=point.surface_bad, road_bad=point.road_bad)
-    return "main road" if condition in ("main road", "main road + unpaved") else condition
+    return Condition.MAIN_ROAD if condition in (Condition.MAIN_ROAD, Condition.MAIN_ROAD_UNPAVED) else condition
 
 
 def _mode_bucket(point: TrackPoint) -> str:

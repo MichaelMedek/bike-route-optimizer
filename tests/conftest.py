@@ -11,7 +11,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-# Import the two entry-point shells ONCE so coverage MEASURES them
+# Import the two entry-point shells ONCE so coverage MEASURES them (frozen pyproject --cov them).
 import app_webmap  # noqa: E402, F401
 import bike_route  # noqa: E402, F401
 from bike_router.core.constants import PARAM_SPECS, PROJECT_ROOT, GeoConfig, Mode, NodeType, RoutingParams
@@ -397,7 +397,7 @@ def make_store_roundtrip_graph() -> "object":
     Exercises the full node-type/mode matrix for graph_store round-trips: bike↔bike ring,
     rail↔rail edge, and bike↔rail station edges — matching the real type invariants.
     """
-    import networkx as nx
+    import networkx as nx  # BUILD-only dep, imported lazily so the runtime-only CI session never needs it
 
     graph = nx.MultiDiGraph(crs="EPSG:4326")
     pts = {1: (8.00, 48.00, 100.0), 2: (8.01, 48.00, 110.0), 3: (8.01, 48.01, 130.0), 4: (8.00, 48.01, 120.0)}
@@ -423,11 +423,11 @@ def write_store_roundtrip_fixture(out_dir: "object") -> "object":
     Wraps the preprocessing writer here in shared test infra so LAYER tests (e.g. core/graph_store)
     can obtain a real on-disk store WITHOUT importing preprocessing themselves (import-boundary safe).
     """
-    from bike_router.preprocessing.graph_writer import graph_to_tables, write_graph_parquet
+    from bike_router.preprocessing.graph_writer import graph_to_tables, write_graph_parquet  # BUILD-only, lazy
 
     nodes_df, edges_df = graph_to_tables(graph=make_store_roundtrip_graph())
     meta = {"bbox": [7.9, 47.9, 8.2, 48.1], "tile_deg": 0.5, "tolerance_m": 25.0}
-    write_graph_parquet(nodes_df=nodes_df, edges_df=edges_df, meta=meta, out_dir=out_dir)
+    write_graph_parquet(nodes_df=nodes_df, edges_df=edges_df, meta=meta, out_dir=out_dir, compression="snappy")
     return out_dir
 
 
@@ -438,7 +438,7 @@ def make_surface_mix_graph() -> "object":
     surface (sand), 4→5 a list naming a disallowed surface (gravel;dirt), 5→6 a disallowed
     highway (motorway — no bikes). Edges 3→4, 4→5, 5→6 must be dropped. Pre-cost.
     """
-    import networkx as nx
+    import networkx as nx  # BUILD-only dep, imported lazily so the runtime-only CI session never needs it
 
     graph = nx.MultiDiGraph()
     for node in (1, 2, 3, 4, 5, 6):
@@ -457,7 +457,7 @@ def make_two_cluster_graph() -> "object":
     Each cluster's near-identical nodes merge under a 25 m tolerance; the 1.5 km link
     between clusters survives. Pre-cost (consolidation runs before edge costing).
     """
-    import networkx as nx
+    import networkx as nx  # BUILD-only dep, imported lazily so the runtime-only CI session never needs it
 
     graph = nx.MultiDiGraph(crs="EPSG:4326")
     coords = {

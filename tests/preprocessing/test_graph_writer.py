@@ -89,8 +89,8 @@ def test_graph_to_tables():
     # Flattens a MultiDiGraph to node/edge tables in the on-disk schema; height_diff is derived
     # from node elevations (rail -1 100 → -2 130 = +30).
     nodes_df, edges_df = graph_to_tables(graph=make_store_roundtrip_graph())
-    assert list(nodes_df.columns) == graph_store._NODE_COLS
-    assert list(edges_df.columns) == graph_store._EDGE_COLS
+    assert list(nodes_df.columns) == graph_store.NODE_COLS
+    assert list(edges_df.columns) == graph_store.EDGE_COLS
     rail_row = edges_df[(edges_df["mode"] == Mode.RAIL) & (edges_df["from_node"] == -1)].iloc[0]
     assert rail_row["height_diff_m"] == pytest.approx(30.0)
 
@@ -106,8 +106,8 @@ def test_graph_from_tables():
     assert rebuilt.nodes[3]["elevation"] == 130.0
     assert rebuilt.nodes[-1]["node_type"] == NodeType.RAIL
 
-    lone = pd.DataFrame([_node_row(1, elev=100.0)], columns=graph_store._NODE_COLS)
-    dangling = pd.DataFrame([_edge_row(1, 999, mode=Mode.BIKE)], columns=graph_store._EDGE_COLS)
+    lone = pd.DataFrame([_node_row(1, elev=100.0)], columns=graph_store.NODE_COLS)
+    dangling = pd.DataFrame([_edge_row(1, 999, mode=Mode.BIKE)], columns=graph_store.EDGE_COLS)
     assert graph_from_tables(nodes_df=lone, edges_df=dangling).number_of_edges() == 0
 
 
@@ -115,18 +115,20 @@ def test_read_region_tables(tmp_path: Path):
     # Reads a region artifact's full node + edge tables back — every tile concatenated, standard
     # schemas — even when nodes span MULTIPLE 0.5° tiles (written to separate tile files).
     nodes_df, edges_df = graph_to_tables(graph=make_store_roundtrip_graph())
-    write_graph_parquet(nodes_df=nodes_df, edges_df=edges_df, meta=_META, out_dir=tmp_path)
+    write_graph_parquet(nodes_df=nodes_df, edges_df=edges_df, meta=_META, out_dir=tmp_path, compression="snappy")
     got_nodes, got_edges = read_region_tables(region_dir=tmp_path)
     assert len(got_nodes) == len(nodes_df) and len(got_edges) == len(edges_df)
-    assert list(got_nodes.columns) == graph_store._NODE_COLS
+    assert list(got_nodes.columns) == graph_store.NODE_COLS
 
     multi_dir = tmp_path / "multi"
     two_tile_nodes = pd.DataFrame(
         [_node_row(0, elev=0.0), {**_node_row(1, elev=0.0), "lat": 48.6, "lon": 8.6}],  # tiles 96_16 and 97_17
-        columns=graph_store._NODE_COLS,
+        columns=graph_store.NODE_COLS,
     )
-    two_tile_edges = pd.DataFrame([_edge_row(0, 1, mode=Mode.BIKE)], columns=graph_store._EDGE_COLS)
-    write_graph_parquet(nodes_df=two_tile_nodes, edges_df=two_tile_edges, meta=_META, out_dir=multi_dir)
+    two_tile_edges = pd.DataFrame([_edge_row(0, 1, mode=Mode.BIKE)], columns=graph_store.EDGE_COLS)
+    write_graph_parquet(
+        nodes_df=two_tile_nodes, edges_df=two_tile_edges, meta=_META, out_dir=multi_dir, compression="snappy"
+    )
     back_nodes, back_edges = read_region_tables(region_dir=multi_dir)
     assert len(back_nodes) == 2 and len(back_edges) == 1 and set(back_nodes["osmid"]) == {0, 1}
 
@@ -134,7 +136,7 @@ def test_read_region_tables(tmp_path: Path):
 def test_read_full_graph(tmp_path: Path):
     # Reconstructs the WHOLE graph from every tile (Phase-4 validation), matching the saved counts.
     nodes_df, edges_df = graph_to_tables(graph=make_store_roundtrip_graph())
-    write_graph_parquet(nodes_df=nodes_df, edges_df=edges_df, meta=_META, out_dir=tmp_path)
+    write_graph_parquet(nodes_df=nodes_df, edges_df=edges_df, meta=_META, out_dir=tmp_path, compression="snappy")
     graph = read_full_graph(graph_dir=tmp_path)
     assert graph.number_of_nodes() == 6 and graph.number_of_edges() == 14
 
@@ -143,20 +145,24 @@ def test_write_graph_parquet(tmp_path: Path):
     # Writes node/edge tables as lat/lon-tiled parquet + meta.json; a schema drift fails loud; the
     # zstd codec (final HF artifact) round-trips losslessly (readers auto-detect the codec).
     nodes_df, edges_df = graph_to_tables(graph=make_store_roundtrip_graph())
-    write_graph_parquet(nodes_df=nodes_df, edges_df=edges_df, meta=_META, out_dir=tmp_path)
+    write_graph_parquet(nodes_df=nodes_df, edges_df=edges_df, meta=_META, out_dir=tmp_path, compression="snappy")
     assert (tmp_path / graph_store.GraphConfig.META_FILENAME).exists()
     assert list((tmp_path / graph_store.GraphConfig.NODES_SUBDIR).glob("tile_*.parquet"))
     assert list((tmp_path / graph_store.GraphConfig.EDGES_SUBDIR).glob("tile_*.parquet"))
     with pytest.raises(AssertionError, match="nodes schema drift"):
         write_graph_parquet(
-            nodes_df=nodes_df.drop(columns=["station_name"]), edges_df=edges_df, meta=_META, out_dir=tmp_path
+            nodes_df=nodes_df.drop(columns=["station_name"]),
+            edges_df=edges_df,
+            meta=_META,
+            out_dir=tmp_path,
+            compression="snappy",
         )
 
     zstd_dir = tmp_path / "zstd"
     wkt = LineString([(8.0, 48.0), (8.1, 48.1)])
-    z_nodes = pd.DataFrame([_node_row(0, elev=1.0), _node_row(1, elev=2.0)], columns=graph_store._NODE_COLS)
+    z_nodes = pd.DataFrame([_node_row(0, elev=1.0), _node_row(1, elev=2.0)], columns=graph_store.NODE_COLS)
     z_edges = pd.DataFrame(
-        [{**_edge_row(0, 1, mode=Mode.BIKE), "geometry_wkt": _geometry_wkt(geom=wkt)}], columns=graph_store._EDGE_COLS
+        [{**_edge_row(0, 1, mode=Mode.BIKE), "geometry_wkt": _geometry_wkt(geom=wkt)}], columns=graph_store.EDGE_COLS
     )
     write_graph_parquet(nodes_df=z_nodes, edges_df=z_edges, meta=_META, out_dir=zstd_dir, compression="zstd")
     back_nodes, back_edges = read_region_tables(region_dir=zstd_dir)
@@ -174,9 +180,9 @@ def test_assert_node_edge_types_consistent():
 
     nodes_df = pd.DataFrame(
         [_node_row(1, elev=100.0), _node_row(-1, elev=100.0, node_type=NodeType.RAIL, name="A")],
-        columns=graph_store._NODE_COLS,
+        columns=graph_store.NODE_COLS,
     )
-    edges_df = pd.DataFrame([_edge_row(1, -1, mode=Mode.BIKE)], columns=graph_store._EDGE_COLS)
+    edges_df = pd.DataFrame([_edge_row(1, -1, mode=Mode.BIKE)], columns=graph_store.EDGE_COLS)
     with pytest.raises(AssertionError, match="inconsistent node types"):
         graph_from_tables(nodes_df=nodes_df, edges_df=edges_df)
 
@@ -186,8 +192,8 @@ def test_assert_height_diffs_consistent():
     clean_nodes, clean_edges = graph_to_tables(graph=make_store_roundtrip_graph())
     _assert_height_diffs_consistent(graph_from_tables(nodes_df=clean_nodes, edges_df=clean_edges))  # passes
 
-    nodes_df = pd.DataFrame([_node_row(1, elev=100.0), _node_row(2, elev=130.0)], columns=graph_store._NODE_COLS)
-    edges_df = pd.DataFrame([_edge_row(1, 2, mode=Mode.BIKE, height_diff=5.0)], columns=graph_store._EDGE_COLS)
+    nodes_df = pd.DataFrame([_node_row(1, elev=100.0), _node_row(2, elev=130.0)], columns=graph_store.NODE_COLS)
+    edges_df = pd.DataFrame([_edge_row(1, 2, mode=Mode.BIKE, height_diff=5.0)], columns=graph_store.EDGE_COLS)
     with pytest.raises(AssertionError, match="height_diff mismatch"):  # real diff is 30, not 5
         graph_from_tables(nodes_df=nodes_df, edges_df=edges_df)
 

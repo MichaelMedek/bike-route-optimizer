@@ -1,11 +1,7 @@
 """Source-agnostic graph transforms shared by the offline builder and inference.
 
-These operate on an OSMnx-shaped ``nx.MultiDiGraph`` (node attrs ``x``/``y``, edge
-attrs ``length``/``surface``/``highway``/``geometry``) regardless of whether the graph
-came from a pyrosm ``.osm.pbf`` read or a reconstructed corridor subset — so the same
-code path enforces surface filtering, intersection consolidation, and elevation baking
-everywhere (no duplicated logic). Degree-2 contraction happens upstream in pyrosm's
-``to_graph(simplify=True)``.
+Operate on an OSMnx-shaped nx.MultiDiGraph regardless of whether it came from a pyrosm .osm.pbf read or a
+reconstructed corridor — so surface filtering, consolidation, and elevation baking share ONE code path.
 """
 
 import logging
@@ -15,19 +11,18 @@ import numpy as np
 import osmnx as ox
 from shapely.geometry import LineString
 
+from bike_router.core.constants import Schema
 from bike_router.core.cost import road_included, surface_included
 from bike_router.preprocessing.elevation import DEMService
 
 logger = logging.getLogger(__name__)
 
 
-# Node/edge attributes pyrosm attaches that COLLIDE with the (osmid) node index or
-# the (u, v, key) edge index when osmnx converts a graph to/from GeoDataFrames.
-# Stripping them makes pyrosm graphs safe for ox.projection / ox.simplification.
-# NOTE: ``geometry`` is deliberately KEPT — the real edge polyline is what makes the
-# 3D path and DEM-draped elevation follow the true road instead of a straight line.
-_PYROSM_NODE_JUNK = ("osmid", "geometry", "tags", "version", "visible", "changeset", "timestamp")
-_PYROSM_EDGE_JUNK = ("osmid", "u", "v", "key", "tags", "version", "timestamp", "osm_type")
+# pyrosm attaches node/edge attrs that COLLIDE with the (osmid) / (u, v, key) index when osmnx
+# converts to/from GeoDataFrames; stripping them makes pyrosm graphs safe for ox.projection.
+# ``geometry`` is deliberately KEPT — the real polyline drives the 3D path + DEM-draped elevation.
+_PYROSM_NODE_JUNK = (Schema.OSMID, Schema.GEOMETRY, "tags", "version", "visible", "changeset", "timestamp")
+_PYROSM_EDGE_JUNK = (Schema.OSMID, "u", "v", Schema.KEY, "tags", "version", "timestamp", "osm_type")
 
 
 def normalize_pyrosm_graph(graph: nx.MultiDiGraph) -> None:
@@ -53,7 +48,7 @@ def drop_disallowed_edges(graph: nx.MultiDiGraph) -> None:
     doomed = [
         (node_a, node_b, key)
         for node_a, node_b, key, data in graph.edges(keys=True, data=True)
-        if not (surface_included(surface=data.get("surface")) and road_included(highway=data.get("highway")))
+        if not (surface_included(surface=data.get(Schema.SURFACE)) and road_included(highway=data.get(Schema.HIGHWAY)))
     ]
     graph.remove_edges_from(doomed)
     graph.remove_nodes_from([node for node in list(graph.nodes) if graph.degree(node) == 0])
@@ -116,7 +111,7 @@ def bake_edge_geometry_elevations(graph: nx.MultiDiGraph, dem: DEMService) -> No
     Samples the DEM at EVERY vertex (one bulk call) so the artifact fully describes the terrain and
     inference never touches the DEM. Rail/bike carry real polylines; station links stay straight. BUILD only.
     """
-    edges = [(u, v, k, d) for u, v, k, d in graph.edges(keys=True, data=True) if d.get("geometry") is not None]
+    edges = [(u, v, k, d) for u, v, k, d in graph.edges(keys=True, data=True) if d.get(Schema.GEOMETRY) is not None]
     if not edges:
         return
     counts = [len(d["geometry"].coords) for _u, _v, _k, d in edges]

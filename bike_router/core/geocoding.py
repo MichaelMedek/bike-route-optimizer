@@ -1,8 +1,7 @@
 """Geocoding: Nominatim (one-shot resolve) + Photon (search-as-you-type).
 
-``geocode``/``geocode_endpoint`` resolve a place string to (lat, lon) via Nominatim
-(one deliberate lookup — policy-fine). ``photon_autocomplete`` powers the web
-typeahead via Photon, which OSM built for that (Nominatim forbids client autocomplete).
+``geocode``/``geocode_endpoint`` resolve a place string to (lat, lon) via Nominatim; ``photon_autocomplete``
+powers the web typeahead via Photon (Nominatim forbids client autocomplete).
 """
 
 import logging
@@ -22,7 +21,8 @@ logger = logging.getLogger(__name__)
 
 GeocodeFn = Callable[[str], Location | None]
 # Injectable HTTP seam (url, params, timeout) → parsed JSON — lets tests run offline.
-HttpParams = dict[str, str | float]
+# A tuple value becomes a repeated query param (e.g. osm_tag=place:city&osm_tag=place:town).
+HttpParams = dict[str, str | float | tuple[str, ...]]
 
 # Nominatim's usage policy MANDATES caching ("Results must be cached … clients sending
 # repeatedly the same query may be blocked"). Place→(lat,lon) is immutable.
@@ -50,11 +50,29 @@ def make_geocode_fn() -> GeocodeFn:
     return fn
 
 
+def _parse_latlon(place: str) -> tuple[float, float] | None:
+    """A ``"lat, lon"`` literal → (lat, lon), or None if it isn't one (fall through to Nominatim).
+
+    Lets the GPS button feed raw coordinates through the SAME text box as place names — the box
+    text stays the single input. Requires exactly two comma-separated floats in valid WGS84 range.
+    """
+    parts = place.split(",")
+    if len(parts) != 2:
+        return None
+    try:
+        lat, lon = float(parts[0]), float(parts[1])
+    except ValueError:
+        return None
+    return (lat, lon) if -90.0 <= lat <= 90.0 and -180.0 <= lon <= 180.0 else None
+
+
 def geocode(place: str, geocode_fn: GeocodeFn) -> tuple[float, float]:
     """Resolve ``place`` to (lat, lon) via the given geocode callable.
 
+    A ``"lat, lon"`` literal (from the GPS button) resolves directly; any other string is geocoded.
+
     Args:
-        place: A human place string, e.g. "Freudenstadt, Germany".
+        place: A human place string, e.g. "Freudenstadt, Germany", or a "lat, lon" literal.
         geocode_fn: Rate-limited geocode callable from make_geocode_fn; reused
             across origin + destination so the rate limiter spans both.
 
@@ -64,6 +82,10 @@ def geocode(place: str, geocode_fn: GeocodeFn) -> tuple[float, float]:
     """
     if place in _GEOCODE_CACHE:  # policy-mandated: never re-query an identical string
         return _GEOCODE_CACHE[place]
+    coords = _parse_latlon(place=place)
+    if coords is not None:  # raw GPS coordinates — no lookup needed
+        _GEOCODE_CACHE[place] = coords
+        return coords
     try:
         location = geocode_fn(place)
     except GeocoderServiceError as exc:  # unreachable service / no connection
@@ -97,7 +119,7 @@ def geocode_endpoint(place: str, label: str, geocode_fn: GeocodeFn) -> tuple[flo
         raise GeocodeNotFoundError(f"{label} ({place!r}): could not find this place.") from exc
 
 
-def _default_http_get(*, url: str, params: HttpParams, timeout: float) -> object:
+def default_http_get(*, url: str, params: HttpParams, timeout: float) -> object:
     """Real HTTP GET returning parsed JSON (the production HttpGetter).
 
     Sends the project User-Agent — Photon 403s the default ``python-requests`` UA.
@@ -126,8 +148,9 @@ def photon_autocomplete(
     *,
     term: str,
     bbox: tuple[float, float, float, float],
-    limit: int = PhotonConfig.LIMIT,
-    http_get: HttpGetter = _default_http_get,
+    limit: int,
+    osm_tag: str,
+    http_get: HttpGetter,
 ) -> list[str]:
     """Search-as-you-type place labels ("Name, City, State") biased to ``bbox``.
 
@@ -138,6 +161,7 @@ def photon_autocomplete(
         term: The partial text the user has typed.
         bbox: Coverage box (west, south, east, north) to bias + limit suggestions.
         limit: Max suggestions to request.
+        osm_tag: Photon osm_tag filter — settlements by default, ``railway:station`` for Bahnhöfe.
         http_get: Injectable HTTP getter (url, params, timeout) → parsed JSON.
     """
     if not term.strip():
@@ -147,7 +171,7 @@ def photon_autocomplete(
         "q": term,
         "limit": limit,
         "lang": PhotonConfig.LANG,
-        "osm_tag": PhotonConfig.PLACE_OSM_TAG,
+        "osm_tag": osm_tag,
         "bbox": f"{west},{south},{east},{north}",
         "lon": (west + east) / 2.0,  # centre bias so nearer places rank first
         "lat": (south + north) / 2.0,
@@ -161,7 +185,67 @@ def photon_autocomplete(
     return [photon_label(properties=feature["properties"]) for feature in features]
 
 
-def nearest_place_name(*, lat: float, lon: float, http_get: HttpGetter = _default_http_get) -> str | None:
+def as_bahnhof(*, name: str) -> str:
+    """Append " Bahnhof" to a place name unless it already ends in it — the ONE station-label rule.
+
+    The bare OSM name (just "Sauldorf") geocodes to the town centre; "<name> Bahnhof" hits the
+    platform. Shared by the autocomplete Bahnhof pick and the clickable top-station markers.
+    """
+    trimmed = name.strip()
+    return trimmed if trimmed.lower().endswith("bahnhof") else f"{trimmed} Bahnhof"
+
+
+def bahnhof_suggestion(
+    *,
+    term: str,
+    bbox: tuple[float, float, float, float],
+    http_get: HttpGetter,
+) -> str | None:
+    """The "<place> Bahnhof" label for the typed term IF a railway station matches, else None.
+
+    Station OSM ``name``s often lack "Bahnhof" (just "Sauldorf"), rendering identical to the town;
+    the station-first query's name is concatenated to "<name> Bahnhof" and shown FIRST as a red button.
+
+    Args:
+        term: The partial text the user has typed.
+        bbox: Coverage box (west, south, east, north) to bias the station query.
+        http_get: Injectable HTTP getter.
+    """
+    stations = photon_autocomplete(
+        term=term, bbox=bbox, limit=1, osm_tag=PhotonConfig.STATION_OSM_TAG, http_get=http_get
+    )
+    if not stations:
+        return None
+    name = stations[0].split(",")[0].strip()  # station label's own name, before the ", State" part
+    if not name:
+        return None
+    return as_bahnhof(name=name)
+
+
+def autocomplete_with_stations(
+    *,
+    term: str,
+    bbox: tuple[float, float, float, float],
+    limit: int,
+    http_get: HttpGetter,
+) -> tuple[str | None, list[str]]:
+    """(bahnhof_label, place_labels): a red-button "<place> Bahnhof" pick (if a station matches) plus
+    ordinary settlement suggestions. Splitting them lets the UI render the Bahnhof pick FIRST and red.
+
+    Args:
+        term: The partial text the user has typed.
+        bbox: Coverage box (west, south, east, north) to bias + limit suggestions.
+        limit: Max settlement suggestions to request.
+        http_get: Injectable HTTP getter.
+    """
+    bahnhof = bahnhof_suggestion(term=term, bbox=bbox, http_get=http_get)
+    places = photon_autocomplete(
+        term=term, bbox=bbox, limit=limit, osm_tag=PhotonConfig.PLACE_OSM_TAG, http_get=http_get
+    )
+    return bahnhof, [p for p in places if p != bahnhof]  # drop a place duplicating the Bahnhof pick
+
+
+def nearest_place_name(*, lat: float, lon: float, http_get: HttpGetter) -> str | None:
     """Nearest settlement NAME to (lat, lon) via Photon reverse geocoding — the place ``name``
     (e.g. "Baiersbronn"), never a full address. Any network/parse error or empty result returns
     None (caller drops the label) so a weak connection never crashes. Names the gmaps waypoints.
@@ -170,8 +254,9 @@ def nearest_place_name(*, lat: float, lon: float, http_get: HttpGetter = _defaul
         "lat": lat,
         "lon": lon,
         "lang": PhotonConfig.LANG,
-        "osm_tag": PhotonConfig.PLACE_OSM_TAG,
-        "limit": 1,  # Photon returns the NEAREST place; no radius cap needed
+        "osm_tag": PhotonConfig.REVERSE_PLACE_TAGS,  # only real settlements → a town/village, never a postcode
+        "radius": PhotonConfig.REVERSE_RADIUS_KM,  # search within this many km so a remote waypoint still names one
+        "limit": 1,
     }
     reverse_url = PhotonConfig.BASE_URL.removesuffix("/api") + "/reverse"
     try:

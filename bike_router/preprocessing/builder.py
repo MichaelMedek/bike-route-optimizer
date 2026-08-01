@@ -1,9 +1,7 @@
 """Offline builder: a whole-region bike+rail graph from Geofabrik .osm.pbf extracts.
 
-Builds the cycling network and the rail track network INDEPENDENTLY via one shared pyrosm
-builder (only the filter differs), bakes DEM elevation, then merges them into one graph by
-wiring each station (a separate rail node) to its nearest bike nodes with station edges.
-Returns node/edge tables; the routing sliders decide if A* uses rail.
+Builds cycling + rail networks INDEPENDENTLY via one shared pyrosm builder, bakes DEM elevation, then
+merges them by wiring each station to its nearest bike nodes. Returns node/edge tables.
 """
 
 import logging
@@ -26,10 +24,13 @@ from shapely.geometry import LineString, Point
 from shapely.ops import nearest_points
 
 from bike_router.core.constants import (
+    NAME_KEY,
+    WGS84_CRS,
     GraphConfig,
     Mode,
     NodeType,
     RailConfig,
+    Schema,
 )
 from bike_router.core.geo import haversine_distance_m, haversine_vec
 from bike_router.preprocessing.elevation import DEMService
@@ -136,7 +137,7 @@ def _station_points(osm: OSM) -> list[tuple[str, float, float]]:
     stations = osm.get_data_by_custom_criteria(
         custom_filter={"railway": list(RailConfig.STATION_TAGS)},
         filter_type="keep",
-        tags_as_columns=["name"],  # promote the OSM name tag to a column
+        tags_as_columns=[NAME_KEY],  # promote the OSM name tag to a column
         keep_nodes=True,
         keep_ways=True,
         keep_relations=False,
@@ -144,9 +145,9 @@ def _station_points(osm: OSM) -> list[tuple[str, float, float]]:
     if stations is None or stations.empty:
         return []
     points = stations.geometry.representative_point()
-    names = stations["name"] if "name" in stations.columns else [None] * len(stations)
+    names = stations[NAME_KEY] if NAME_KEY in stations.columns else [None] * len(stations)
     return [
-        (name if isinstance(name, str) else "station", float(pt.y), float(pt.x))
+        (name if isinstance(name, str) else Mode.STATION, float(pt.y), float(pt.x))
         for name, pt in zip(names, points, strict=True)
     ]
 
@@ -186,7 +187,7 @@ def _nearest_tracks(
     Per point returns (endpoint_node, node_dist_m, line_dist_m); the query runs on the PROJECTED graph
     (Euclidean nearest_edges mis-picks on lat/lon at ~48°N). ``line_dist_m`` gates on-network membership.
     """
-    tr = pyproj.Transformer.from_crs("EPSG:4326", rail_proj.graph["crs"], always_xy=True)
+    tr = pyproj.Transformer.from_crs(WGS84_CRS, rail_proj.graph["crs"], always_xy=True)
     px, py = tr.transform(lons, lats)  # vectorized reprojection
     edges = ox.distance.nearest_edges(
         rail_proj, X=np.asarray(px), Y=np.asarray(py)
@@ -202,7 +203,7 @@ def _nearest_tracks(
         node_dist = haversine_distance_m(
             lat_a=lat, lon_a=lon, lat_b=rail_graph.nodes[node]["y"], lon_b=rail_graph.nodes[node]["x"]
         )
-        geom = rail_graph.get_edge_data(u, v)[key].get("geometry")
+        geom = rail_graph.get_edge_data(u, v)[key].get(Schema.GEOMETRY)
         if geom is None:
             geom = LineString(
                 [
@@ -275,10 +276,9 @@ def _merge_bike_rail(bike_graph: nx.MultiDiGraph, rail_graph: nx.MultiDiGraph, o
         # Declare the nearest N bike nodes its entrances; each STATION edge costs straight-line length
         # + half the boarding charge (cost.py), so board + alight sum to a full boarding.
         entrances = _station_entrances(node_ids=bike_ids, node_lats=bike_lats, node_lons=bike_lons, lat=lat, lon=lon)
-        # A station with NO bike node within radius is rail-reachable but has no bike entrance — WARN, not
-        # fail: measured on real data, rural halts (e.g. Langen(Han) 494 m, Debstedt 342 m) sit on the rail
-        # with the nearest MAPPED road 200–500 m away (OSM sparsity, not a build bug). It stays as a
-        # train-only stop; a neighbouring region may still supply an entrance after Phase-3 stitching.
+        # A station with NO bike node within radius is rail-reachable but has no bike entrance — WARN,
+        # not fail: rural halts sit on the rail with the nearest mapped road 200–500 m away (OSM sparsity).
+        # It stays train-only; a neighbouring region may still supply an entrance after Phase-3 stitching.
         if not entrances:
             logger.warning(
                 f"station {name!r} at ({lat:.5f}, {lon:.5f}) has no bike node within "
@@ -411,7 +411,7 @@ def dedup_by_geometry(nodes_df: pd.DataFrame, edges_df: pd.DataFrame) -> tuple[p
     # Canonical node per rounded (lat, lon, node_type): the row with the lowest (lat, lon), then id.
     # node_type MUST be in the key — else a coincident bike+rail node would merge, leaving a bike
     # edge pointing at a rail node (breaks the type invariant the graph model guarantees).
-    nodes_df = nodes_df.sort_values(["lat", "lon", "osmid"], kind="stable")
+    nodes_df = nodes_df.sort_values([Schema.LAT, Schema.LON, Schema.OSMID], kind="stable")
     key_lat = nodes_df["lat"].round(prec)
     key_lon = nodes_df["lon"].round(prec)
     nodes_df["_key"] = list(zip(key_lat, key_lon, nodes_df["node_type"], strict=True))

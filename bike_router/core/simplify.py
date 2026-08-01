@@ -1,8 +1,7 @@
 """Route geometry helpers.
 
-``route_to_linestring`` stitches the node path into the full OSM geometry;
-``select_waypoints`` reduces it to N significant points (Visvalingam-Whyatt) for
-the Google Maps URL.
+``route_to_linestring`` stitches the node path into the full OSM geometry; ``select_waypoints``
+reduces it to N significant points (Visvalingam-Whyatt) for the Google Maps URL.
 """
 
 import logging
@@ -200,7 +199,7 @@ def route_to_linestring(route: RoutePath) -> LineString:
     return LineString(coords)
 
 
-def select_waypoints(line: LineString, count: int = 10) -> list[tuple[float, float]]:
+def select_waypoints(line: LineString, count: int) -> list[tuple[float, float]]:
     """Reduce ``line`` to at most ``count`` significant points, returned (lat, lon).
 
     Visvalingam-Whyatt keeps the ``count`` most significant points (endpoints included), then

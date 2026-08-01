@@ -1,9 +1,7 @@
-"""The route as an ordered edge list — the single inference-side representation.
+"""The route as an ordered edge list — the single inference-side representation (no networkx).
 
-A computed route IS its ordered nodes plus the ordered edges between them; there is no
-networkx graph at inference. ``RouteEdge`` carries only what drawing/stats/legs need
-(mode, length, tags, oriented 2D geometry); ``RouteNode`` carries coords + baked
-elevation + type. ``edges[i]`` joins ``nodes[i] → nodes[i+1]`` — asserted at construction.
+``RouteEdge`` carries only what drawing/stats/legs need (mode, length, tags, 2D geometry); ``RouteNode``
+carries coords + baked elevation + type. ``edges[i]`` joins ``nodes[i] → nodes[i+1]`` (asserted at construction).
 """
 
 from collections.abc import Iterator
@@ -24,9 +22,9 @@ class RouteNode:
 
 @dataclass(frozen=True)
 class RouteEdge:
-    """One hop on the route, oriented from_node → to_node. ``geometry`` is the real 2D polyline
-    ``[(lon, lat), ...]`` oriented along travel, or None for a straight rail/station hop; surface/
-    highway stay optional external OSM tags; length_m is the baked edge length.
+    """One hop on the route, oriented from_node → to_node: mode, length, OSM tags, oriented 2D
+    ``geometry`` (or None for a straight rail/station hop), and ``geometry_z`` (baked per-vertex
+    elevation, same length as geometry, or None) for the elevation-deviation warning.
     """
 
     from_node: int
@@ -36,6 +34,7 @@ class RouteEdge:
     surface: object
     highway: object
     geometry: list[tuple[float, float]] | None
+    geometry_z: list[float] | None = None
 
 
 @dataclass(frozen=True)

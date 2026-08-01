@@ -1,8 +1,7 @@
 """DEM elevation sampling — vectorized, CRS-aware, nodata-safe.
 
-EuroDEM is ETRS89 in ARCSECONDS, not EPSG:4326 degrees, so we reproject WGS84
-lon/lat → the DEM's native CRS (cached transformer) before the inverse-affine
-gather. Hence NOT osmnx's raster helper, which would mis-sample the arcsec grid.
+EuroDEM is ETRS89 in ARCSECONDS, not EPSG:4326, so we reproject WGS84 lon/lat → the DEM's native CRS
+(cached transformer) before the inverse-affine gather (NOT osmnx's raster helper, which mis-samples it).
 """
 
 import logging
@@ -17,7 +16,7 @@ import rasterio
 from pyproj import Transformer
 from rasterio.io import DatasetReader
 
-from bike_router.core.constants import DEMConfig
+from bike_router.core.constants import WGS84_CRS
 
 logger = logging.getLogger(__name__)
 
@@ -47,12 +46,12 @@ class DEMService:
     # WGS84 (west, south, east, north), computed once at load.
     _wgs84_bounds: tuple[float, float, float, float] | None = None
 
-    def __new__(cls, dem_path: Path | None = None) -> "DEMService":
+    def __new__(cls, dem_path: Path) -> "DEMService":
         """Create or return the singleton instance (one DEM per process)."""
         if cls._instance is None:
             cls._instance = super().__new__(cls)
-            cls._instance._dem_path = dem_path or DEMConfig.EURODEM_PATH
-        elif dem_path is not None and cls._instance._dem_path != Path(dem_path):
+            cls._instance._dem_path = Path(dem_path)
+        elif cls._instance._dem_path != Path(dem_path):
             # A different DEM path was requested — reset so the new file loads.
             cls._instance = super().__new__(cls)
             cls._instance._dem_path = Path(dem_path)
@@ -81,11 +80,17 @@ class DEMService:
             dataset = rasterio.open(dem_path)
             dem_array = dataset.read(1)
             self._dem = dataset
-            self._dem_crs = dataset.crs.to_string() if dataset.crs else "EPSG:4326"
+            if dataset.crs is None:
+                # A CRS-less DEM is a corrupt artifact. Defaulting to EPSG:4326 would be exactly wrong
+                # (EuroDEM is ETRS89 arcseconds) and bake silently-wrong elevations, so fail loud.
+                raise ValueError(
+                    f"DEM at {dem_path} has no CRS — corrupt artifact. Rebuild with scripts/crop_dem_to_dach.py."
+                )
+            self._dem_crs = dataset.crs.to_string()
             self._dem_array = dem_array
             self._dem_nodata = dataset.nodata
-            if self._dem_crs != "EPSG:4326":
-                self._to_dem = Transformer.from_crs("EPSG:4326", self._dem_crs, always_xy=True)
+            if self._dem_crs != WGS84_CRS:
+                self._to_dem = Transformer.from_crs(WGS84_CRS, self._dem_crs, always_xy=True)
             self._wgs84_bounds = self._compute_wgs84_bounds(native_bounds=dataset.bounds)
             self._dem_transform = dataset.transform  # set LAST — is_loaded checks this
             logger.info(f"DEM loaded in {time.time() - start:.2f}s (shape={dem_array.shape}, CRS={self._dem_crs})")

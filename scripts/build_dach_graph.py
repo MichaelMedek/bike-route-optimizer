@@ -239,7 +239,7 @@ def _process_region(
         **base_meta(nodes_df=nodes_df, edges_df=edges_df, tolerance_m=tolerance_m),
         "confirmed_complete": True,  # written LAST via write_graph_parquet → the atomic "done" flag
     }
-    write_graph_parquet(nodes_df=nodes_df, edges_df=edges_df, meta=meta, out_dir=region_dir)
+    write_graph_parquet(nodes_df=nodes_df, edges_df=edges_df, meta=meta, out_dir=region_dir, compression="snappy")
     return _peak_rss_gb()  # this child's peak; the process then exits and the OS reclaims everything
 
 

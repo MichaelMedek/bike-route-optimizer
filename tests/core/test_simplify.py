@@ -256,13 +256,14 @@ def test_route_to_linestring():
 
 
 def test_select_waypoints():
-    # Reduces to exactly N (lat, lon) points across sizes; endpoints always kept; a significant
+    # Reduces to AT MOST N (lat, lon) points across sizes; endpoints always kept; a significant
     # corner survives; a short line is padded up to N; an over-close tiny leg thins to just 2.
     n = GmapsConfig.N_WAYPOINTS
     points = select_waypoints(line=_zigzag_line(n_points=200), count=n)
-    assert len(points) == n and all(len(point) == 2 for point in points)
+    assert 2 <= len(points) <= n and all(len(point) == 2 for point in points)
     for n_points in (11, 50, 200, 500):
-        assert len(select_waypoints(line=_zigzag_line(n_points=n_points), count=10)) == 10
+        # count is a CEILING; the 5 km min-spacing thin may drop near-clustered corners below it.
+        assert len(select_waypoints(line=_zigzag_line(n_points=n_points), count=10)) <= 10
 
     line = _zigzag_line(n_points=200)
     coords = list(line.coords)  # (lon, lat)
@@ -277,7 +278,7 @@ def test_select_waypoints():
     corner = select_waypoints(line=LineString([(0.0, 0.0), (1.0, 0.0), (1.0, 1.0)]), count=3)
     assert (0.0, 1.0) in corner  # the significant corner (lat=0, lon=1)
 
-    # a ~37 m leg near (48, 8): every interior point is under the 1 km spacing → only the two ends
+    # a ~37 m leg near (48, 8): every interior point is under the 5 km spacing → only the two ends
     tiny = select_waypoints(line=LineString([(8.0000 + i * 0.0001, 48.0) for i in range(6)]), count=10)
     assert tiny == [(48.0, 8.0), (48.0, 8.0005)]
 

@@ -14,24 +14,26 @@ import pytest
 from shapely.geometry import box
 
 from bike_router.core import graph_store
-from bike_router.core.constants import GraphConfig, Mode, NodeType
+from bike_router.core.constants import GraphConfig, Mode, NodeType, RailConfig
 from bike_router.core.errors import OutOfCoverageError
 from bike_router.core.graph_store import (
     _covering_tiles,
     _intersecting_tiles,
     _load_layer,
     _oriented_geometry,
-    _read_tiles,
     _select_path_edges,
-    _str_or_none,
-    _tile_name,
     download_graph_from_hf,
     load_meta,
     load_path_edges,
     load_route_tables,
+    read_tiles,
     snap_to_node,
+    str_or_none,
     tile_index,
+    tile_name,
+    top_stations,
 )
+from bike_router.core.progress import null_progress
 from bike_router.core.route_path import RouteNode
 from tests.conftest import DEFAULT_PARAMS, FIXTURE_GRAPH_DIR
 
@@ -54,8 +56,8 @@ def test_tile_index():
 
 def test_tile_name():
     # Filename stem for a tile, negative-safe.
-    assert _tile_name(row=96, col=16) == "tile_96_16"
-    assert _tile_name(row=-1, col=-2) == "tile_-1_-2"
+    assert tile_name(row=96, col=16) == "tile_96_16"
+    assert tile_name(row=-1, col=-2) == "tile_-1_-2"
 
 
 def test_covering_tiles():
@@ -94,19 +96,21 @@ def test_read_tiles(roundtrip_store: Path):
     # tiles=None reads every tile; an empty result yields the requested-columns empty frame.
     store = roundtrip_store
     tiles = _intersecting_tiles(corridor=box(7.99, 47.99, 8.02, 48.02), tile_deg=0.5)
-    rail_only = _read_tiles(
+    rail_only = read_tiles(
         directory=store / GraphConfig.EDGES_SUBDIR,
-        columns=graph_store._EDGE_COLS,
+        columns=graph_store.EDGE_COLS,
         tiles=tiles,
         filters=[("mode", "==", "rail")],
     )
     assert not rail_only.empty and set(rail_only["mode"]) == {Mode.RAIL}
-    all_nodes = _read_tiles(directory=store / GraphConfig.NODES_SUBDIR, columns=graph_store._NODE_COLS, tiles=None)
-    assert len(all_nodes) == 6  # every node tile
-    missing = _read_tiles(
-        directory=store / GraphConfig.NODES_SUBDIR, columns=graph_store._NODE_COLS, tiles=[(999, 999)]
+    all_nodes = read_tiles(
+        directory=store / GraphConfig.NODES_SUBDIR, columns=graph_store.NODE_COLS, tiles=None, filters=None
     )
-    assert missing.empty and list(missing.columns) == graph_store._NODE_COLS
+    assert len(all_nodes) == 6  # every node tile
+    missing = read_tiles(
+        directory=store / GraphConfig.NODES_SUBDIR, columns=graph_store.NODE_COLS, tiles=[(999, 999)], filters=None
+    )
+    assert missing.empty and list(missing.columns) == graph_store.NODE_COLS
 
 
 def test_load_layer(roundtrip_store: Path):
@@ -121,6 +125,7 @@ def test_load_layer(roundtrip_store: Path):
         edge_modes=[Mode.BIKE],
         node_columns=graph_store._ROUTE_NODE_COLS,
         edge_columns=graph_store._ROUTE_EDGE_COLS,
+        extra_from_ids=frozenset(),
     )
     assert set(nodes_df["node_type"]) == {NodeType.BIKE} and len(nodes_df) == 4
     assert inside_ids == {1, 2, 3, 4}
@@ -136,18 +141,30 @@ def test_load_route_tables(roundtrip_store: Path):
     # routing tables (6 nodes, 14 edges); the two layers load independently; outside coverage fails.
     store = roundtrip_store
     wide = box(7.9, 47.9, 8.2, 48.1)
-    nodes_df, edges_df = load_route_tables(bike_corridor=wide, rail_corridor=wide, graph_dir=store)
+    nodes_df, edges_df = load_route_tables(
+        bike_corridor=wide,
+        rail_corridor=wide,
+        graph_dir=store,
+    )
     assert len(nodes_df) == 6 and len(edges_df) == 14
     assert set(edges_df["mode"]) == {Mode.BIKE, Mode.RAIL, Mode.STATION}
 
     both = box(7.999, 47.999, 8.011, 48.011)
-    nodes2, _edges2 = load_route_tables(bike_corridor=both, rail_corridor=both, graph_dir=store)
+    nodes2, _edges2 = load_route_tables(
+        bike_corridor=both,
+        rail_corridor=both,
+        graph_dir=store,
+    )
     node_types = set(nodes2["node_type"])
     assert NodeType.BIKE in node_types and NodeType.RAIL in node_types
 
     far = box(20.0, 60.0, 20.1, 60.1)  # no tiles there
     with pytest.raises(AssertionError, match="bike corridor is outside"):
-        load_route_tables(bike_corridor=far, rail_corridor=far, graph_dir=store)
+        load_route_tables(
+            bike_corridor=far,
+            rail_corridor=far,
+            graph_dir=store,
+        )
 
 
 # --- final-path re-read ------------------------------------------------------
@@ -197,13 +214,14 @@ def test_select_path_edges():
 
 
 def test_oriented_geometry():
-    # WKT → [(lon, lat), ...] oriented to START at node_a (reversed if it ends closer); None if absent.
+    # WKT → ([(lon, lat), ...], [z, ...]) oriented to START at node_a (reversed if it ends closer);
+    # (None, None) if absent. 3D WKT keeps the baked z per vertex, flipped in lockstep with the coords.
     node_a = _bike_node(1, lat=48.0, lon=8.0)
-    forward = _oriented_geometry(wkt="LINESTRING (8.0 48.0, 8.01 48.0)", node_a=node_a)
-    assert forward[0] == (8.0, 48.0)
-    reverse = _oriented_geometry(wkt="LINESTRING (8.01 48.0, 8.0 48.0)", node_a=node_a)
-    assert reverse[0] == (8.0, 48.0)  # flipped so it starts at node_a
-    assert _oriented_geometry(wkt=None, node_a=node_a) is None  # a straight hop has no polyline
+    coords, zs = _oriented_geometry(wkt="LINESTRING Z (8.0 48.0 100, 8.01 48.0 130)", node_a=node_a)
+    assert coords[0] == (8.0, 48.0) and zs == [100.0, 130.0]
+    r_coords, r_zs = _oriented_geometry(wkt="LINESTRING Z (8.01 48.0 130, 8.0 48.0 100)", node_a=node_a)
+    assert r_coords[0] == (8.0, 48.0) and r_zs == [100.0, 130.0]  # coords + z flipped together
+    assert _oriented_geometry(wkt=None, node_a=node_a) == (None, None)  # a straight hop has no polyline
 
 
 # --- snapping ----------------------------------------------------------------
@@ -219,6 +237,18 @@ def test_snap_to_node():
         snap_to_node(lat=52.52, lon=13.40, graph_dir=FIXTURE_GRAPH_DIR)
 
 
+def test_top_stations():
+    # Prominent local-high stations: full Dominanz (highest within the radius) AND Schartenhöhe ≥
+    # threshold (rises that far above the lowest nearby stop). Freudenstadt Stadt (739 m) — highest and
+    # 244 m above the lowest station near it (495 m) — is the sole fixture top.
+    tops = top_stations(graph_dir=FIXTURE_GRAPH_DIR)
+    assert tops, "fixture should expose at least one top station"
+    lat, lon, elev, name = tops[0]
+    assert name == "Freudenstadt Stadt" and elev == 739.0  # the highest fixture station
+    assert elev >= RailConfig.TOP_STATION_PROMINENCE_M  # comfortably clears the prominence gate
+    assert tops == sorted(tops, key=lambda t: t[2], reverse=True)  # highest first
+
+
 # --- download / coercion -----------------------------------------------------
 
 
@@ -231,7 +261,7 @@ def test_download_graph_from_hf(tmp_path: Path, monkeypatch):
     (present / GraphConfig.META_FILENAME).write_text("{}")
     called = MagicMock()
     monkeypatch.setattr(graph_store, "snapshot_download", called)
-    assert download_graph_from_hf(target_dir=present) == present
+    assert download_graph_from_hf(target_dir=present, progress=null_progress) == present
     called.assert_not_called()  # already present → no network
 
     fresh = tmp_path / "fresh"
@@ -259,12 +289,12 @@ def test_download_graph_from_hf(tmp_path: Path, monkeypatch):
 
     monkeypatch.setattr(graph_store, "snapshot_download", _boom)
     with pytest.raises(OSError, match="network died"):
-        download_graph_from_hf(target_dir=tmp_path / "boom")
+        download_graph_from_hf(target_dir=tmp_path / "boom", progress=null_progress)
 
 
 def test_str_or_none():
     # The ONE 'non-str/NaN → None' coercion for tag/name columns.
-    assert _str_or_none(value="asphalt") == "asphalt"
-    assert _str_or_none(value=None) is None
-    assert _str_or_none(value=float("nan")) is None
-    assert _str_or_none(value=42) is None
+    assert str_or_none(value="asphalt") == "asphalt"
+    assert str_or_none(value=None) is None
+    assert str_or_none(value=float("nan")) is None
+    assert str_or_none(value=42) is None

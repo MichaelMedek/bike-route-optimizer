@@ -1,8 +1,7 @@
 """Progress + process-memory helpers for the pipeline.
 
-``ProgressFn`` receives (items_done, items_total) from the ONE place progress is shown: the
-one-time prebuilt-graph download (files landed on disk). ``log_rss`` logs process memory at
-key seams (deploy RAM ceiling ≈ 2.7 GB).
+``ProgressFn`` receives (done, total) from the one-time prebuilt-graph download; ``log_rss`` logs
+process memory at key seams (deploy RAM ceiling ≈ 2.7 GB).
 """
 
 import logging

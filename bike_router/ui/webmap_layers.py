@@ -1,8 +1,7 @@
-"""Pydeck layer builders for the 3D bike-route map (app_webmap.py).
+"""Pydeck layer builders for the 3D bike-route map.
 
-Radically simplified from ski-resort-designer's `ui/terrain_layer.py`: 3D only.
-A `TerrainLayer` (AWS Terrarium elevation tiles + OpenTopoMap texture, same as the
-ski map) plus an optional route ribbon `PathLayer`. No 2D style, no clicks.
+A `TerrainLayer` (AWS Terrarium elevation tiles + OpenTopoMap texture) plus an optional route
+ribbon `PathLayer`, endpoint/waypoint/top-station marker layers. 3D only, no 2D style.
 """
 
 from dataclasses import asdict
@@ -10,6 +9,7 @@ from dataclasses import asdict
 import pydeck as pdk
 
 from bike_router.core.constants import WebMapConfig
+from bike_router.core.simplify import place_label
 from bike_router.ui.webmap import RibbonSegment, ViewState
 
 
@@ -124,25 +124,58 @@ def create_waypoint_layer(waypoints: list[tuple[float, float, float, str]]) -> p
     )
 
 
+def create_top_station_layer(top_stations: list[tuple[float, float, float, str]]) -> pdk.Layer:
+    """Rail-purple clickable markers at local-maximum ("top") rail stations — trip inspiration.
+
+    Each row carries ``name`` (click-to-fill the Start box) + a "Name (elev m)" hover tooltip; clicks
+    are read via the deck ``events=['click']`` return.
+
+    Args:
+        top_stations: ``(lat, lon, elevation_m, name)`` per local-maximum rail station.
+    """
+    purple = list(WebMapConfig.RAIL_COLOR)
+    markers = [
+        {
+            **_marker_row(lat=lat, lon=lon, elev=elev, color=purple, tooltip=place_label(name=name, elevation_m=elev)),
+            "name": name,
+        }
+        for lat, lon, elev, name in top_stations
+    ]
+    return _marker_layer(
+        layer_id="top_stations",
+        markers=markers,
+        radius_m=WebMapConfig.ENDPOINT_RADIUS_M,
+        min_pixels=WebMapConfig.ENDPOINT_MIN_PIXELS,
+    )
+
+
 def build_deck(
     view: ViewState,
     ribbon_segments: list[RibbonSegment] | None,
-    endpoints: tuple[tuple[float, float, float], tuple[float, float, float]] | None = None,
-    endpoint_labels: tuple[str, str] | None = None,
-    waypoints: list[tuple[float, float, float, str]] | None = None,
+    *,
+    endpoints: tuple[tuple[float, float, float], tuple[float, float, float]] | None,
+    endpoint_labels: tuple[str, str] | None,
+    waypoints: list[tuple[float, float, float, str]] | None,
+    top_stations: list[tuple[float, float, float, str]] | None,
 ) -> pdk.Deck:
-    """Assemble the Deck bottom→top: terrain, waypoints, endpoints, then the route ribbon.
+    """Assemble the Deck bottom→top: terrain, top stations, waypoints, endpoints, then the route ribbon.
 
     One deck-level tooltip (``{tooltip}``) serves every pickable layer — each ribbon segment,
     endpoint, and waypoint datum carries its own ``tooltip`` string (the proven pydeck idiom).
     """
     layers = [create_terrain_layer(mesh_max_error=1.0)]
+    if top_stations:
+        layers.append(create_top_station_layer(top_stations=top_stations))
     if waypoints:
         layers.append(create_waypoint_layer(waypoints=waypoints))
     if endpoints is not None:
-        labels = endpoint_labels or ("Start", "End")
+        # endpoints and endpoint_labels are coupled at the caller (both gate on start_latlon set);
+        # a present-endpoints / absent-labels state is drift, so fail loud rather than paint generics.
+        assert endpoint_labels is not None, "endpoints set but endpoint_labels missing — coupled-state drift"
         layers.append(
-            create_endpoint_layer(start=endpoints[0], end=endpoints[1], start_label=labels[0], end_label=labels[1])
+            create_endpoint_layer(
+                start=endpoints[0], end=endpoints[1], start_label=endpoint_labels[0], end_label=endpoint_labels[1]
+            )
         )
     if ribbon_segments is not None:
         layers.extend(create_route_ribbon_layers(segments=ribbon_segments))

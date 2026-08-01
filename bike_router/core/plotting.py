@@ -1,8 +1,7 @@
 """Debug visualization: the route drawn on a plain map, coloured for quick verification.
 
-For DEBUG only — uses what inference already has (the confirmed edge list + track), no ox,
-no corridor backdrop, no clever logic. The route line uses its routing/condition colours; only
-the special points (waypoints + train stations + start/end) get elevation-coloured dots.
+DEBUG only — uses what inference already has (edge list + track), no ox. The line uses routing/condition
+colours; only the special points (waypoints + stations + start/end) get elevation-coloured dots.
 """
 
 import logging
@@ -19,13 +18,14 @@ from matplotlib.colors import Normalize  # noqa: E402
 from matplotlib.ticker import MaxNLocator  # noqa: E402
 
 from bike_router.core.composition import RouteComposition, format_composition  # noqa: E402
-from bike_router.core.constants import Palette, PlotConfig, RoutingParams  # noqa: E402
+from bike_router.core.constants import ELEVATION_AXIS_LABEL, PLOT_BG, Palette, PlotConfig, RoutingParams  # noqa: E402
 from bike_router.core.geo import haversine_vec  # noqa: E402
 from bike_router.core.route_path import RoutePath  # noqa: E402
 from bike_router.core.track import (  # noqa: E402
     Track,
     classify_condition,
     edge_condition_speed,
+    edge_display_unreliable,
     edge_vertices_3d,
     segment_color,
 )
@@ -66,15 +66,22 @@ def _figsize_for_route(*, route_lons: list[float], route_lats: list[float]) -> t
 
 
 def _draw_route_overlay(*, axes: Axes, route: RoutePath) -> None:
-    """Draw each route edge along its real polyline, coloured by condition (one legend entry each)."""
+    """Draw each route edge along its real polyline, coloured by condition (one legend entry each).
+
+    An bike edge whose displayed elevation is unreliable (long-edge interpolation) is drawn gray, matching
+    the app's map warning, so the debug PNG flags the same questionable stretches.
+    """
     seen_labels: set[str] = set()
     for node_a, node_b, edge in route.iter_edges():
         surface_bad, road_bad, _speed = edge_condition_speed(
             edge=edge, elev_source=node_a.elevation_m, elev_target=node_b.elevation_m
         )
-        rgb = segment_color(mode=edge.mode, surface_bad=surface_bad, road_bad=road_bad)
+        if edge_display_unreliable(node_a=node_a, node_b=node_b, edge=edge):
+            rgb, edge_label = list(Palette.hex_to_rgb(hex_color=Palette.GRAY)), "unreliable elevation"
+        else:
+            rgb = segment_color(mode=edge.mode, surface_bad=surface_bad, road_bad=road_bad)
+            edge_label = classify_condition(mode=edge.mode, surface_bad=surface_bad, road_bad=road_bad)
         color = (rgb[0] / 255, rgb[1] / 255, rgb[2] / 255)
-        edge_label = classify_condition(mode=edge.mode, surface_bad=surface_bad, road_bad=road_bad)
         label = edge_label if edge_label not in seen_labels else None
         seen_labels.add(edge_label)
         verts = edge_vertices_3d(node_a=node_a, node_b=node_b, edge=edge)
@@ -109,12 +116,12 @@ def plot_route_debug(
     track: Track,
     params: RoutingParams,
     out_path: str,
-    marker_points: list[tuple[float, float]] | None = None,
-    origin: str = "Start",
-    destination: str = "End",
-    composition: RouteComposition | None = None,
-    cmap_name: str = PlotConfig.CMAP,
-    dpi: int = PlotConfig.DPI,
+    marker_points: list[tuple[float, float]] | None,
+    origin: str,
+    destination: str,
+    composition: RouteComposition | None,
+    cmap_name: str,
+    dpi: int,
 ) -> None:
     """Save a debug PNG: the route line in ROUTING/condition colours (blue good / orange unpaved /
     red main / purple rail, same as the Streamlit ribbon); ONLY ``marker_points`` (waypoints + train
@@ -138,7 +145,7 @@ def plot_route_debug(
         figsize=(fig_w, fig_h),
         layout="constrained",
     )
-    figure.set_facecolor("white")
+    figure.set_facecolor(PLOT_BG)
     axes, cbar_ax, stats_ax = mosaic["map"], mosaic["cbar"], mosaic["stats"]
     # adjustable="box" keeps our explicit x/y limits (set below) AND equal aspect by fitting the
     # axes box — "datalim" would instead override those limits (matplotlib warns + ignores them).
@@ -178,7 +185,7 @@ def plot_route_debug(
     mappable = cm.ScalarMappable(norm=norm, cmap=cmap)
     mappable.set_array([])
     colorbar = figure.colorbar(mappable, cax=cbar_ax)
-    colorbar.set_label("Elevation (m)", fontsize=11, weight="bold", labelpad=10)
+    colorbar.set_label(ELEVATION_AXIS_LABEL, fontsize=11, weight="bold", labelpad=10)
     colorbar.ax.yaxis.set_major_locator(MaxNLocator(nbins=8))
 
     stats_ax.axis("off")
@@ -199,9 +206,9 @@ def plot_route_debug(
     )
     handles, labels = axes.get_legend_handles_labels()
     stats_ax.legend(
-        handles, labels, loc="upper right", fontsize=9, framealpha=0.95, facecolor="white", edgecolor="#999999"
+        handles, labels, loc="upper right", fontsize=9, framealpha=0.95, facecolor=PLOT_BG, edgecolor="#999999"
     )
 
-    figure.savefig(out_path, dpi=dpi, facecolor="white", bbox_inches="tight", pad_inches=0.3)
+    figure.savefig(out_path, dpi=dpi, facecolor=PLOT_BG, bbox_inches="tight", pad_inches=0.3)
     plt.close(figure)
     logger.info(f"Wrote debug route PNG to {out_path}")

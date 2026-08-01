@@ -1,20 +1,19 @@
-"""Google Maps directions-URL builder.
+"""Google Maps directions-URL builder (the official `api=1` scheme, travelmode=bicycling).
 
-Uses the official Maps URLs `api=1` scheme: origin + up to 9 intermediate waypoints
-+ destination, travelmode=bicycling. With N=10 Visvalingam-selected points that is
-8 intermediate waypoints, within the api=1 limit.
+Origin + up to 9 intermediate waypoints + destination; with N=10 Visvalingam-selected points
+that is 8 intermediate waypoints, within the api=1 limit.
 """
 
 from urllib.parse import urlencode
 
-from bike_router.core.constants import GmapsConfig, GraphConfig
+from bike_router.core.constants import LAT_OUT_OF_RANGE, LON_OUT_OF_RANGE, GmapsConfig, GraphConfig
 
 
 def _fmt(point: tuple[float, float]) -> str:
     """Format a (lat, lon) point as the "lat,lon" string a Maps URL expects (range-checked)."""
     latitude, longitude = point
-    assert -90.0 <= latitude <= 90.0, "latitude out of range"
-    assert -180.0 <= longitude <= 180.0, "longitude out of range"
+    assert -90.0 <= latitude <= 90.0, LAT_OUT_OF_RANGE
+    assert -180.0 <= longitude <= 180.0, LON_OUT_OF_RANGE
     return f"{latitude:.{GraphConfig.COORD_PRECISION}f},{longitude:.{GraphConfig.COORD_PRECISION}f}"
 
 

@@ -3,6 +3,9 @@
 # adds on top of this file. setup.py reads this into install_requires (single source).
 # Each line notes whether CORE (inference) or UI (web app) needs it.
 
+# Install from public PyPI. setup.py skips this line; pip honors it for the whole install.
+--index-url https://pypi.org/simple
+
 # Install the package itself (editable), so `bike_router` is importable in CI/dev.
 -e .
 
@@ -29,6 +32,7 @@ pydeck>=0.9.0  # UI: deck.gl terrain + route layers
 streamlit-deckgl>=0.5.0  # UI: remountable deck component, re-zoom
 plotly>=5.18.0  # UI: interactive elevation-profile chart
 altair>=5.0.0  # UI: composition + grade donuts
+streamlit-js-eval>=0.1.7  # UI: browser geolocation for the "my location" button
 
 # Artifact hosting / paths
 huggingface_hub>=0.20.0  # CORE: download prebuilt graph artifact
