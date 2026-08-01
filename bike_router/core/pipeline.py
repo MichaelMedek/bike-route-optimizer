@@ -33,8 +33,6 @@ from bike_router.core.geocoding import geocode_endpoint, make_geocode_fn
 from bike_router.core.gmaps import build_gmaps_url
 from bike_router.core.gpx_export import build_gpx
 from bike_router.core.graph_store import (
-    _ROUTE_EDGE_COLS,
-    _ROUTE_NODE_COLS,
     download_graph_from_hf,
     load_meta,
     load_path_edges,
@@ -138,8 +136,6 @@ def _route_node_path(
         bike_corridor=bike_corridor,
         rail_corridor=rail_corridor,
         graph_dir=graph_dir,
-        node_columns=_ROUTE_NODE_COLS,
-        edge_columns=_ROUTE_EDGE_COLS,
     )
     log_rss(label=f"corridor tables loaded ({len(edges_df)} edges)")
     if len(edges_df) > CorridorConfig.MAX_ROUTE_EDGES:

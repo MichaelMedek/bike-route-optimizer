@@ -145,8 +145,6 @@ def test_load_route_tables(roundtrip_store: Path):
         bike_corridor=wide,
         rail_corridor=wide,
         graph_dir=store,
-        node_columns=graph_store._ROUTE_NODE_COLS,
-        edge_columns=graph_store._ROUTE_EDGE_COLS,
     )
     assert len(nodes_df) == 6 and len(edges_df) == 14
     assert set(edges_df["mode"]) == {Mode.BIKE, Mode.RAIL, Mode.STATION}
@@ -156,8 +154,6 @@ def test_load_route_tables(roundtrip_store: Path):
         bike_corridor=both,
         rail_corridor=both,
         graph_dir=store,
-        node_columns=graph_store._ROUTE_NODE_COLS,
-        edge_columns=graph_store._ROUTE_EDGE_COLS,
     )
     node_types = set(nodes2["node_type"])
     assert NodeType.BIKE in node_types and NodeType.RAIL in node_types
@@ -168,8 +164,6 @@ def test_load_route_tables(roundtrip_store: Path):
             bike_corridor=far,
             rail_corridor=far,
             graph_dir=store,
-            node_columns=graph_store._ROUTE_NODE_COLS,
-            edge_columns=graph_store._ROUTE_EDGE_COLS,
         )
 
 

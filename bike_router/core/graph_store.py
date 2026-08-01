@@ -192,21 +192,19 @@ def load_route_tables(
     bike_corridor: Polygon,
     rail_corridor: Polygon,
     graph_dir: Path,
-    node_columns: list[str],
-    edge_columns: list[str],
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Combined (nodes_df, edges_df) for the two-corridor routing window — the SINGLE combine.
 
     Tight bike tube + wide sparse rail tube, recombined with bike ring, rail↔rail, and station
-    bridges; minimal columns stay memory-lean. Not component-pruned (a water-gap corridor is valid).
+    bridges; the minimal _ROUTE_*_COLS stay memory-lean. Not component-pruned (a water-gap is valid).
     """
     bike_nodes, bike_edges, bike_ids = _load_layer(
         corridor=bike_corridor,
         graph_dir=graph_dir,
         node_type=NodeType.BIKE,
         edge_modes=[Mode.BIKE],
-        node_columns=node_columns,
-        edge_columns=edge_columns,
+        node_columns=_ROUTE_NODE_COLS,
+        edge_columns=_ROUTE_EDGE_COLS,
         extra_from_ids=frozenset(),
     )
     # Rail layer also carries STATION edges; a bike→rail station link has from_node in the BIKE
@@ -216,8 +214,8 @@ def load_route_tables(
         graph_dir=graph_dir,
         node_type=NodeType.RAIL,
         edge_modes=[Mode.RAIL, Mode.STATION],
-        node_columns=node_columns,
-        edge_columns=edge_columns,
+        node_columns=_ROUTE_NODE_COLS,
+        edge_columns=_ROUTE_EDGE_COLS,
         extra_from_ids=frozenset(bike_ids),
     )
     assert not bike_nodes.empty, "bike corridor is outside the prebuilt graph coverage (no node tiles)"
