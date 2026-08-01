@@ -257,12 +257,14 @@ def swap_endpoints() -> None:
 def configure_logging() -> None:
     """Set up app logging ONCE (guarded against Streamlit reruns stacking handlers).
 
-    WARNING by default; set BIKE_ROUTER_DEBUG=1 for the per-action INFO/DEBUG trail.
+    INFO by default (the per-action trail); set BIKE_ROUTER_DEBUG=1 for DEBUG.
     """
     if st.session_state.get("_logging_ready"):
         return
-    level = logging.DEBUG if os.environ.get("BIKE_ROUTER_DEBUG") == "1" else logging.WARNING
-    logging.basicConfig(level=level, format="%(levelname)s %(name)s: %(message)s")
+    level = logging.DEBUG if os.environ.get("BIKE_ROUTER_DEBUG") == "1" else logging.INFO
+    # force=True: Streamlit Cloud pre-installs a root handler, so a plain basicConfig would no-op and
+    # our INFO level would never take — reconfigure the root logger regardless.
+    logging.basicConfig(level=level, format="%(levelname)s %(name)s: %(message)s", force=True)
     logging.getLogger("bike_router").setLevel(level)
     logger.setLevel(level)
     st.session_state._logging_ready = True

@@ -5,6 +5,7 @@ app_webmap.py shell (→ bike_router.ui.app.run_app) against the committed fixtu
 whole widget flow executes with zero network; geocode/plan are mocked at the pipeline source.
 """
 
+import logging
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -298,9 +299,15 @@ def test_village_lookup():
 
 
 def test_configure_logging():
-    # Sets up logging ONCE (guarded by a session flag) so Streamlit reruns don't stack handlers.
-    with patch.object(app, "st") as fake_st:
-        fake_st.session_state = _State()
-        app.configure_logging()
-        assert fake_st.session_state["_logging_ready"] is True
-        app.configure_logging()  # second call is a guarded no-op
+    # Sets up logging ONCE (guarded by a session flag) at INFO by default, so the app's per-action
+    # info trail shows (not just warnings); Streamlit reruns don't stack/re-level handlers.
+    original = logging.getLogger().level
+    try:
+        with patch.object(app, "st") as fake_st:
+            fake_st.session_state = _State()
+            app.configure_logging()
+            assert fake_st.session_state["_logging_ready"] is True
+            assert logging.getLogger("bike_router").level == logging.INFO  # info visible by default
+            app.configure_logging()  # second call is a guarded no-op
+    finally:
+        logging.getLogger().setLevel(original)  # restore root level mutated by force=True
