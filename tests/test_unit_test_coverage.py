@@ -12,6 +12,7 @@ that isn't anchored to one production module — forcing strict 1:1 file adheren
 
 import ast
 import pathlib
+import re
 
 import pytest
 from docstring_parser import DocstringStyle, parse
@@ -224,7 +225,7 @@ def test_no_imports_inside_functions(path: pathlib.Path, node: ast.AST) -> None:
     inner = [
         f"{sub.lineno}:{sub.module if isinstance(sub, ast.ImportFrom) else ','.join(a.name for a in sub.names)}"
         for sub in ast.walk(node)
-        if sub is not node and isinstance(sub, (ast.Import, ast.ImportFrom))
+        if sub is not node and isinstance(sub, ast.Import | ast.ImportFrom)
     ]
     assert not inner, (
         f"{path.relative_to(PROJECT_ROOT)}::{node.name} imports inside the function body ({'; '.join(inner)}); "
@@ -280,13 +281,36 @@ def test_comment_blocks_are_at_most_3_lines(layer: str, path: pathlib.Path) -> N
 
 # Shipped production code the duplicate-string rule scans: the package + the root entry mains.
 _DUP_SCAN_PY = sorted(_PKG.rglob("*.py")) + _ENTRY_SCRIPTS
+# A numeric-format mini-language spec (``.2f``, ``,.0f``, ``d``): alignment/sign/width/precision
+# glyphs then one optional presentation type. Exempt — it holds no domain concept and a real value
+# like ``rail`` can't be spelled this way (its letters aren't all format-type chars).
+_FORMAT_SPEC = re.compile(r"[<>=^+\- #0-9.,_]*[bcdeEfFgGnosxX%]?\Z")
+# Same spelling, DIFFERENT domain in each site — the AST can't tell them apart, so one shared constant
+# would wrongly couple unrelated things (or is a language idiom). NOT drift-prone; intentionally exempt.
+#   __main__: the `if __name__ ==` idiom.  lat/lon/name/bbox: external API param AND DataFrame column.
+#   color/width/path: deck.gl prop-dict keys.  origin/destination: CLI arg names AND gmaps params.
+_COINCIDENTAL = frozenset(
+    {"__main__", "lat", "lon", "name", "bbox", "color", "width", "path", "origin", "destination", "y"}
+)
+
+
+def _is_domain_string(value: str) -> bool:
+    """True if ``value`` must be a shared constant, not glue / a coincidental cross-domain identifier.
+
+    Flags a letter-bearing value EXCEPT: format specs (``.2f``), whitespace-edged display/log fragments
+    (`` m``, ``Wrote ``), and _COINCIDENTAL same-spelling-different-domain identifiers.
+    """
+    if value != value.strip() or value in _COINCIDENTAL:
+        return False
+    return bool(re.search(r"[A-Za-z]", value)) and not _FORMAT_SPEC.fullmatch(value)
 
 
 def _string_literals(path: pathlib.Path) -> list[str]:
-    """Free-standing string-literal VALUES in a file: NOT docstrings, subscript keys, or annotations.
+    """Free-standing str/bytes literal VALUES: NOT docstrings, subscript keys, or annotations.
 
-    Excludes subscript keys (``df["osmid"]`` — schema access, not a magic value) and type-annotation
-    strings (``x: "np.ndarray"`` forward refs), which legitimately recur and aren't drift-prone constants.
+    Excludes subscript keys (``df["osmid"]`` — schema access) and annotation strings (``"np.ndarray"``
+    forward refs). Bytes are decoded so ``b"rail"`` can't dodge the str scan; f-string literal parts +
+    implicit-concat are covered because ast.walk sees every Constant (merged or nested).
     """
     tree = ast.parse(path.read_text())
     excluded: set[int] = set()
@@ -302,28 +326,34 @@ def _string_literals(path: pathlib.Path) -> list[str]:
         if isinstance(node, ast.Subscript) and isinstance(node.slice, ast.Constant):
             excluded.add(id(node.slice))  # df["col"] / d["key"] — structural access
         anns = [*([node.returns] if isinstance(node, _FUNC_TYPES) else [])]
-        anns += [node.annotation] if isinstance(node, (ast.AnnAssign, ast.arg)) and node.annotation else []
+        anns += [node.annotation] if isinstance(node, ast.AnnAssign | ast.arg) and node.annotation else []
         for ann in anns:
             excluded.update(id(sub) for sub in ast.walk(ann) if isinstance(sub, ast.Constant))
-    return [
-        node.value
-        for node in ast.walk(tree)
-        if isinstance(node, ast.Constant) and isinstance(node.value, str) and id(node) not in excluded
-    ]
+    values: list[str] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Constant) or id(node) in excluded:
+            continue
+        if isinstance(node.value, str):
+            values.append(node.value)
+        elif isinstance(node.value, bytes):  # b"rail" must not dodge the str scan
+            values.append(node.value.decode("utf-8", "replace"))
+    return values
 
 
 def test_no_duplicate_string_literals_across_production_code() -> None:
-    """A string literal repeated across shipped code (package + entry mains) must be a shared constant.
+    """A domain string literal repeated across shipped code (package + entry mains) must be a constant.
 
-    Two identical literals in different files drift apart on the next edit; hoist them to one named
-    constant (usually in constants.py). Docstrings, subscript keys, and annotations are exempt — no
-    length threshold (a minimum length would just reward shortening a magic string to slip past).
+    Flags any duplicated letter-bearing value except numeric-format specs (``.2f``); no length/word
+    threshold to game. Evasions closed: bytes decoded, f-string parts + implicit-concat walked, keys/
+    annotations/docstrings excluded. Single-char keys like ``y`` are caught.
     """
     where: dict[str, set[str]] = {}
     for path in _DUP_SCAN_PY:
         for value in _string_literals(path=path):
-            where.setdefault(value, set()).add(str(path.relative_to(PROJECT_ROOT)))
+            if _is_domain_string(value=value):
+                where.setdefault(value, set()).add(str(path.relative_to(PROJECT_ROOT)))
     dupes = {value: files for value, files in where.items() if len(files) > 1}
-    assert not dupes, "string literals repeated across files — extract each into ONE shared constant:\n" + "\n".join(
-        f"  {value!r} in {sorted(files)}" for value, files in sorted(dupes.items())
+    assert not dupes, (
+        "domain string literals repeated across files — extract each into ONE shared constant:\n"
+        + "\n".join(f"  {value!r} in {sorted(files)}" for value, files in sorted(dupes.items()))
     )
