@@ -81,7 +81,7 @@ def _wire_offline(monkeypatch, tmp_path, *, nodes_df, edges_df, route: RoutePath
     monkeypatch.setattr(
         pipeline,
         "load_route_tables",
-        lambda bike_corridor, rail_corridor, graph_dir, node_columns, edge_columns: (nodes_df, edges_df),
+        lambda bike_corridor, rail_corridor, graph_dir: (nodes_df, edges_df),
     )
     monkeypatch.setattr(pipeline, "load_path_edges", lambda path_nodes, params, graph_dir: route)
     monkeypatch.setattr(
@@ -313,7 +313,7 @@ def test_route_node_path(monkeypatch):
     monkeypatch.setattr(
         pipeline,
         "load_route_tables",
-        lambda bike_corridor, rail_corridor, graph_dir, node_columns, edge_columns: (nodes_df, edges_df),
+        lambda bike_corridor, rail_corridor, graph_dir: (nodes_df, edges_df),
     )
     corridor = box(7.9, 47.9, 8.3, 48.1)
     path = pipeline._route_node_path(
