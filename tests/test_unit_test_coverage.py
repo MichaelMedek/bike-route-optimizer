@@ -108,8 +108,11 @@ def _function_nodes(paths: list[pathlib.Path]) -> list[tuple[pathlib.Path, ast.A
     return [(p, node) for p in paths for node in ast.walk(ast.parse(p.read_text())) if isinstance(node, _FUNC_TYPES)]
 
 
-# no-in-function-imports rule: the package + the root entry scripts (tests/ + scripts/ exempt).
-_REPO_FUNCTION_NODES = _function_nodes(_repo_py_files(include_package=True))
+# The package + root entry scripts (tests/ + scripts/ exempt) — the ONE file list the
+# no-in-function-imports and no-private-cross-import rules both scan; computed once here.
+_PRODUCTION_PY = _repo_py_files(include_package=True)
+_PRODUCTION_IDS = [str(p.relative_to(PROJECT_ROOT)) for p in _PRODUCTION_PY]
+_REPO_FUNCTION_NODES = _function_nodes(_PRODUCTION_PY)
 _REPO_FUNCTION_IDS = [f"{p.relative_to(PROJECT_ROOT)}::{node.name}" for p, node in _REPO_FUNCTION_NODES]
 
 # entry-only-main rule: EVERY non-package root .py (dynamic, so a NEW script can't smuggle logic
@@ -356,4 +359,25 @@ def test_no_duplicate_string_literals_across_production_code() -> None:
     assert not dupes, (
         "domain string literals repeated across files — extract each into ONE shared constant:\n"
         + "\n".join(f"  {value!r} in {sorted(files)}" for value, files in sorted(dupes.items()))
+    )
+
+
+@pytest.mark.parametrize("path", _PRODUCTION_PY, ids=_PRODUCTION_IDS)
+def test_no_private_name_imported_across_modules(path: pathlib.Path) -> None:
+    """Production code never imports a ``_``-prefixed name from another module (tests may).
+
+    A leading underscore means module-private; importing it elsewhere breaks that boundary — the
+    symbol is either truly private (used in-file) or a real API and should be renamed public. Dunders
+    (``__future__`` etc.) are exempt. tests/ + scripts/ are excluded from _PRODUCTION_PY.
+    """
+    offenders = [
+        f"{node.module}.{alias.name}"
+        for node in ast.walk(ast.parse(path.read_text()))
+        if isinstance(node, ast.ImportFrom)
+        for alias in node.names
+        if alias.name.startswith("_") and not alias.name.startswith("__")
+    ]
+    assert not offenders, (
+        f"{path.relative_to(PROJECT_ROOT)} imports module-private name(s) {offenders} — a leading-_ "
+        f"symbol must stay in its module (use it in-file) or be renamed public if it's really shared"
     )
