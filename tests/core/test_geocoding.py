@@ -16,11 +16,11 @@ from bike_router.core.errors import BikeRouterError, GeocodeConnectionError, Geo
 from bike_router.core.geocoding import (
     _GEOCODE_CACHE,
     HttpGetter,
-    _default_http_get,
     _parse_latlon,
     as_bahnhof,
     autocomplete_with_stations,
     bahnhof_suggestion,
+    default_http_get,
     geocode,
     geocode_endpoint,
     make_geocode_fn,
@@ -72,7 +72,7 @@ def test_default_http_get(monkeypatch):
     response.json.return_value = {"features": []}
     fake_get = MagicMock(return_value=response)
     monkeypatch.setattr(requests, "get", fake_get)
-    payload = _default_http_get(url="https://photon/api", params={"q": "x"}, timeout=2.0)
+    payload = default_http_get(url="https://photon/api", params={"q": "x"}, timeout=2.0)
     assert payload == {"features": []}
     response.raise_for_status.assert_called_once()
     assert fake_get.call_args.kwargs["headers"]["User-Agent"] == NominatimConfig.USER_AGENT

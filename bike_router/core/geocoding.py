@@ -119,7 +119,7 @@ def geocode_endpoint(place: str, label: str, geocode_fn: GeocodeFn) -> tuple[flo
         raise GeocodeNotFoundError(f"{label} ({place!r}): could not find this place.") from exc
 
 
-def _default_http_get(*, url: str, params: HttpParams, timeout: float) -> object:
+def default_http_get(*, url: str, params: HttpParams, timeout: float) -> object:
     """Real HTTP GET returning parsed JSON (the production HttpGetter).
 
     Sends the project User-Agent — Photon 403s the default ``python-requests`` UA.

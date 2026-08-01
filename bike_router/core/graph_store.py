@@ -28,8 +28,8 @@ logger = logging.getLogger(__name__)
 
 _DOWNLOAD_POLL_S = 0.5  # how often the main thread samples on-disk file count for progress
 
-_NODE_COLS = [Schema.OSMID, Schema.LAT, Schema.LON, Schema.ELEVATION_M, Schema.NODE_TYPE, Schema.STATION_NAME]
-_EDGE_COLS = [
+NODE_COLS = [Schema.OSMID, Schema.LAT, Schema.LON, Schema.ELEVATION_M, Schema.NODE_TYPE, Schema.STATION_NAME]
+EDGE_COLS = [
     Schema.FROM_NODE,
     Schema.TO_NODE,
     Schema.KEY,
@@ -51,7 +51,7 @@ def tile_index(lat: float, lon: float, tile_deg: float) -> tuple[int, int]:
     return math.floor(lat / tile_deg), math.floor(lon / tile_deg)
 
 
-def _tile_name(row: int, col: int) -> str:
+def tile_name(row: int, col: int) -> str:
     """Filename stem for a tile (negative-safe, e.g. tile_96_16)."""
     return f"tile_{row}_{col}"
 
@@ -127,7 +127,7 @@ def load_meta(graph_dir: Path) -> dict[str, Any]:
     return meta
 
 
-def _read_tiles(
+def read_tiles(
     directory: Path,
     columns: list[str],
     tiles: list[tuple[int, int]] | None,
@@ -144,7 +144,7 @@ def _read_tiles(
         paths = [
             p
             for row, col in tiles
-            if (p := directory / f"{_tile_name(row=row, col=col)}{GraphConfig.TILE_SUFFIX}").exists()
+            if (p := directory / f"{tile_name(row=row, col=col)}{GraphConfig.TILE_SUFFIX}").exists()
         ]
     frames = [pd.read_parquet(path, filters=filters) for path in paths]
     if not frames:
@@ -169,7 +169,7 @@ def _load_layer(
     """
     tile_deg = load_meta(graph_dir=graph_dir)["tile_deg"]
     tiles = _intersecting_tiles(corridor=corridor, tile_deg=tile_deg)
-    nodes_df = _read_tiles(
+    nodes_df = read_tiles(
         directory=graph_dir / GraphConfig.NODES_SUBDIR,
         columns=node_columns,
         tiles=tiles,
@@ -178,7 +178,7 @@ def _load_layer(
     inside_mask = covers(corridor, points(nodes_df["lon"].to_numpy(dtype=float), nodes_df["lat"].to_numpy(dtype=float)))
     nodes_df = nodes_df[inside_mask].reset_index(drop=True)
     inside_ids = set(nodes_df["osmid"].astype(int))
-    edges_df = _read_tiles(
+    edges_df = read_tiles(
         directory=graph_dir / GraphConfig.EDGES_SUBDIR,
         columns=edge_columns,
         tiles=tiles,
@@ -262,9 +262,9 @@ def load_path_edges(*, path_nodes: list[tuple[int, float, float]], params: Routi
     )
     # Read the path's nodes, index by osmid, and reindex to the route order (pandas — no py loop).
     nodes_df = (
-        _read_tiles(
+        read_tiles(
             directory=graph_dir / GraphConfig.NODES_SUBDIR,
-            columns=_NODE_COLS,
+            columns=NODE_COLS,
             tiles=tiles,
             filters=[(Schema.OSMID, "in", list(set(path_osmids)))],
         )
@@ -278,13 +278,13 @@ def load_path_edges(*, path_nodes: list[tuple[int, float, float]], params: Routi
             lon=float(row.lon),
             elevation_m=float(row.elevation_m),
             node_type=str(row.node_type),
-            station_name=_str_or_none(value=row.station_name),
+            station_name=str_or_none(value=row.station_name),
         )
         for osmid, row in zip(path_osmids, nodes_df.itertuples(index=False), strict=True)
     ]
-    edges_df = _read_tiles(
+    edges_df = read_tiles(
         directory=graph_dir / GraphConfig.EDGES_SUBDIR,
-        columns=_EDGE_COLS,
+        columns=EDGE_COLS,
         tiles=tiles,
         filters=[(Schema.FROM_NODE, "in", list(set(path_osmids)))],
     )
@@ -320,8 +320,8 @@ def _select_path_edges(*, nodes: list[RouteNode], edges_df: pd.DataFrame, params
                 to_node=node_b.osmid,
                 mode=str(row["mode"]),
                 length_m=float(row["length_m"]),
-                surface=_str_or_none(value=row["surface"]),
-                highway=_str_or_none(value=row["highway"]),
+                surface=str_or_none(value=row["surface"]),
+                highway=str_or_none(value=row["highway"]),
                 geometry=geometry,
                 geometry_z=geometry_z,
             )
@@ -357,9 +357,7 @@ def snap_to_node(lat: float, lon: float, graph_dir: Path) -> tuple[float, float,
     """
     tile_deg = load_meta(graph_dir=graph_dir)["tile_deg"]
     tiles = _covering_tiles(bounds=(lon, lat, lon, lat), tile_deg=tile_deg, margin=1)
-    nodes_df = _read_tiles(
-        directory=graph_dir / GraphConfig.NODES_SUBDIR, columns=_NODE_COLS, tiles=tiles, filters=None
-    )
+    nodes_df = read_tiles(directory=graph_dir / GraphConfig.NODES_SUBDIR, columns=NODE_COLS, tiles=tiles, filters=None)
     if nodes_df.empty:  # user-facing: a place outside the prebuilt graph's coverage
         raise OutOfCoverageError(f"No routable graph near ({lat:.4f}, {lon:.4f}) — outside the covered region.")
     lats = nodes_df["lat"].to_numpy()
@@ -377,7 +375,7 @@ def top_stations(
     A station is a top iff it has full Dominanz within TOP_STATION_DOMINANCE_KM AND clears
     TOP_STATION_PROMINENCE_M of Schartenhöhe. Returns (lat, lon, elevation_m, name), highest first.
     """
-    nodes_df = _read_tiles(directory=graph_dir / GraphConfig.NODES_SUBDIR, columns=_NODE_COLS, tiles=None, filters=None)
+    nodes_df = read_tiles(directory=graph_dir / GraphConfig.NODES_SUBDIR, columns=NODE_COLS, tiles=None, filters=None)
     stations = nodes_df[(nodes_df["node_type"] == NodeType.RAIL) & nodes_df["station_name"].notna()].reset_index(
         drop=True
     )
@@ -396,6 +394,6 @@ def top_stations(
     return sorted(tops, key=lambda s: s[2], reverse=True)
 
 
-def _str_or_none(value: object) -> str | None:
+def str_or_none(value: object) -> str | None:
     """A str value, else None — the ONE 'non-str/NaN → None' coercion for tag/name columns."""
     return value if isinstance(value, str) else None

@@ -21,16 +21,16 @@ from bike_router.core.graph_store import (
     _intersecting_tiles,
     _load_layer,
     _oriented_geometry,
-    _read_tiles,
     _select_path_edges,
-    _str_or_none,
-    _tile_name,
     download_graph_from_hf,
     load_meta,
     load_path_edges,
     load_route_tables,
+    read_tiles,
     snap_to_node,
+    str_or_none,
     tile_index,
+    tile_name,
     top_stations,
 )
 from bike_router.core.progress import null_progress
@@ -56,8 +56,8 @@ def test_tile_index():
 
 def test_tile_name():
     # Filename stem for a tile, negative-safe.
-    assert _tile_name(row=96, col=16) == "tile_96_16"
-    assert _tile_name(row=-1, col=-2) == "tile_-1_-2"
+    assert tile_name(row=96, col=16) == "tile_96_16"
+    assert tile_name(row=-1, col=-2) == "tile_-1_-2"
 
 
 def test_covering_tiles():
@@ -96,21 +96,21 @@ def test_read_tiles(roundtrip_store: Path):
     # tiles=None reads every tile; an empty result yields the requested-columns empty frame.
     store = roundtrip_store
     tiles = _intersecting_tiles(corridor=box(7.99, 47.99, 8.02, 48.02), tile_deg=0.5)
-    rail_only = _read_tiles(
+    rail_only = read_tiles(
         directory=store / GraphConfig.EDGES_SUBDIR,
-        columns=graph_store._EDGE_COLS,
+        columns=graph_store.EDGE_COLS,
         tiles=tiles,
         filters=[("mode", "==", "rail")],
     )
     assert not rail_only.empty and set(rail_only["mode"]) == {Mode.RAIL}
-    all_nodes = _read_tiles(
-        directory=store / GraphConfig.NODES_SUBDIR, columns=graph_store._NODE_COLS, tiles=None, filters=None
+    all_nodes = read_tiles(
+        directory=store / GraphConfig.NODES_SUBDIR, columns=graph_store.NODE_COLS, tiles=None, filters=None
     )
     assert len(all_nodes) == 6  # every node tile
-    missing = _read_tiles(
-        directory=store / GraphConfig.NODES_SUBDIR, columns=graph_store._NODE_COLS, tiles=[(999, 999)], filters=None
+    missing = read_tiles(
+        directory=store / GraphConfig.NODES_SUBDIR, columns=graph_store.NODE_COLS, tiles=[(999, 999)], filters=None
     )
-    assert missing.empty and list(missing.columns) == graph_store._NODE_COLS
+    assert missing.empty and list(missing.columns) == graph_store.NODE_COLS
 
 
 def test_load_layer(roundtrip_store: Path):
@@ -294,7 +294,7 @@ def test_download_graph_from_hf(tmp_path: Path, monkeypatch):
 
 def test_str_or_none():
     # The ONE 'non-str/NaN → None' coercion for tag/name columns.
-    assert _str_or_none(value="asphalt") == "asphalt"
-    assert _str_or_none(value=None) is None
-    assert _str_or_none(value=float("nan")) is None
-    assert _str_or_none(value=42) is None
+    assert str_or_none(value="asphalt") == "asphalt"
+    assert str_or_none(value=None) is None
+    assert str_or_none(value=float("nan")) is None
+    assert str_or_none(value=42) is None

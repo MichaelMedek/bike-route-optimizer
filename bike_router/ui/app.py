@@ -26,7 +26,7 @@ from bike_router.core.constants import (
     WebMapConfig,
 )
 from bike_router.core.errors import BikeRouterError
-from bike_router.core.geocoding import _default_http_get, autocomplete_with_stations, nearest_place_name
+from bike_router.core.geocoding import autocomplete_with_stations, default_http_get, nearest_place_name
 from bike_router.core.graph_store import download_graph_from_hf, load_meta, top_stations
 from bike_router.core.pipeline import RouteResult, plan_route, resolve_endpoints
 from bike_router.core.simplify import format_bike_legs, format_rail_legs, rail_leg_tooltips
@@ -72,7 +72,7 @@ def download_graph_with_bar() -> None:
 @st.cache_data(ttl=300)  # type: ignore[misc]  # untyped external decorator (streamlit unstubbed in the mypy env)
 def suggest(term: str, bbox: tuple[float, float, float, float]) -> tuple[str | None, list[str]]:
     """Cached Photon suggestions for a typed term: (red-button "<place> Bahnhof" pick, places)."""
-    return autocomplete_with_stations(term=term, bbox=bbox, limit=PhotonConfig.LIMIT, http_get=_default_http_get)
+    return autocomplete_with_stations(term=term, bbox=bbox, limit=PhotonConfig.LIMIT, http_get=default_http_get)
 
 
 @st.cache_data(ttl=3600)  # type: ignore[misc]  # untyped external decorator; one cached batch per route
@@ -83,7 +83,7 @@ def village_names(waypoints: tuple[tuple[float, float], ...]) -> dict[tuple[floa
     map so callers name points with a pure dict lookup, no network in loops.
     """
     with ThreadPoolExecutor(max_workers=max(1, len(waypoints))) as pool:
-        names = pool.map(lambda ll: nearest_place_name(lat=ll[0], lon=ll[1], http_get=_default_http_get), waypoints)
+        names = pool.map(lambda ll: nearest_place_name(lat=ll[0], lon=ll[1], http_get=default_http_get), waypoints)
     return dict(zip(waypoints, names, strict=True))
 
 

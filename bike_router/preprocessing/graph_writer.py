@@ -15,7 +15,7 @@ from shapely import from_wkt, to_wkt
 from shapely.geometry import LineString
 
 from bike_router.core.constants import WGS84_CRS, GraphConfig, Mode, NodeType, Schema
-from bike_router.core.graph_store import _EDGE_COLS, _NODE_COLS, _read_tiles, _str_or_none, _tile_name, tile_index
+from bike_router.core.graph_store import EDGE_COLS, NODE_COLS, read_tiles, str_or_none, tile_index, tile_name
 
 logger = logging.getLogger(__name__)
 
@@ -46,8 +46,8 @@ def write_graph_parquet(
         compression: Parquet codec — "snappy" (fast, intermediates) or "zstd" (~35% smaller,
             final HF artifact); readers auto-detect the codec.
     """
-    assert list(nodes_df.columns) == _NODE_COLS, f"nodes schema drift: {list(nodes_df.columns)}"
-    assert list(edges_df.columns) == _EDGE_COLS, f"edges schema drift: {list(edges_df.columns)}"
+    assert list(nodes_df.columns) == NODE_COLS, f"nodes schema drift: {list(nodes_df.columns)}"
+    assert list(edges_df.columns) == EDGE_COLS, f"edges schema drift: {list(edges_df.columns)}"
     tile_deg = meta["tile_deg"]
 
     nodes_dir = out_dir / GraphConfig.NODES_SUBDIR
@@ -69,12 +69,12 @@ def write_graph_parquet(
     edges_df = edges_df.assign(_tile=edge_tiles)
 
     for (row, col), group in nodes_df.groupby("_tile"):
-        group[_NODE_COLS].to_parquet(
-            nodes_dir / f"{_tile_name(row=row, col=col)}{GraphConfig.TILE_SUFFIX}", index=False, compression=compression
+        group[NODE_COLS].to_parquet(
+            nodes_dir / f"{tile_name(row=row, col=col)}{GraphConfig.TILE_SUFFIX}", index=False, compression=compression
         )
     for (row, col), group in edges_df.groupby("_tile"):
-        group[_EDGE_COLS].to_parquet(
-            edges_dir / f"{_tile_name(row=row, col=col)}{GraphConfig.TILE_SUFFIX}", index=False, compression=compression
+        group[EDGE_COLS].to_parquet(
+            edges_dir / f"{tile_name(row=row, col=col)}{GraphConfig.TILE_SUFFIX}", index=False, compression=compression
         )
 
     (out_dir / GraphConfig.META_FILENAME).write_text(json.dumps(meta, indent=2))
@@ -87,8 +87,8 @@ def read_region_tables(region_dir: Path) -> tuple[pd.DataFrame, pd.DataFrame]:
     Used by the Phase-3 combine step to re-load each per-region artifact written by
     write_graph_parquet. Returns (nodes_df, edges_df) with the standard schemas.
     """
-    nodes_df = _read_tiles(region_dir / GraphConfig.NODES_SUBDIR, columns=_NODE_COLS, tiles=None, filters=None)
-    edges_df = _read_tiles(region_dir / GraphConfig.EDGES_SUBDIR, columns=_EDGE_COLS, tiles=None, filters=None)
+    nodes_df = read_tiles(region_dir / GraphConfig.NODES_SUBDIR, columns=NODE_COLS, tiles=None, filters=None)
+    edges_df = read_tiles(region_dir / GraphConfig.EDGES_SUBDIR, columns=EDGE_COLS, tiles=None, filters=None)
     return nodes_df, edges_df
 
 
@@ -117,7 +117,7 @@ def graph_from_tables(nodes_df: pd.DataFrame, edges_df: pd.DataFrame) -> nx.Mult
                 "y": float(n.lat),
                 "elevation": float(n.elevation_m),
                 Schema.NODE_TYPE: NodeType(n.node_type),
-                Schema.STATION_NAME: _str_or_none(value=n.station_name),
+                Schema.STATION_NAME: str_or_none(value=n.station_name),
             },
         )
         for n in nodes_df.itertuples(index=False)
@@ -131,8 +131,8 @@ def graph_from_tables(nodes_df: pd.DataFrame, edges_df: pd.DataFrame) -> nx.Mult
             {
                 "length": float(e.length_m),
                 "height_diff": float(e.height_diff_m),
-                Schema.SURFACE: _str_or_none(value=e.surface),
-                Schema.HIGHWAY: _str_or_none(value=e.highway),
+                Schema.SURFACE: str_or_none(value=e.surface),
+                Schema.HIGHWAY: str_or_none(value=e.highway),
                 Schema.MODE: e.mode,
                 Schema.GEOMETRY: from_wkt(e.geometry_wkt) if isinstance(e.geometry_wkt, str) else None,
             },
@@ -211,7 +211,7 @@ def graph_to_tables(graph: nx.MultiDiGraph) -> tuple[pd.DataFrame, pd.DataFrame]
         }
         for u, v, k, d in graph.edges(keys=True, data=True)
     ]
-    return pd.DataFrame(nodes, columns=_NODE_COLS), pd.DataFrame(edges, columns=_EDGE_COLS)
+    return pd.DataFrame(nodes, columns=NODE_COLS), pd.DataFrame(edges, columns=EDGE_COLS)
 
 
 def _geometry_wkt(geom: object) -> str | None:
@@ -229,4 +229,4 @@ def _scalar(value: object) -> object:
     """
     if isinstance(value, list | tuple):
         return value[0] if value else None
-    return _str_or_none(value=value)
+    return str_or_none(value=value)
