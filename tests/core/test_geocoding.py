@@ -21,6 +21,7 @@ from bike_router.core.geocoding import (
     _feature_properties,
     _parse_latlon,
     _photon_features,
+    _photon_query,
     as_bahnhof,
     autocomplete_with_stations,
     bahnhof_suggestion,
@@ -148,6 +149,16 @@ def test_marker_pick_geocodes_to_exact_coords_not_name():
     assert geocode(place=box_value, geocode_fn=never) == (47.98765, 9.12345)  # coords win, name ignored, no lookup
 
 
+def test_zurich_station_pick_resolves_via_coords():
+    # REGRESSION (bug 5): "Zürich" often has no geocodable "<name> Bahnhof", so the station pick must
+    # carry the matched station's OWN coords — picking it then resolves EXACTLY there, no name lookup.
+    station = MagicMock(return_value={"features": [_photon_feature(name="Zürich HB", lon=8.54, lat=47.378)]})
+    pick = bahnhof_suggestion(term="Zürich", bbox=_BBOX, http_get=station)
+    assert pick == "47.37800, 8.54000 (Zürich HB Bahnhof)"
+    never = MagicMock(side_effect=AssertionError("station pick must resolve by coords, not re-geocode the name"))
+    assert geocode(place=pick, geocode_fn=never) == (47.378, 8.54)  # the exact station point
+
+
 def test_box_display_label():
     # Shows the (Name) inside a coords literal, else the value verbatim (a plain place name).
     assert box_display_label("47.50000, 9.50000 (Zürich Bahnhof)") == "Zürich Bahnhof"
@@ -260,6 +271,15 @@ def test_as_bahnhof():
     assert as_bahnhof(name="  Langenargen  ") == "Langenargen Bahnhof"
     assert as_bahnhof(name="Zürich Flughafen Bahnhof") == "Zürich Flughafen Bahnhof"
     assert as_bahnhof(name="Konstanz BAHNHOF") == "Konstanz BAHNHOF"
+
+
+def test_photon_query():
+    # The ONE Photon call site: returns the payload's features; ANY network/HTTP error → [] (never crashes).
+    payload = {"features": [_photon_feature(name="X", lon=9.0, lat=48.0)]}
+    got = _photon_query(url="https://photon/reverse", params={"lat": 48.0}, http_get=MagicMock(return_value=payload))
+    assert len(got) == 1 and got[0]["properties"]["name"] == "X"
+    boom = MagicMock(side_effect=requests.RequestException("timeout"))
+    assert _photon_query(url="https://photon/reverse", params={"lat": 48.0}, http_get=boom) == []
 
 
 def test_photon_features():
