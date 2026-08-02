@@ -499,6 +499,17 @@ class GradeConfig:
     ASCENT_RESAMPLE_WINDOW_M = 200.0
 
 
+class BuildValidationConfig:
+    """STRICT build-time invariants on bike-edge geometry — a violation fails the build LOUD.
+
+    Guards against the two corruption classes that shipped bad graphs: sparse polylines that shortcut
+    across streets, and baked z that leaves the [endpoint-elevation] band (a tunnel/dip a bike can't take).
+    """
+
+    MAX_VERTEX_SPACING_M = 100.0  # no two consecutive bike-edge vertices may be farther apart than this
+    ELEV_BAND_MARGIN_M = 30.0  # bike-edge z must stay within [min,max endpoint elev] ± this (DEM noise)
+
+
 class SpeedConfig:
     """Surface- and grade-adaptive cycling speed (km/h). Base speed interpolates linearly with the
     continuous surface WEIGHT (0.0 → BASE_KMH_AT_WEIGHT0, SURFACE_WEIGHT_MAX → BASE_KMH_AT_WEIGHT_MAX);
@@ -595,7 +606,7 @@ class WebMapConfig:
     DEFAULT_LAT = 47.6
     DEFAULT_LON = 9.4
     DEFAULT_ZOOM = 6.0  # far out (whole DACH); route framing uses VIEWING_ZOOM, not this
-    DEFAULT_PITCH = 30.0  # deck.gl pitch: 0 = top-down, 90 = horizon
+    DEFAULT_PITCH = 0.0  # start top-down (still 3D-draggable); pitch>0 breaks deck.gl terrain-click coords
     DEFAULT_BEARING = 0.0
     # Rendered map height in the browser, pixels.
     MAP_HEIGHT_PX = 600

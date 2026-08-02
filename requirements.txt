@@ -27,7 +27,7 @@ psutil>=5.9.0  # CORE: process RSS memory-guard logging
 
 # Web viewer (Streamlit 3D map). st_deckgl (not the built-in st.pydeck_chart) because st.pydeck_chart
 # keeps the panned camera, so "Set start & end" could never re-zoom.
-streamlit>=1.36.0  # UI: the web app shell
+streamlit>=1.48.0  # UI: the web app shell (>=1.48 for st.container(horizontal=...) button group)
 pydeck>=0.9.0  # UI: deck.gl terrain + route layers
 streamlit-deckgl>=0.5.0  # UI: remountable deck component, re-zoom
 plotly>=5.18.0  # UI: interactive elevation-profile chart

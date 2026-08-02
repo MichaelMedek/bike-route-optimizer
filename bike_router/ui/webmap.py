@@ -318,7 +318,7 @@ def route_view_state(start_latlon: tuple[float, float], end_latlon: tuple[float,
 # --- pure shell-decision logic (unit-tested here so app_webmap stays thin st.* wiring) --------
 
 # Fixed button labels, defined ONCE — referenced by the buttons AND the help/caption text.
-SET_LABEL = "📍 Set start & end"
+SET_LABEL = "🔎 Set start & end"
 COMPUTE_LABEL = "🧭 Compute route"
 
 
@@ -338,20 +338,48 @@ def _named_waypoints(
     return named
 
 
-def picked_station(event: object) -> tuple[str, float, float] | None:
-    """A clicked top-station as (name, lat, lon) from an st_deckgl click event, else None.
+def _parse_deck_click(event: object) -> dict[str, object] | None:
+    """The st_deckgl click payload as a dict, or None if it isn't a deck click event.
 
-    st_deckgl spreads the picked datum at top level with deck.gl's ``"deck-click-event"`` type + the
-    datum's ``name`` and ``position`` [lon, lat, z]; only that event with both present yields a value.
+    The ONE guard both the marker reader (picked_station) and the terrain reader
+    (map_click_start_pending) share, so the event-shape check lives in a single place.
     """
     if not isinstance(event, dict) or event.get("eventType") != WebMapConfig.DECK_CLICK_EVENT:
         return None
-    name = event.get("name")
-    position = event.get("position")
+    return event
+
+
+def picked_station(event: object) -> tuple[str, float, float] | None:
+    """A clicked top-station as (name, lat, lon) from an st_deckgl click event, else None.
+
+    st_deckgl spreads the picked datum at top level with the datum's ``name`` and ``position``
+    [lon, lat, z]; only a deck click carrying both yields a value (marker click, not terrain).
+    """
+    click = _parse_deck_click(event=event)
+    if click is None:
+        return None
+    name = click.get("name")
+    position = click.get("position")
     if not (isinstance(name, str) and name) or not (isinstance(position, list) and len(position) >= 2):
         return None
     lon, lat = float(position[0]), float(position[1])
     return name, lat, lon
+
+
+def picked_terrain(event: object) -> tuple[float, float] | None:
+    """An empty-space (terrain) click as (lat, lon) from an st_deckgl click event, else None.
+
+    A terrain click carries deck.gl's ``coordinate`` [lon, lat] but NO marker datum (no ``name``),
+    so a marker click is excluded here — the mirror of picked_station over the same _parse_deck_click.
+    """
+    click = _parse_deck_click(event=event)
+    if click is None or click.get("name") is not None:
+        return None
+    coordinate = click.get("coordinate")
+    if not (isinstance(coordinate, list) and len(coordinate) >= 2):
+        return None
+    lon, lat = float(coordinate[0]), float(coordinate[1])
+    return lat, lon
 
 
 def station_click_pending(*, event: object, last_applied: str | None) -> str | None:
@@ -365,6 +393,22 @@ def station_click_pending(*, event: object, last_applied: str | None) -> str | N
         return None
     name, lat, lon = picked
     pending = latlon_box_value(lat=lat, lon=lon, name=as_bahnhof(name=name))
+    return pending if pending != last_applied else None
+
+
+def map_click_start_pending(*, event: object, armed: bool, last_applied: str | None) -> str | None:
+    """The Start-box value ``"lat, lon"`` for an armed terrain click, else None.
+
+    Only when the map-click button armed it AND an empty-space (non-marker) click carries a coordinate;
+    same dedup-against-last_applied as station_click_pending so a replayed event doesn't re-fire.
+    """
+    if not armed:
+        return None
+    picked = picked_terrain(event)
+    if picked is None:
+        return None
+    lat, lon = picked
+    pending = latlon_box_value(lat=lat, lon=lon, name=None)
     return pending if pending != last_applied else None
 
 

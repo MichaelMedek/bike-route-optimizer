@@ -73,7 +73,7 @@ def test_page_renders(fixture_graph):
     assert at.title[0].value == "🚲 Bike Route Optimizer"
     assert len(at.text_input) == 2
     labels = [b.label for b in at.button]
-    assert "📍 Set start & end" in labels and "🚞" in labels and "🧭 Compute route" in labels
+    assert "🔎 Set start & end" in labels and "🚞" in labels and "🧭 Compute route" in labels
 
 
 def test_download_graph_with_bar():
@@ -94,10 +94,10 @@ def test_seed_state(fixture_graph):
 
 
 def test_render_controls(fixture_graph):
-    # Draws the two place boxes + the Set/GPS/Top-stations button row.
+    # Draws the two place boxes + the swap and the three distinct Start-setter icons (GPS/map/rail).
     at = _run()
     labels = [b.label for b in at.button]
-    assert "⇄" in labels and "📍" in labels
+    assert "⇄" in labels and "📍" in labels and "🎯" in labels and "🚞" in labels
 
 
 def test_compute_button(fixture_graph):
@@ -119,7 +119,7 @@ def test_compute_button(fixture_graph):
     ):
         at.text_input(key="start_box").set_value(_START)
         at.text_input(key="end_box").set_value(_END).run()
-        _click(at, "📍 Set start & end")
+        _click(at, "🔎 Set start & end")
         _click(at, "🧭 Compute route")
     planned.assert_called_once()
     assert at.session_state["result"] is result
@@ -147,7 +147,7 @@ def test_render_route_output(fixture_graph, tmp_path):
     ):
         at.text_input(key="start_box").set_value(_START)
         at.text_input(key="end_box").set_value(_END).run()
-        _click(at, "📍 Set start & end")
+        _click(at, "🔎 Set start & end")
         _click(at, "🧭 Compute route")
     assert not at.exception
     assert any("Google Maps" in c.value for c in at.caption)
@@ -196,7 +196,7 @@ def test_set_endpoints(fixture_graph):
     with patch.object(app, "resolve_endpoints", return_value=((48.0, 8.0, 300.0), (48.4, 8.6, 500.0))):
         at.text_input(key="start_box").set_value(_START)
         at.text_input(key="end_box").set_value(_END).run()
-        _click(at, "📍 Set start & end")
+        _click(at, "🔎 Set start & end")
     assert at.session_state["start_latlon"] == (48.0, 8.0, 300.0) and at.session_state["camera_epoch"] == 1
 
 
@@ -207,7 +207,7 @@ def test_set_endpoints_bad_place_toasts(fixture_graph):
     with patch.object(app, "resolve_endpoints", boom):
         at.text_input(key="start_box").set_value("Zzz Nowhere")
         at.text_input(key="end_box").set_value(_END).run()
-        _click(at, "📍 Set start & end")
+        _click(at, "🔎 Set start & end")
     assert at.session_state["start_latlon"] is None
 
 
@@ -278,6 +278,51 @@ def test_handle_top_station_click():
                 }
             )
     assert fake_state["_pending_start"] == "47.90000, 9.00000 (Sauldorf Bahnhof)"
+
+
+def test_apply_pending_start():
+    # The ONE stash+rerun path: writes the box value to _pending_start and reruns (GPS/station/map share it).
+    with patch.object(app, "st") as fake_st:
+        fake_st.session_state = _State()
+        fake_st.rerun = MagicMock(side_effect=RuntimeError("rerun"))
+        with pytest.raises(RuntimeError, match="rerun"):
+            app.apply_pending_start(box_value="48.0, 8.0")
+    assert fake_st.session_state["_pending_start"] == "48.0, 8.0"
+
+
+def test_recenter_on_endpoints():
+    # The ONE recenter path (Set + Compute): sets a fresh view and bumps the camera epoch by one.
+    with patch.object(app, "st") as fake_st:
+        fake_st.session_state = _State(camera_epoch=2)
+        app._recenter_on_endpoints(start=(48.0, 8.0, 300.0), end=(48.4, 8.6, 500.0))
+    assert fake_st.session_state["camera_epoch"] == 3 and fake_st.session_state["view"] is not None
+
+
+def test_arm_map_click_start():
+    # The 🎯 button callback just arms the next-empty-map-click flag.
+    with patch.object(app, "st") as fake_st:
+        fake_st.session_state = _State()
+        app.arm_map_click_start()
+        assert fake_st.session_state["arm_map_click_start"] is True
+
+
+def test_handle_map_click_start():
+    # Armed + an empty-map click → stash "lat, lon" as Start, disarm, rerun; unarmed → no-op.
+    click = app.WebMapConfig.DECK_CLICK_EVENT
+    event = {"coordinate": [9.0, 47.9], "eventType": click}
+    with patch.object(app, "st") as fake_st:
+        fake_st.session_state = _State(arm_map_click_start=True)
+        fake_st.rerun = MagicMock(side_effect=RuntimeError("rerun"))
+        with pytest.raises(RuntimeError, match="rerun"):
+            app.handle_map_click_start(event=event)
+    assert fake_st.session_state["_pending_start"] == "47.90000, 9.00000"
+    assert fake_st.session_state["arm_map_click_start"] is False
+    # unarmed → no stash, no rerun
+    with patch.object(app, "st") as fake_st:
+        fake_st.session_state = _State(arm_map_click_start=False)
+        fake_st.rerun = MagicMock(side_effect=RuntimeError("rerun"))
+        app.handle_map_click_start(event=event)  # must NOT raise
+    assert "_pending_start" not in fake_st.session_state
 
 
 def test_top_station_markers(fixture_graph):

@@ -47,6 +47,7 @@ from bike_router.ui.webmap import (
     elevation_profile_chart,
     endpoint_labels,
     flattened_view,
+    map_click_start_pending,
     map_remount_key,
     map_waypoint_markers,
     output_donuts,
@@ -188,11 +189,33 @@ def place_input(field: str, label: str, placeholder: str, bbox: tuple[float, flo
     return typed
 
 
+def _recenter_on_endpoints(start: tuple[float, float, float], end: tuple[float, float, float]) -> None:
+    """Reframe the map straight-down on the start→end span and bump the camera epoch (one remount).
+
+    The SINGLE recenter path: both Set (new endpoints) and Compute (fresh route) call this so the
+    map always reframes to a fresh top-down view; camera_epoch drives the only camera move.
+    """
+    st.session_state.update(
+        view=route_view_state(start_latlon=start[:2], end_latlon=end[:2]),
+        camera_epoch=st.session_state.camera_epoch + 1,
+    )
+
+
+def apply_pending_start(box_value: str) -> None:
+    """Stash a Start-box value for the next render, then rerun — the ONE pending-start path.
+
+    A widget key can't be written after its widget renders, so GPS, top-station clicks and map
+    clicks all funnel their "lat, lon [(Name)]" box value through here (stash + rerun), no copies.
+    """
+    st.session_state._pending_start = box_value
+    st.rerun()
+
+
 def set_endpoints() -> None:
     """Set-button callback: geocode the box texts, mark them resolved, recenter the map.
 
     Runs as an on_click callback (BEFORE the rerun), so marking the boxes resolved clears their
-    suggestions instantly. Recentering (camera_epoch bump) lives ONLY here.
+    suggestions instantly. Recentering is the shared _recenter_on_endpoints helper (also used by Compute).
     """
     origin, destination = st.session_state.start_box, st.session_state.end_box
     st.session_state.update(start_box_resolved=origin, end_box_resolved=destination)
@@ -207,9 +230,8 @@ def set_endpoints() -> None:
         start_latlon=start,  # (lat, lon, elevation_m)
         end_latlon=end,
         result=None,  # stale route from the previous endpoints
-        view=route_view_state(start_latlon=start[:2], end_latlon=end[:2]),
-        camera_epoch=st.session_state.camera_epoch + 1,
     )
+    _recenter_on_endpoints(start=start, end=end)
 
 
 def toggle_top_stations() -> None:
@@ -224,11 +246,16 @@ def request_gps() -> None:
     st.session_state.gps_requested = True
 
 
+def arm_map_click_start() -> None:
+    """Map-click button callback: arm 'the next empty-map click sets Start' (read in render_map)."""
+    st.session_state.arm_map_click_start = True
+
+
 def capture_gps() -> None:
     """When armed, read the browser position and stash it as a "lat, lon" literal for the Start box.
 
     get_geolocation() returns the fix on the rerun AFTER permission is granted, so it runs here in
-    the main body (not a callback); the coords flow through the same _pending_start → start_box path.
+    the main body (not a callback); the coords flow through the shared apply_pending_start path.
     """
     if not st.session_state.get("gps_requested"):
         return
@@ -241,10 +268,10 @@ def capture_gps() -> None:
         st.toast("Couldn't read your location (permission denied or unavailable).", icon="⚠️")
         return
     lat, lon, accuracy = coords["latitude"], coords["longitude"], coords.get("accuracy", 0.0)
-    st.session_state._pending_start = latlon_box_value(lat=lat, lon=lon, name=None)  # same box-coord format as picks
+    box_value = latlon_box_value(lat=lat, lon=lon, name=None)  # same box-coord format as picks
     st.toast(f"📍 Location set as Start (±{accuracy:.0f} m accuracy).", icon="📍")
-    logger.info(f"GPS fix → Start box {st.session_state._pending_start!r} (±{accuracy:.0f} m)")
-    st.rerun()
+    logger.info(f"GPS fix → Start box {box_value!r} (±{accuracy:.0f} m)")
+    apply_pending_start(box_value=box_value)
 
 
 @st.cache_data(ttl=3600)  # type: ignore[misc]  # untyped external decorator; one whole-graph scan, cached
@@ -295,6 +322,7 @@ def seed_state() -> None:
         "camera_epoch": 0,
         "show_top_stations": False,  # rail-purple top-station inspiration markers toggle
         "gps_requested": False,  # armed by "My location", read on the next render
+        "arm_map_click_start": False,  # armed by the 🎯 button, consumed by the next empty-map click
     }.items():
         st.session_state.setdefault(key, initial)
     if st.session_state.get("_pending_start") is not None:
@@ -304,10 +332,10 @@ def seed_state() -> None:
 
 
 def render_controls() -> tuple[str, str]:
-    """Draw the Start/End boxes (+ swap) and the Set / GPS / Top-stations row; return (origin, dest).
+    """Draw the Start/End boxes (+ swap) and the Set + GPS/map-click/top-stations row; return (origin, dest).
 
-    The two secondary actions are ICON-ONLY (emoji + tooltip): a fixed tiny footprint that stays on
-    ONE row at any width, so on a narrow mobile viewport their labels can't wrap into extra lines.
+    The three Start-setters are ICON-ONLY and live in one horizontal container so they stay side-by-side
+    as a group at any width (never one-per-row on mobile), dropping below Set together when space runs out.
     """
     bbox = tuple(load_meta(graph_dir=GraphConfig.GRAPH_DIR)["bbox"])  # coverage box biases + limits suggestions
     col_start, col_swap, col_end = st.columns([1, 0.18, 1])
@@ -319,24 +347,26 @@ def render_controls() -> tuple[str, str]:
     with col_end:
         destination = place_input(field=SessionKey.END_BOX, label="End", placeholder="End location", bbox=bbox)
 
-    # Set is the wide primary; GPS + Top-stations are icon-only so the row never wraps on mobile.
-    col_set, col_gps, col_top = st.columns([6, 1, 1])
-    with col_set:
+    # Set is the wide primary; the three Start-setters (GPS / map-click / top-stations) sit in ONE
+    # horizontal group that never stacks — beside Set on desktop, dropping below as a unit on mobile.
+    with st.container(horizontal=True, gap="small"):
         st.button(SET_LABEL, width="stretch", help="Geocode the Start/End places", on_click=set_endpoints)
-    with col_gps:
-        st.button(
-            "📍",
-            width="stretch",
-            help="Use my current GPS location as Start (asks the browser for permission)",
-            on_click=request_gps,
-        )
-    with col_top:
-        st.button(
-            "🚞",
-            width="stretch",
-            help="Show local-maximum rail stations to start a downhill trip from",
-            on_click=toggle_top_stations,
-        )
+        with st.container(horizontal=True, gap="small", width="content"):
+            st.button(
+                "📍",
+                help="Use my current GPS location as Start (asks the browser for permission)",
+                on_click=request_gps,
+            )
+            st.button(
+                "🎯",
+                help="Then click empty map to set Start there",
+                on_click=arm_map_click_start,
+            )
+            st.button(
+                "🚞",
+                help="Show local-maximum rail stations to start a downhill trip from",
+                on_click=toggle_top_stations,
+            )
     capture_gps()  # if armed by the button, read the browser fix → stash into the Start box (reruns)
     return origin, destination
 
@@ -371,6 +401,8 @@ def compute_button(origin: str, destination: str) -> None:
                 f"Route computed: {len(result.track.points)} points, {result.track.total.distance_km:.1f} km, "
                 f"{len(result.rail_legs)} rail leg(s)"
             )
+            # Reframe fresh straight-down on the computed route — same recenter path as Set.
+            _recenter_on_endpoints(start=st.session_state.start_latlon, end=st.session_state.end_latlon)
         except BikeRouterError as error:  # too short/long, out of coverage, or no route
             logger.warning(f"Compute route failed for {origin!r} → {destination!r}: {error}")
             st.toast(str(error), icon="⚠️")
@@ -381,7 +413,7 @@ def compute_button(origin: str, destination: str) -> None:
 def render_map(origin: str, destination: str) -> None:
     """Render the 3D map: endpoints, the colour-scale radio, and the route ribbon.
 
-    camera_epoch (bumped only by Set) drives the only camera move; the colour scale + ribbon presence
+    camera_epoch (bumped by Set and Compute) drives the only camera move; the colour scale + ribbon presence
     fold into the remount key so a fresh route or scale toggle shows without moving the view.
     """
     endpoints = (
@@ -434,17 +466,35 @@ def render_map(origin: str, destination: str) -> None:
     )
     event = st_deckgl(deck, key=map_key, height=WebMapConfig.MAP_HEIGHT_PX, events=["click"])
     handle_top_station_click(event=event)
+    handle_map_click_start(event=event)
 
 
 def handle_top_station_click(event: object) -> None:
     """Stash a clicked top-station's name for the Start box, then rerun (else no-op).
 
-    We must NOT write start_box here (its widget already rendered); we stash into the non-widget
-    _pending_start and record it as last-applied so the re-returned event dedups.
+    We must NOT write start_box here (its widget already rendered); it goes through the shared
+    apply_pending_start (stash + rerun); the last-applied marker dedups the re-returned event.
     """
     name = station_click_pending(event=event, last_applied=st.session_state.get("_last_station_click"))
     if name is not None:
         logger.info(f"Top-station clicked → filling Start box with {name!r}")
-        st.session_state._pending_start = name
         st.session_state._last_station_click = name
-        st.rerun()
+        apply_pending_start(box_value=name)
+
+
+def handle_map_click_start(event: object) -> None:
+    """When the map-click button armed it, stash an empty-map click's coords as Start, then rerun.
+
+    Disarms on a hit so only ONE click sets Start; shares the apply_pending_start stash+rerun path,
+    and dedups the re-returned event against the last-applied marker (like the top-station handler).
+    """
+    box_value = map_click_start_pending(
+        event=event,
+        armed=st.session_state.get("arm_map_click_start", False),
+        last_applied=st.session_state.get("_last_map_click"),
+    )
+    if box_value is not None:
+        logger.info(f"Map clicked → filling Start box with {box_value!r}")
+        st.session_state._last_map_click = box_value
+        st.session_state.arm_map_click_start = False
+        apply_pending_start(box_value=box_value)
