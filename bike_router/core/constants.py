@@ -74,6 +74,8 @@ class Schema:
     HIGHWAY = "highway"
     MODE = "mode"
     GEOMETRY_WKT = "geometry_wkt"
+    # Sister-file only: baked intra-edge elevation deviation (m), joined onto edges at load.
+    ELEVATION_DEVIATION_M = "elevation_deviation_m"
     # OSMnx in-memory node/edge attrs (x=lon, y=lat) + the polyline attr; distinct from the on-disk names.
     GEOMETRY = "geometry"
 
@@ -178,6 +180,10 @@ class GraphConfig:
     GRAPH_DIR = DATA_DIR / "dach_graph"
     NODES_SUBDIR = "nodes"
     EDGES_SUBDIR = "edges"
+    # Sister to EDGES_SUBDIR: one tile per edge tile (same name) holding just the from/to/key + baked
+    # elevation deviation for edges past the warn threshold. Written only where offenders exist, joined
+    # onto edges at load for the routing penalty. Absent → no penalty (un-migrated graph).
+    UNRELIABLE_ELEVATION_SUBDIR = "edge_unreliable_elevation"
     TILE_SUFFIX = ".parquet"  # per-tile file extension (shared by the writer + the reader glob)
     META_FILENAME = "meta.json"
     OVERVIEW_FILENAME = "dach_graph_overview.png"  # whole-network preview, written into the artifact dir

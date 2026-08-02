@@ -14,6 +14,7 @@ from bike_router.core.cost import (
     _as_values,
     _is_missing,
     edge_cost_array,
+    edge_deviation_array,
     road_included,
     road_tier,
     road_weight,
@@ -27,11 +28,14 @@ from bike_router.core.cost import (
 from tests.conftest import ZERO_PARAMS, zero_params
 
 
-def _cost(*, mode, length, surface=None, highway=None, from_elev=0.0, to_elev=0.0, params=ZERO_PARAMS) -> float:
+def _cost(
+    *, mode, length, surface=None, highway=None, from_elev=0.0, to_elev=0.0, deviation=None, params=ZERO_PARAMS
+) -> float:
     """The vectorized cost of ONE edge (one-row table), for the single-edge penalty contracts."""
-    edges_df = pd.DataFrame(
-        [{"from_node": 1, "to_node": 2, "mode": mode, "length_m": length, "surface": surface, "highway": highway}]
-    )
+    row = {"from_node": 1, "to_node": 2, "mode": mode, "length_m": length, "surface": surface, "highway": highway}
+    if deviation is not None:  # only present when the sister-file merge ran (else column absent → 0)
+        row["elevation_deviation_m"] = deviation
+    edges_df = pd.DataFrame([row])
     return float(edge_cost_array(edges_df=edges_df, elev_by_osmid={1: from_elev, 2: to_elev}, params=params)[0])
 
 
@@ -269,6 +273,36 @@ def test_edge_cost_array():
         1000.0 + 1000.0 * SurfaceConfig.SURFACE_WEIGHT["gravel"] + 1000.0 * RoadConfig.ROAD_WEIGHT["secondary"]
     )
     assert np.allclose(got, [bike_expected, 10_000.0 + 20_000.0, 150.0 + 5000.0])
+
+
+def test_edge_deviation_array():
+    # The optional sister column read straight through; an absent column → all-zeros (un-migrated graph).
+    have = pd.DataFrame({"from_node": [1, 2], "to_node": [2, 3], "elevation_deviation_m": [80.0, 0.0]})
+    assert np.allclose(edge_deviation_array(edges_df=have), [80.0, 0.0])
+    absent = pd.DataFrame({"from_node": [1, 2], "to_node": [2, 3]})
+    assert np.array_equal(edge_deviation_array(edges_df=absent), np.zeros(2))
+
+
+def test_unreliable_elevation_penalty_folds_into_uphill():
+    # The baked-deviation penalty is EXTRA climb of max(dev − 50, 0) m, fed through the SAME uphill term
+    # (scales with the rider's uphill slider). Zero AT the 50 m threshold (no 49-vs-51 cliff); a 100 m
+    # deviation adds 50 m of climb ON TOP of the real node-to-node climb; rail/absent column → no penalty.
+    up = zero_params(extra_km_per_uphill_100m=5.0)  # 5 extra-km per 100 m climb
+    flat = _cost(mode=Mode.BIKE, length=1000.0, surface="asphalt", highway="residential", params=up)
+
+    # exactly at threshold → no penalty (starts at 0), and just under behaves the same
+    assert _cost(mode=Mode.BIKE, length=1000.0, deviation=50.0, params=up) == flat
+    assert _cost(mode=Mode.BIKE, length=1000.0, deviation=49.0, params=up) == flat
+
+    # 100 m deviation → 50 m extra climb → +50/100·5·1000 = +2500 m over the flat baseline
+    assert _cost(mode=Mode.BIKE, length=1000.0, deviation=100.0, params=up) == pytest.approx(flat + 2500.0)
+    # it ADDS to the real climb, not replaces it: 100 m climb + 50 m hidden = 150 m → +7500
+    assert _cost(mode=Mode.BIKE, length=1000.0, to_elev=100.0, deviation=100.0, params=up) == pytest.approx(
+        flat + 5000.0 + 2500.0
+    )
+
+    # rail never pays it even with a deviation present (only the bike uphill term uses climb)
+    assert _cost(mode=Mode.RAIL, length=1000.0, deviation=500.0, params=up) == 1000.0
 
 
 def test_untagged_default_weight_applies_in_cost():

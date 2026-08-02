@@ -12,10 +12,12 @@ import pandas as pd
 from bike_router.core.constants import (
     CostConfig,
     GpxConfig,
+    GradeConfig,
     Mode,
     RailConfig,
     RoadConfig,
     RoutingParams,
+    Schema,
     SurfaceConfig,
 )
 
@@ -101,6 +103,18 @@ def road_included(highway: object) -> bool:
     return tag_included(tag=highway, tier_map=RoadConfig.ROAD_TIER)
 
 
+def edge_deviation_array(*, edges_df: pd.DataFrame) -> np.ndarray:
+    """Per-edge baked elevation deviation (m) from the optional sister column, or all-zeros if absent.
+
+    The migration writes ``elevation_deviation_m`` only for edges whose baked terrain strays far from
+    the node-to-node line; a graph without that column (un-migrated / fixtures) reads as 0 → no penalty.
+    """
+    if Schema.ELEVATION_DEVIATION_M not in edges_df.columns:
+        return np.zeros(len(edges_df), dtype=np.float64)
+    deviation: np.ndarray = edges_df[Schema.ELEVATION_DEVIATION_M].to_numpy(dtype=np.float64)
+    return deviation
+
+
 def edge_cost_array(*, edges_df: pd.DataFrame, elev_by_osmid: dict[int, float], params: RoutingParams) -> np.ndarray:
     """Per-edge cost in metres for a whole edge table — the ONE cost formula, fully vectorized.
     Branches on mode (``np.select``): bike = length + uphill + unpaved + main-road penalties (uphill
@@ -115,7 +129,13 @@ def edge_cost_array(*, edges_df: pd.DataFrame, elev_by_osmid: dict[int, float], 
     s_weight = edges_df["surface"].map(surface_weight).to_numpy(dtype=np.float64)
     r_weight = edges_df["highway"].map(road_weight).to_numpy(dtype=np.float64)
 
-    climb_m = np.maximum(to_elev - from_elev, 0.0)  # uphill only; downhill = 0
+    # Hidden intra-edge climb the node-to-node delta can't see: an edge whose baked terrain deviates past
+    # the warn threshold dips into a valley / over a hill, so the rider really climbs ~the excess down then
+    # back up. Charge the excess as extra uphill (0 exactly AT the threshold — no 49-vs-51 cliff).
+    deviation_m = edge_deviation_array(edges_df=edges_df)
+    hidden_climb_m = np.maximum(deviation_m - GradeConfig.ELEVATION_DEVIATION_WARN_M, 0.0)
+
+    climb_m = np.maximum(to_elev - from_elev, 0.0) + hidden_climb_m  # uphill only; downhill = 0
     bike_cost = (
         length
         + (climb_m / CostConfig.UPHILL_REFERENCE_M) * params.extra_km_per_uphill_100m * mpk

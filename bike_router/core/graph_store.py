@@ -40,10 +40,20 @@ EDGE_COLS = [
     Schema.MODE,
     Schema.GEOMETRY_WKT,
 ]
-# Minimal columns the CSR routing pass needs (no geometry/station_name/key — those are re-read per
-# chosen edge in load_path_edges). Keeps the corridor window memory-lean.
+# Minimal columns the CSR routing pass needs (no geometry/station_name — those are re-read per chosen
+# edge in load_path_edges). ``key`` stays so the unreliable-elevation sister file joins per parallel edge.
 _ROUTE_NODE_COLS = [Schema.OSMID, Schema.LAT, Schema.LON, Schema.ELEVATION_M, Schema.NODE_TYPE]
-_ROUTE_EDGE_COLS = [Schema.FROM_NODE, Schema.TO_NODE, Schema.LENGTH_M, Schema.SURFACE, Schema.HIGHWAY, Schema.MODE]
+_ROUTE_EDGE_COLS = [
+    Schema.FROM_NODE,
+    Schema.TO_NODE,
+    Schema.KEY,
+    Schema.LENGTH_M,
+    Schema.SURFACE,
+    Schema.HIGHWAY,
+    Schema.MODE,
+]
+# The sister tile's columns: the (from, to, key) join triple + the baked deviation it contributes.
+_UNRELIABLE_COLS = [Schema.FROM_NODE, Schema.TO_NODE, Schema.KEY, Schema.ELEVATION_DEVIATION_M]
 
 
 def tile_index(lat: float, lon: float, tile_deg: float) -> tuple[int, int]:
@@ -88,6 +98,20 @@ def _intersecting_tiles(*, corridor: Polygon, tile_deg: float) -> list[tuple[int
     ]
 
 
+def _warn_if_missing_unreliable_elevation(*, graph_dir: Path) -> None:
+    """Warn if the unreliable-elevation sister folder is absent — the deviation penalty is then inert.
+
+    Written post-build by scripts/flag_unreliable_elevation.py; a graph without it routes fine but never
+    deprioritizes edges whose baked terrain is unreliable (see cost.edge_deviation_array).
+    """
+    sister_dir = graph_dir / GraphConfig.UNRELIABLE_ELEVATION_SUBDIR
+    if not any(sister_dir.glob(f"tile_*{GraphConfig.TILE_SUFFIX}")):
+        logger.warning(
+            f"No {GraphConfig.UNRELIABLE_ELEVATION_SUBDIR}/ tiles under {graph_dir} — the unreliable-elevation "
+            f"penalty is INERT. Run scripts/flag_unreliable_elevation.py after the build and re-upload the graph."
+        )
+
+
 def download_graph_from_hf(target_dir: Path, progress: ProgressFn) -> Path:
     """Download the prebuilt DACH graph artifact from Hugging Face if missing.
 
@@ -97,27 +121,27 @@ def download_graph_from_hf(target_dir: Path, progress: ProgressFn) -> Path:
     meta_path = target_dir / GraphConfig.META_FILENAME
     if meta_path.exists():
         logger.debug(f"DACH graph already present at {target_dir}")
-        return target_dir
-    target_dir.mkdir(parents=True, exist_ok=True)
-    logger.info(f"Downloading DACH graph from HF {GraphConfig.HF_REPO_ID} …")
-
-    repo_files = list_repo_files(repo_id=GraphConfig.HF_REPO_ID, repo_type="dataset")
-    total = len(repo_files)
-    with ThreadPoolExecutor(max_workers=1) as pool:
-        future = pool.submit(
-            snapshot_download,
-            repo_id=GraphConfig.HF_REPO_ID,
-            repo_type="dataset",
-            local_dir=str(target_dir),
-            max_workers=GraphConfig.HF_MAX_WORKERS,
-        )
-        while not future.done():
-            done = sum(1 for name in repo_files if (target_dir / name).exists())  # real files, not .cache meta
-            progress(done, total)  # main thread: safe for st.progress
-            time.sleep(_DOWNLOAD_POLL_S)
-        future.result()  # re-raise any download failure
-    progress(total, total)
-    assert meta_path.exists(), "download did not produce meta.json"
+    else:
+        target_dir.mkdir(parents=True, exist_ok=True)
+        logger.info(f"Downloading DACH graph from HF {GraphConfig.HF_REPO_ID} …")
+        repo_files = list_repo_files(repo_id=GraphConfig.HF_REPO_ID, repo_type="dataset")
+        total = len(repo_files)
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            future = pool.submit(
+                snapshot_download,
+                repo_id=GraphConfig.HF_REPO_ID,
+                repo_type="dataset",
+                local_dir=str(target_dir),
+                max_workers=GraphConfig.HF_MAX_WORKERS,
+            )
+            while not future.done():
+                done = sum(1 for name in repo_files if (target_dir / name).exists())  # real files, not .cache meta
+                progress(done, total)  # main thread: safe for st.progress
+                time.sleep(_DOWNLOAD_POLL_S)
+            future.result()  # re-raise any download failure
+        progress(total, total)
+        assert meta_path.exists(), "download did not produce meta.json"
+    _warn_if_missing_unreliable_elevation(graph_dir=target_dir)
     return target_dir
 
 
@@ -152,6 +176,28 @@ def read_tiles(
     return pd.concat(frames, ignore_index=True)
 
 
+def _merge_unreliable_elevation(
+    *, edges_df: pd.DataFrame, graph_dir: Path, tiles: list[tuple[int, int]]
+) -> pd.DataFrame:
+    """Left-join the baked elevation-deviation sister tiles onto ``edges_df`` by (from, to, key).
+
+    The migration writes ``edge_unreliable_elevation/tile_*.parquet`` only where offenders exist; a
+    missing folder/tile or unjoined edge reads as 0.0 → no penalty (see cost.edge_deviation_array).
+    """
+    sister = read_tiles(
+        directory=graph_dir / GraphConfig.UNRELIABLE_ELEVATION_SUBDIR,
+        columns=_UNRELIABLE_COLS,
+        tiles=tiles,
+        filters=None,
+    )
+    if sister.empty:
+        edges_df[Schema.ELEVATION_DEVIATION_M] = 0.0
+        return edges_df
+    merged = edges_df.merge(sister, on=[Schema.FROM_NODE, Schema.TO_NODE, Schema.KEY], how="left")
+    merged[Schema.ELEVATION_DEVIATION_M] = merged[Schema.ELEVATION_DEVIATION_M].fillna(0.0)
+    return merged
+
+
 def _load_layer(
     *,
     corridor: Polygon,
@@ -184,6 +230,7 @@ def _load_layer(
         tiles=tiles,
         filters=[(Schema.MODE, "in", edge_modes), (Schema.FROM_NODE, "in", list(inside_ids | extra_from_ids))],
     )
+    edges_df = _merge_unreliable_elevation(edges_df=edges_df, graph_dir=graph_dir, tiles=tiles)
     return nodes_df, edges_df, inside_ids
 
 
@@ -288,6 +335,7 @@ def load_path_edges(*, path_nodes: list[tuple[int, float, float]], params: Routi
         tiles=tiles,
         filters=[(Schema.FROM_NODE, "in", list(set(path_osmids)))],
     )
+    edges_df = _merge_unreliable_elevation(edges_df=edges_df, graph_dir=graph_dir, tiles=tiles)
     return RoutePath(nodes=nodes, edges=_select_path_edges(nodes=nodes, edges_df=edges_df, params=params))
 
 

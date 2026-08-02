@@ -307,6 +307,7 @@ _COINCIDENTAL_REASONS = {
     "y": "OSMnx lat attr + axis",
     "position": "deck.gl marker datum key",
     "geometry": "GeoJSON field vs OSMnx attr",
+    "left": "pandas join-how vs mpl align",
 }
 _COINCIDENTAL = frozenset(_COINCIDENTAL_REASONS)
 
