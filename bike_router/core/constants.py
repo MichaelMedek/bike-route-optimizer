@@ -280,66 +280,61 @@ def color_tier(weight: float) -> int:
 
 
 def surface_weight_from_crr(crr: float) -> float:
-    """Cost weight (extra equivalent-km per km) from a raw Crr: (crr/Crr_asphalt − 1), floored at 0.
+    """Cost weight (extra equivalent-km per km) from a raw Crr: ROLLING_SHARE·(crr/Crr_asphalt − 1), floored at 0.
 
-    Rolling energy over distance is Crr·m·g·d, so a surface's energy equals riding crr/Crr_asphalt× as
-    far on asphalt; the EXTRA fraction is the detour weight. Smoother-than-asphalt earns no credit (floor 0).
+    Rolling energy is Crr·m·g·d, but rolling is only ~40% of total propulsive power at touring speed (rest
+    is aero+drivetrain), so the Crr excess is scaled by ROLLING_SHARE — not applied full (Wikipedia power model).
     """
-    return max(0.0, crr / _CRR_ASPHALT - 1.0)
+    return max(0.0, _ROLLING_SHARE * (crr / _CRR_ASPHALT - 1.0))
 
 
-def road_weight_from_lts(lts: int) -> float:
-    """Cost weight from Level of Traffic Stress: LTS≤2 (Mekuria/Furth low-stress network) free, then
-    (lts−2)/(LTS_MAX−2) above it — LTS1/2→0, LTS3→0.5, LTS4→1.0. Only stressful roads earn a detour.
-    """
-    return max(0.0, (lts - 2) / (_LTS_MAX - 2))
-
-
-# Reference anchors for the two weight formulas (module scope so the class-body comprehensions see them).
-_CRR_ASPHALT = 0.006  # measured touring-tyre Crr on asphalt — the 0-weight anchor (bicyclerollingresistance.com)
-_LTS_MAX = 4  # worst Level of Traffic Stress — the 1.0-weight anchor (Mekuria/Furth)
+# Reference anchors for the surface weight formula (module scope so the class-body comprehension sees them).
+_CRR_ASPHALT = 0.005  # DIRECTLY-MEASURED touring-tyre Crr on real asphalt (de.wikipedia Rollwiderstand, Tour mag)
+# Rolling resistance is ~42% of total propulsive power at 20 km/h touring (Wikipedia power model / gribble.org);
+# the Crr excess is scaled by this so a rough surface's penalty reflects rolling's SHARE of effort, not 100%.
+_ROLLING_SHARE = 0.4
 
 
 class SurfaceConfig:
-    """Surface → FROZEN cited raw Crr (single source) → COST weight (formula) → COLOUR tier (capped).
+    """Surface → FROZEN raw Crr → COST weight (rolling-share-scaled formula) → COLOUR tier (capped).
 
-    SURFACE_CRR holds frozen literature Crr per OSM surface (inline source each); SURFACE_WEIGHT is
-    DERIVED via surface_weight_from_crr; SURFACE_TIER caps to good/bad. Only the formula/sliders tune.
+    SURFACE_CRR holds frozen Crr per OSM surface, each tagged measured vs interp (only asphalt/gravel are
+    real bike tests); SURFACE_WEIGHT is DERIVED via surface_weight_from_crr; SURFACE_TIER caps to good/bad.
     """
 
-    # Reference: measured touring-tyre Crr on asphalt — the 0-weight anchor (bicyclerollingresistance.com).
+    # Reference: DIRECTLY-MEASURED touring-tyre Crr on real asphalt — the 0-weight anchor.
     CRR_ASPHALT = _CRR_ASPHALT
-    # Cited raw rolling-resistance coefficient per OSM surface (touring tyre). FROZEN literature values —
-    # each carries its ≤5-word source; the paper's raw-Crr table holds ranges + confidence.
+    # Raw rolling-resistance coefficient per OSM surface (touring tyre). FROZEN. Each line's ≤5-word tag is
+    # HONEST: "measured" = a real bicycle test on THAT surface; "interp"/"est" = engineering estimate, NOT cited.
     SURFACE_CRR = {
-        "asphalt": 0.006,  # bicyclerollingresistance.com tour drum
-        "concrete": 0.0055,  # de.wikipedia Rollwiderstand
-        "concrete:plates": 0.008,  # de.wikipedia Rollwiderstand est.
-        "concrete:lanes": 0.008,  # de.wikipedia Rollwiderstand est.
-        "asphalt:lanes": 0.006,  # = asphalt (bicyclerollingresistance)
-        "paved": 0.0065,  # BRR + Wikipedia rollers
-        "paving_stones": 0.011,  # SILCA impedance + de.wikipedia
-        "sett": 0.016,  # de.wikipedia + SILCA impedance
-        "cobblestone": 0.022,  # de.wikipedia Kopfsteinpflaster measured
-        "unhewn_cobblestone": 0.030,  # de.wikipedia upper + SILCA
-        "chipseal": 0.0085,  # SILCA chip-seal test
-        "bricks": 0.013,  # de.wikipedia (pavers↔sett)
-        "wood": 0.005,  # Wikipedia wooden-track rollers
-        "metal": 0.005,  # Wikipedia smooth-drum baseline
-        "compacted": 0.008,  # Omni cycling-wattage (gravel)
-        "fine_gravel": 0.009,  # Omni + de.wikipedia
-        "gravel": 0.011,  # de.wikipedia gravel-bike measured
-        "pebblestone": 0.015,  # de.wikipedia loose-stone est.
-        "unpaved": 0.012,  # Omni off-road / de.wikipedia
-        "grass_paver": 0.018,  # de.wikipedia (pavers↔grass)
-        "stone": 0.020,  # de.wikipedia rough-stone est.
-        "metal_grid": 0.007,  # de.wikipedia grid est.
-        "shells": 0.013,  # de.wikipedia loose-shell est.
-        "ground": 0.012,  # Omni off-road / de.wikipedia
-        "dirt": 0.013,  # Omni grass↔off-road interp.
-        "earth": 0.013,  # Omni (= dirt/ground)
-        "grass": 0.035,  # de.wikipedia soft-turf est.
-        "woodchips": 0.050,  # extrapolated loose-granular (Omni)
+        "asphalt": 0.005,  # measured: de.wiki Tour-mag 40mm
+        "concrete": 0.0055,  # interp: just above asphalt
+        "concrete:plates": 0.007,  # interp: jointed concrete
+        "concrete:lanes": 0.007,  # interp: jointed concrete
+        "asphalt:lanes": 0.005,  # measured: = asphalt
+        "paved": 0.0055,  # interp: generic sealed
+        "paving_stones": 0.011,  # interp: ~2x asphalt (joints)
+        "sett": 0.020,  # interp: impedance, no bike test
+        "cobblestone": 0.030,  # interp: high impedance est.
+        "unhewn_cobblestone": 0.040,  # interp: roughest, extrapolated
+        "chipseal": 0.008,  # interp: rough asphalt
+        "bricks": 0.012,  # interp: ~paving_stones
+        "wood": 0.006,  # interp: boardwalk gaps est.
+        "metal": 0.006,  # interp: grating est.
+        "compacted": 0.008,  # interp: packed-gravel low end
+        "fine_gravel": 0.009,  # interp: compacted↔gravel
+        "gravel": 0.010,  # measured: de.wiki gravel-bike Schotter
+        "pebblestone": 0.017,  # interp: loose stone est.
+        "unpaved": 0.013,  # interp: generic unpaved
+        "grass_paver": 0.016,  # interp: pavers↔grass
+        "stone": 0.020,  # interp: rough stone est.
+        "metal_grid": 0.008,  # interp: open grating est.
+        "shells": 0.013,  # interp: loose shell est.
+        "ground": 0.015,  # interp: off-road proxy
+        "dirt": 0.017,  # interp: off-road proxy
+        "earth": 0.017,  # interp: = dirt/ground
+        "grass": 0.035,  # interp: soft-turf est. (Omni 0.007 firm)
+        "woodchips": 0.050,  # interp: loose substrate, extrapolated
     }
     # Cost weight = extra equivalent-km per km from rolling resistance (surface_weight_from_crr); this is
     # what the cost + speed read. A surface smoother than asphalt earns no detour credit (floored at 0).
@@ -347,9 +342,9 @@ class SurfaceConfig:
     # Binary colour bucket, DERIVED via color_tier so it can never drift from the weight (0 paved/blue,
     # 1 unpaved/orange — a bad surface caps at 1 even if its weight rounds to 2+).
     SURFACE_TIER = {value: color_tier(weight=weight) for value, weight in SURFACE_WEIGHT.items()}
-    # Untagged surface (~44% of length) → assume Crr 0.012 (unpaved-ish) → weight 1.0, tier 1 (orange).
+    # Untagged surface (~44% of length) → assume Crr 0.013 (generic unpaved) → pessimistic default weight.
     # (Class-conditional prior is a follow-up needing an artifact rebuild — see the paper's rollout.)
-    DEFAULT_WEIGHT = surface_weight_from_crr(crr=0.012)  # "unpaved"
+    DEFAULT_WEIGHT = surface_weight_from_crr(crr=0.013)  # generic "unpaved"
     DEFAULT_TIER = color_tier(weight=DEFAULT_WEIGHT)
     # Per-tier human label + swatch: 0 paved/blue, 1 unpaved/orange (the two capped colour classes).
     TIER_LABEL_COLORS = {
@@ -359,43 +354,40 @@ class SurfaceConfig:
 
 
 class RoadConfig:
-    """Highway class → FROZEN cited raw LTS (single source) → COST weight (formula) → COLOUR tier (capped).
+    """Highway class → FROZEN cited revealed-preference detour weight (single source) → COLOUR tier (capped).
 
-    ROAD_LTS holds frozen Level-of-Traffic-Stress (1–4) per OSM class (inline source each); ROAD_WEIGHT is
-    DERIVED via road_weight_from_lts (LTS≤2 free); ROAD_TIER caps to quiet/main. Only the formula/sliders tune.
+    ROAD_WEIGHT is the extra equivalent-km per km cyclists actually detour to avoid each class, from
+    revealed-preference GPS route-choice (Broach/Dill/Gliebe 2012), NOT ordinal LTS; ROAD_TIER caps to quiet/main.
     """
 
-    LTS_MAX = _LTS_MAX  # the worst Level of Traffic Stress — the 1.0-weight anchor (Mekuria/Furth)
-    # Cited Level of Traffic Stress per OSM highway class (typical German instance). FROZEN literature
-    # values — each carries its ≤5-word source (BikeOttawa stressmodel.js operationalising Mekuria/Furth).
-    ROAD_LTS = {
-        "cycleway": 1,  # BikeOttawa: separated path
-        "path": 1,  # BikeOttawa: separated path
-        "footway": 1,  # BikeOttawa: non-crossing footway
-        "bridleway": 1,  # BikeOttawa: off-road, no traffic
-        "steps": 1,  # BikeOttawa: no motor traffic
-        "pedestrian": 1,  # BikeOttawa: pedestrian zone
-        "living_street": 1,  # Mekuria: walking-pace shared
-        "residential": 2,  # BikeOttawa: ≤40 km/h, ≤3 lanes
-        "service": 2,  # BikeOttawa: alley/access
-        "track": 2,  # BikeOttawa: track = LTS2
-        "unclassified": 3,  # BikeOttawa: non-residential 50 km/h
-        "road": 3,  # BikeOttawa: unknown-class ~50 km/h
-        "tertiary": 3,  # BikeOttawa: non-residential 50 km/h
-        "tertiary_link": 3,  # BikeOttawa: inherits tertiary
-        "secondary": 4,  # BikeOttawa: >50 km/h
-        "secondary_link": 4,  # BikeOttawa: inherits secondary
-        "primary": 4,  # BikeOttawa: >50 km/h multilane
-        "primary_link": 4,  # BikeOttawa: inherits primary
-        "trunk": 4,  # BikeOttawa: expressway >50 km/h
-        "trunk_link": 4,  # BikeOttawa: inherits trunk
+    # Cost weight = extra equivalent-km per km, from REVEALED-PREFERENCE detour data (Broach/Dill/Gliebe 2012
+    # "equivalent %-distance", bounded to [0,1] so no edge swamps surface+grade). FROZEN — inline source each.
+    ROAD_WEIGHT = {
+        "cycleway": 0.0,  # Broach: off-street path, best facility
+        "path": 0.05,  # Broach: near-cycleway separated path
+        "footway": 0.05,  # Broach: separated, walk-pace
+        "bridleway": 0.1,  # Broach: off-road, unpaved-ish
+        "steps": 0.1,  # off-road, dismount (no traffic)
+        "pedestrian": 0.1,  # low-traffic shared zone
+        "living_street": 0.1,  # Broach: bike-boulevard ~−11% discount
+        "residential": 0.15,  # Broach: local-street baseline (+13.5%)
+        "service": 0.2,  # Broach: baseline-plus, driveways/parking
+        "track": 0.2,  # low-ADT rural, baseline-plus
+        "unclassified": 0.2,  # Broach: low-ADT non-residential
+        "road": 0.2,  # unknown-class, baseline-plus
+        "tertiary": 0.45,  # Broach: ~10-20k ADT no-lane (+0.37)
+        "tertiary_link": 0.45,  # inherits tertiary
+        "secondary": 0.65,  # Broach: ~20k ADT arterial (climbs to +1.6)
+        "secondary_link": 0.65,  # inherits secondary
+        "primary": 0.85,  # Broach: 20-30k ADT no-facility (near-top)
+        "primary_link": 0.85,  # inherits primary
+        "trunk": 1.0,  # Broach: >30k ADT, largest avoidance
+        "trunk_link": 1.0,  # inherits trunk
     }
-    # Cost weight = LTS≤2-free normalised stress (road_weight_from_lts): LTS1/2→0.0, 3→0.5, 4→1.0.
-    ROAD_WEIGHT = {value: road_weight_from_lts(lts=lts) for value, lts in ROAD_LTS.items()}
     # Binary colour bucket, DERIVED via color_tier (never drifts): 0 quiet/blue, 1 main/red.
     ROAD_TIER = {value: color_tier(weight=weight) for value, weight in ROAD_WEIGHT.items()}
-    # Untagged highway (~0% in practice) → assume worst LTS 4 → weight 1.0, tier 1 (red, pessimistic).
-    DEFAULT_WEIGHT = road_weight_from_lts(lts=_LTS_MAX)
+    # Untagged highway (~0% in practice) → assume worst (trunk-like) → weight 1.0, tier 1 (red, pessimistic).
+    DEFAULT_WEIGHT = 1.0
     DEFAULT_TIER = color_tier(weight=DEFAULT_WEIGHT)
     # Per-tier human label + swatch (donut colours): tier 0 (quiet) blue, tier 1 (main) red.
     TIER_LABEL_COLORS = {0: (SurfaceLabel.QUIET_WAY, Palette.BLUE), 1: (SurfaceLabel.MAIN_ROAD, Palette.RED)}
@@ -513,8 +505,8 @@ class SpeedConfig:
 
     BASE_KMH_AT_WEIGHT0 = 25.0  # paved (weight 0.0) base speed
     BASE_KMH_AT_WEIGHT_MAX = 15.0  # roughest rideable surface base speed
-    # Weight at which the base speed bottoms out: 1.0 = the unpaved/ground anchor (Crr ~2× asphalt);
-    # rougher surfaces (gravel-loose, grass, woodchips) clamp to BASE_KMH_AT_WEIGHT_MAX.
+    # Weight at which the base speed bottoms out: 1.0 ≈ dirt/rough natural (Crr ~0.017); smoother
+    # surfaces interpolate up to paved, rougher (sett, grass, woodchips) clamp to BASE_KMH_AT_WEIGHT_MAX.
     SURFACE_WEIGHT_MAX = 1.0
     WALK_KMH = 5.0  # speed at WALK_GRADE and steeper (pushing the bike)
     WALK_GRADE = 0.12  # rise/run at which the rider drops to walking pace
