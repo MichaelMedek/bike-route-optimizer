@@ -17,6 +17,7 @@ from bike_router.core.constants import (
     LOG_FORMAT,
     PARAM_SPECS,
     ST_PRIMARY,
+    ST_SECONDARY,
     START_LABEL,
     GraphConfig,
     PhotonConfig,
@@ -362,13 +363,13 @@ def render_controls() -> tuple[str, str]:
             )
             st.button(
                 "🎯",
-                type=ST_PRIMARY if map_armed else "secondary",
+                type=ST_PRIMARY if map_armed else ST_SECONDARY,
                 help="Arm, then click empty map (top-down) to set Start there; click again to disarm",
                 on_click=arm_map_click_start,
             )
             st.button(
                 "🚞",
-                type=ST_PRIMARY if tops_armed else "secondary",
+                type=ST_PRIMARY if tops_armed else ST_SECONDARY,
                 help="Arm rail-station markers, then click one to start a downhill trip; click again to hide",
                 on_click=toggle_top_stations,
             )

@@ -135,9 +135,10 @@ NAME_KEY = "name"
 # and the Start input box label (web app). Destination has no cross-file dup but pairs here for clarity.
 START_LABEL = "Start"
 DESTINATION_LABEL = "Destination"
-# Streamlit button ``type`` for the red primary action (the Bahnhof suggestion pick). Typed as the
-# exact Literal streamlit's API expects so mypy accepts it whether or not streamlit stubs are present.
+# Streamlit button ``type`` values — the red primary action (Bahnhof pick) and the default secondary.
+# Typed as the exact Literals streamlit's API expects so mypy accepts them whether or not it's stubbed.
 ST_PRIMARY: Literal["primary"] = "primary"
+ST_SECONDARY: Literal["secondary"] = "secondary"
 # Coordinate-range assertion messages, shared by the scalar (gmaps) + vectorized (geo) guards.
 LAT_OUT_OF_RANGE = "latitude out of range"
 LON_OUT_OF_RANGE = "longitude out of range"
