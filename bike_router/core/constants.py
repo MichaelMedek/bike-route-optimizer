@@ -422,7 +422,7 @@ PARAM_SPECS = (
         field="extra_km_per_uphill_100m",
         label="Hill avoidance (extra km per 100 m climb)",
         help="How far out of your way you'd ride to dodge 100 m of climbing. 0 = shortest route, ignore hills; higher = detour to stay flat.",
-        default=12.0,
+        default=14.0,
         abbrev=Grade.UPHILL,
     ),
     RoutingParamSpec(
@@ -450,7 +450,7 @@ PARAM_SPECS = (
         field="extra_km_per_boarding",
         label="Train-boarding cost (extra km per boarding)",
         help="Flat cost of getting on a train once (a transfer boards again). 0 = board freely at any station, even multiple train legs; higher = avoid trains however long.",
-        default=15.0,
+        default=20.0,
         abbrev="boarding",
     ),
 )
@@ -632,5 +632,5 @@ class WebMapConfig:
     TERRAIN_ELEVATION_DECODER = {"rScaler": 256, "gScaler": 1, "bScaler": 1 / 256, "offset": -32768}
     TEXTURE_TILES_URL = "https://a.tile.opentopomap.org/{z}/{x}/{y}.png"
     # st_deckgl stamps a picked-datum event with deck.gl's OWN name — "deck-click-event", NOT
-    # "click" (the frontend maps events=["click"] → "deck-click-event"). picked_station_name gates on it.
+    # "click" (the frontend maps events=["click"] → "deck-click-event"). picked_station gates on it.
     DECK_CLICK_EVENT = "deck-click-event"
