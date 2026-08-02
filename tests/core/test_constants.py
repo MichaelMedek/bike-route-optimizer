@@ -8,6 +8,7 @@ import pytest
 
 from bike_router.core.constants import (
     PARAM_SPECS,
+    BuildValidationConfig,
     Condition,
     CorridorConfig,
     CostConfig,
@@ -233,6 +234,13 @@ class TestCostConfig:
 class TestGradeConfig:
     def test_margin_is_a_meaningful_positive_grade(self):
         assert 0 < GradeConfig.MARGIN < 1
+
+
+class TestBuildValidationConfig:
+    def test_invariant_limits_are_positive(self):
+        # Both strict build limits must be positive — a 0 would silently disable the gate.
+        assert BuildValidationConfig.MAX_VERTEX_SPACING_M > 0
+        assert BuildValidationConfig.ELEV_BAND_MARGIN_M > 0
 
 
 class TestSpeedConfig:

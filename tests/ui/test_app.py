@@ -264,8 +264,8 @@ def test_capture_gps_not_armed():
 
 def test_handle_top_station_click():
     # A simulated top-station click stashes the "lat, lon (Name Bahnhof)" pending value (exact coords
-    # from the marker's position), then reruns.
-    fake_state = _State()
+    # from the marker's position), auto-disarms the markers, then reruns.
+    fake_state = _State(show_top_stations=True)
     with patch.object(app, "st") as fake_st:
         fake_st.session_state = fake_state
         fake_st.rerun = MagicMock(side_effect=RuntimeError("rerun"))
@@ -278,6 +278,7 @@ def test_handle_top_station_click():
                 }
             )
     assert fake_state["_pending_start"] == "47.90000, 9.00000 (Sauldorf Bahnhof)"
+    assert fake_state["show_top_stations"] is False  # auto-disarmed after the pick
 
 
 def test_apply_pending_start():
@@ -299,11 +300,13 @@ def test_recenter_on_endpoints():
 
 
 def test_arm_map_click_start():
-    # The 🎯 button callback just arms the next-empty-map-click flag.
+    # The 🎯 button callback TOGGLES the arm flag: off→on (red), on→off (disarm).
     with patch.object(app, "st") as fake_st:
         fake_st.session_state = _State()
         app.arm_map_click_start()
         assert fake_st.session_state["arm_map_click_start"] is True
+        app.arm_map_click_start()
+        assert fake_st.session_state["arm_map_click_start"] is False
 
 
 def test_handle_map_click_start():

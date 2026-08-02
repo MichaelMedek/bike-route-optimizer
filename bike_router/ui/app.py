@@ -247,8 +247,8 @@ def request_gps() -> None:
 
 
 def arm_map_click_start() -> None:
-    """Map-click button callback: arm 'the next empty-map click sets Start' (read in render_map)."""
-    st.session_state.arm_map_click_start = True
+    """Map-click button callback: TOGGLE 'the next empty-map click sets Start' (red while armed)."""
+    st.session_state.arm_map_click_start = not st.session_state.get("arm_map_click_start", False)
 
 
 def capture_gps() -> None:
@@ -349,6 +349,9 @@ def render_controls() -> tuple[str, str]:
 
     # Set is the wide primary; the three Start-setters (GPS / map-click / top-stations) sit in ONE
     # horizontal group that never stacks — beside Set on desktop, dropping below as a unit on mobile.
+    # 📍 GPS fills directly; 🎯 and 🚞 are ARM toggles (red while armed) whose next map click sets Start.
+    map_armed = st.session_state.get("arm_map_click_start", False)
+    tops_armed = st.session_state.get("show_top_stations", False)
     with st.container(horizontal=True, gap="small"):
         st.button(SET_LABEL, width="stretch", help="Geocode the Start/End places", on_click=set_endpoints)
         with st.container(horizontal=True, gap="small", width="content"):
@@ -359,12 +362,14 @@ def render_controls() -> tuple[str, str]:
             )
             st.button(
                 "🎯",
-                help="Then click empty map to set Start there",
+                type=ST_PRIMARY if map_armed else "secondary",
+                help="Arm, then click empty map (top-down) to set Start there; click again to disarm",
                 on_click=arm_map_click_start,
             )
             st.button(
                 "🚞",
-                help="Show local-maximum rail stations to start a downhill trip from",
+                type=ST_PRIMARY if tops_armed else "secondary",
+                help="Arm rail-station markers, then click one to start a downhill trip; click again to hide",
                 on_click=toggle_top_stations,
             )
     capture_gps()  # if armed by the button, read the browser fix → stash into the Start box (reruns)
@@ -449,10 +454,10 @@ def render_map(origin: str, destination: str) -> None:
     )
     waypoints = map_waypoint_markers(result=result, village_of=village_lookup(result)) if result is not None else None
     tops = top_station_markers() if st.session_state.get("show_top_stations", False) else None
-    # deck.gl object picking is unreliable under pitch, so while clickable top-station markers show,
-    # flatten the camera to top-down for reliable clicks.
-    show_tops = tops is not None
-    view = flattened_view(st.session_state.view) if show_tops else st.session_state.view
+    # deck.gl picking is unreliable under pitch, so WHENEVER a click must be caught (top-station markers
+    # shown OR map-click armed) flatten the camera to top-down — the one gate both arm-buttons share.
+    top_down = tops is not None or st.session_state.get("arm_map_click_start", False)
+    view = flattened_view(st.session_state.view) if top_down else st.session_state.view
     deck = build_deck(
         view=view,
         ribbon_segments=ribbon,
@@ -462,7 +467,7 @@ def render_map(origin: str, destination: str) -> None:
         top_stations=tops,
     )
     map_key = map_remount_key(
-        camera_epoch=st.session_state.camera_epoch, top_down=show_tops, has_ribbon=ribbon is not None
+        camera_epoch=st.session_state.camera_epoch, top_down=top_down, has_ribbon=ribbon is not None
     )
     event = st_deckgl(deck, key=map_key, height=WebMapConfig.MAP_HEIGHT_PX, events=["click"])
     handle_top_station_click(event=event)
@@ -479,6 +484,7 @@ def handle_top_station_click(event: object) -> None:
     if name is not None:
         logger.info(f"Top-station clicked → filling Start box with {name!r}")
         st.session_state._last_station_click = name
+        st.session_state.show_top_stations = False  # auto-disarm: markers hide, button returns to white
         apply_pending_start(box_value=name)
 
 
