@@ -38,7 +38,6 @@ from bike_router.core.constants import (
     SurfaceLabel,
     WebMapConfig,
     color_tier,
-    road_weight_from_lts,
     surface_weight_from_crr,
 )
 from bike_router.core.errors import ParamOutOfRangeError
@@ -109,7 +108,8 @@ class TestSurfaceConfig:
     def test_tiers_labels_and_default(self):
         assert SurfaceConfig.SURFACE_TIER  # not empty
         assert set(SurfaceConfig.SURFACE_TIER.values()) <= {0, 1}  # capped binary colour bucket
-        assert SurfaceConfig.SURFACE_TIER["asphalt"] == 0 and SurfaceConfig.SURFACE_TIER["gravel"] == 1
+        assert SurfaceConfig.SURFACE_TIER["asphalt"] == 0 and SurfaceConfig.SURFACE_TIER["grass"] == 1
+        assert SurfaceConfig.SURFACE_TIER["gravel"] == 0  # Crr only 2× asphalt × ~0.4 share → colours paved
         assert SurfaceConfig.SURFACE_TIER["grass"] == 1  # roughest rideable, capped at 1
         assert set(SurfaceConfig.TIER_LABEL_COLORS) == set(SurfaceConfig.SURFACE_TIER.values())
         assert SurfaceConfig.DEFAULT_TIER in SurfaceConfig.SURFACE_TIER.values()
@@ -140,22 +140,20 @@ class TestRoadConfig:
         assert RoadConfig.DEFAULT_TIER in {0, 1}
         assert set(RoadConfig.TIER_LABEL_COLORS) == set(RoadConfig.ROAD_TIER.values())
 
-    def test_weight_derived_from_cited_lts_and_fixes_inversion(self):
-        # Chain: cited LTS → weight = road_weight_from_lts → tier = color_tier(weight). No hand-set values.
-        assert set(RoadConfig.ROAD_LTS) == set(RoadConfig.ROAD_WEIGHT) == set(RoadConfig.ROAD_TIER)
-        assert all(
-            RoadConfig.ROAD_WEIGHT[k] == road_weight_from_lts(lts=RoadConfig.ROAD_LTS[k]) for k in RoadConfig.ROAD_LTS
-        )
+    def test_weight_from_revealed_preference_and_tier_derived(self):
+        # ROAD_WEIGHT is cited revealed-preference detour cost (Broach/Dill/Gliebe), NOT ordinal LTS;
+        # tier = color_tier(weight). cycleway 0.0 → trunk 1.0, monotone by real avoidance.
+        assert set(RoadConfig.ROAD_WEIGHT) == set(RoadConfig.ROAD_TIER)
         assert all(RoadConfig.ROAD_TIER[k] == color_tier(weight=w) for k, w in RoadConfig.ROAD_WEIGHT.items())
         assert color_tier(weight=RoadConfig.DEFAULT_WEIGHT) == RoadConfig.DEFAULT_TIER
         assert RoadConfig.ROAD_WEIGHT["cycleway"] == 0.0 and RoadConfig.ROAD_WEIGHT["trunk"] == 1.0
-        # Inversion fix: 'unclassified' (LTS 3) is no longer WORSE than 'tertiary' — the cited LTS makes
-        # them EQUAL (both 50 km/h non-residential), and both strictly below secondary/primary (LTS 4).
-        assert RoadConfig.ROAD_WEIGHT["unclassified"] == RoadConfig.ROAD_WEIGHT["tertiary"]
+        # Monotone by measured detour aversion: quiet local < minor through < collector < arterial.
         assert (
-            RoadConfig.ROAD_WEIGHT["tertiary"]
+            RoadConfig.ROAD_WEIGHT["residential"]
+            < RoadConfig.ROAD_WEIGHT["tertiary"]
             < RoadConfig.ROAD_WEIGHT["secondary"]
-            == RoadConfig.ROAD_WEIGHT["primary"]
+            < RoadConfig.ROAD_WEIGHT["primary"]
+            < RoadConfig.ROAD_WEIGHT["trunk"]
         )
         assert all(0.0 <= w <= 1.0 for w in RoadConfig.ROAD_WEIGHT.values())
 
@@ -168,19 +166,24 @@ def test_color_tier():
 
 
 def test_surface_weight_from_crr():
-    # Weight = extra equivalent-km per km = crr/Crr_asphalt − 1, floored at 0.
+    # Weight = ROLLING_SHARE·(crr/Crr_asphalt − 1), floored at 0 — rolling is only ~40% of effort.
     assert surface_weight_from_crr(crr=SurfaceConfig.CRR_ASPHALT) == 0.0  # asphalt anchor
-    assert surface_weight_from_crr(crr=2 * SurfaceConfig.CRR_ASPHALT) == pytest.approx(1.0)  # 2× Crr → weight 1
     assert surface_weight_from_crr(crr=0.5 * SurfaceConfig.CRR_ASPHALT) == 0.0  # smoother → floored at 0
-    assert surface_weight_from_crr(crr=0.030) == pytest.approx(0.030 / SurfaceConfig.CRR_ASPHALT - 1.0)
+    # 2× Crr → excess 1.0 scaled by the rolling share (~0.4), NOT applied full (the refutation fix).
+    doubled = surface_weight_from_crr(crr=2 * SurfaceConfig.CRR_ASPHALT)
+    assert 0.0 < doubled < 1.0
+    assert surface_weight_from_crr(crr=3 * SurfaceConfig.CRR_ASPHALT) > doubled  # monotone in Crr
 
 
-def test_road_weight_from_lts():
-    # LTS≤2 is the low-stress network → free; above it normalise (lts−2)/(LTS_MAX−2): 3→0.5, 4→1.0.
-    assert road_weight_from_lts(lts=1) == 0.0
-    assert road_weight_from_lts(lts=2) == 0.0
-    assert road_weight_from_lts(lts=3) == pytest.approx(0.5)
-    assert road_weight_from_lts(lts=RoadConfig.LTS_MAX) == pytest.approx(1.0)
+def test_surface_weight_uses_rolling_share_not_full_crr():
+    # REGRESSION (refutation fix): rolling resistance is only ~40% of total effort at touring speed, so
+    # the weight MUST be the naive full-Crr excess scaled DOWN — guards against the ~3-4x-overstated model.
+    crr = 3 * SurfaceConfig.CRR_ASPHALT  # excess ratio = 2.0
+    naive_full_crr = crr / SurfaceConfig.CRR_ASPHALT - 1.0  # the refuted formula (== 2.0)
+    weight = surface_weight_from_crr(crr=crr)
+    assert 0.0 < weight < naive_full_crr  # scaled strictly below the full ratio
+    # the implied share is well under 1.0 (rolling is a minority of effort) and matches the module constant
+    assert weight / naive_full_crr < 0.6
 
 
 class TestRoutingDefaults:

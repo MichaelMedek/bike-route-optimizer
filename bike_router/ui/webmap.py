@@ -26,7 +26,7 @@ from bike_router.core.constants import (
     WebMapConfig,
 )
 from bike_router.core.geo import haversine_vec
-from bike_router.core.geocoding import as_bahnhof
+from bike_router.core.geocoding import as_bahnhof, latlon_box_value
 from bike_router.core.simplify import place_label, route_station_markers  # place_label re-exported for the app shell
 from bike_router.core.track import (
     RouteStats,
@@ -345,28 +345,33 @@ def _named_waypoints(
     return named
 
 
-def picked_station_name(event: object) -> str | None:
-    """The clicked top-station's name from an st_deckgl click event, or None for any other click.
+def picked_station(event: object) -> tuple[str, float, float] | None:
+    """A clicked top-station as (name, lat, lon) from an st_deckgl click event, else None.
 
-    st_deckgl spreads the picked datum at TOP LEVEL and stamps ``eventType`` as deck.gl's
-    ``"deck-click-event"`` (NOT "click"); only that event with a non-empty ``name`` yields a value.
+    st_deckgl spreads the picked datum at top level with deck.gl's ``"deck-click-event"`` type + the
+    datum's ``name`` and ``position`` [lon, lat, z]; only that event with both present yields a value.
     """
     if not isinstance(event, dict) or event.get("eventType") != WebMapConfig.DECK_CLICK_EVENT:
         return None
     name = event.get("name")
-    return name if isinstance(name, str) and name else None
+    position = event.get("position")
+    if not (isinstance(name, str) and name) or not (isinstance(position, list) and len(position) >= 2):
+        return None
+    lon, lat = float(position[0]), float(position[1])
+    return name, lat, lon
 
 
 def station_click_pending(*, event: object, last_applied: str | None) -> str | None:
-    """The "<station> Bahnhof" Start-box value for a top-station click, or None (no click / applied).
+    """The Start-box value ``"lat, lon (Name Bahnhof)"`` for a top-station click, else None.
 
-    Fills the Bahnhof form (as_bahnhof) so it snaps to the platform, not the town centre. st_deckgl
-    re-returns the last event each rerun, so apply only when it differs from last_applied (dedup).
+    Fills the marker's EXACT coordinates so it snaps to the platform without re-geocoding a name;
+    st_deckgl re-returns the last event each rerun, so apply only when it differs from last_applied.
     """
-    name = picked_station_name(event)
-    if name is None:
+    picked = picked_station(event)
+    if picked is None:
         return None
-    pending = as_bahnhof(name=name)
+    name, lat, lon = picked
+    pending = latlon_box_value(lat=lat, lon=lon, name=as_bahnhof(name=name))
     return pending if pending != last_applied else None
 
 
@@ -430,13 +435,12 @@ def flattened_view(view: ViewState) -> ViewState:
     return replace(view, pitch=0.0)
 
 
-def map_remount_key(*, camera_epoch: int, top_down: bool) -> str:
-    """The st_deckgl remount key — bumped when the camera must move (Set) OR the pitch flips.
-
-    The map is ALWAYS the same 3D terrain deck; only the camera PITCH flips (top-down for reliable
-    click-picking when top-stations show, else tilted), and a pitch change needs a remount to apply.
+def map_remount_key(*, camera_epoch: int, top_down: bool, has_ribbon: bool) -> str:
+    """The st_deckgl remount key — changes when the camera moves (Set), the pitch flips, OR a route
+    ribbon appears/disappears. Folding ``has_ribbon`` in makes a freshly-computed route remount the
+    deck so it draws IMMEDIATELY, not only after a later scale-toggle rerun.
     """
-    return f"bike_map_{camera_epoch}_{'topdown' if top_down else 'tilted'}"
+    return f"bike_map_{camera_epoch}_{'topdown' if top_down else 'tilted'}_{'ribbon' if has_ribbon else 'none'}"
 
 
 def scale_label(scale: str) -> str:

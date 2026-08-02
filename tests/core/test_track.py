@@ -169,9 +169,9 @@ def test_edge_condition_speed():
     )
     assert s_bad is False and r_bad is False and speed == pytest.approx(SpeedConfig.BASE_KMH_AT_WEIGHT0)
     s_bad, r_bad, _ = edge_condition_speed(
-        edge=_bike_edge(surface="gravel", highway="primary"), elev_source=100.0, elev_target=100.0
+        edge=_bike_edge(surface="grass", highway="primary"), elev_source=100.0, elev_target=100.0
     )
-    assert s_bad is True and r_bad is True  # unpaved + main road
+    assert s_bad is True and r_bad is True  # rough surface (grass) + main road (primary)
 
     rail_edge = RouteEdge(
         from_node=1, to_node=2, mode=Mode.RAIL, length_m=1.0, surface=None, highway=None, geometry=None
@@ -233,10 +233,10 @@ def test_track_point():
     # The ONE point builder: carries its node position/elevation + the edge's condition/grade in
     # its TRAVEL direction (elev_from → elev_to), NOT the reversed direction of where it sits.
     at = RouteNode(osmid=1, lat=48.0, lon=8.0, elevation_m=100.0, node_type=NodeType.BIKE, station_name=None)
-    edge = _bike_edge(surface="gravel", highway="primary", length_m=1000.0)
+    edge = _bike_edge(surface="grass", highway="primary", length_m=1000.0)
     pt = _track_point(at=at, edge=edge, elev_from=100.0, elev_to=150.0, elapsed_s=42.0, unreliable=False)
     assert (pt.lat, pt.lon, pt.elevation_m, pt.elapsed_s) == (48.0, 8.0, 100.0, 42.0)
-    assert pt.surface_bad is True and pt.road_bad is True  # gravel + primary
+    assert pt.surface_bad is True and pt.road_bad is True  # grass (rough) + primary (main road)
     assert pt.grade == pytest.approx(0.05)  # climb 100→150 over 1000 m → +5% (uphill, not the reverse)
     # REGRESSION: an arriving point sits at node_b but the grade must follow the ridden direction
     # a→b — a climb reads +, never the reversed − (the "uphill shown as downhill" bug).

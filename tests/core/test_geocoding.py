@@ -16,13 +16,19 @@ from bike_router.core.errors import BikeRouterError, GeocodeConnectionError, Geo
 from bike_router.core.geocoding import (
     _GEOCODE_CACHE,
     HttpGetter,
+    _feature_lonlat,
+    _feature_name,
+    _feature_properties,
     _parse_latlon,
+    _photon_features,
     as_bahnhof,
     autocomplete_with_stations,
     bahnhof_suggestion,
+    box_display_label,
     default_http_get,
     geocode,
     geocode_endpoint,
+    latlon_box_value,
     make_geocode_fn,
     nearest_place_name,
     photon_autocomplete,
@@ -119,10 +125,34 @@ def test_parse_latlon():
     # Two in-range comma floats → tuple (spaces optional); anything else → None (falls to Nominatim).
     assert _parse_latlon(place="48.4633, 8.4116") == (48.4633, 8.4116)
     assert _parse_latlon(place="48.46,8.41") == (48.46, 8.41)  # no space
+    assert _parse_latlon(place="47.5, 9.5 (Zürich Bahnhof)") == (47.5, 9.5)  # trailing (Name) ignored — coords win
     assert _parse_latlon(place="Freudenstadt, Germany") is None  # a place, not coords
     assert _parse_latlon(place="200, 8") is None  # lat out of range
     assert _parse_latlon(place="48, 8, 9") is None  # wrong part count
     assert _parse_latlon(place="Freudenstadt") is None  # no comma
+
+
+def test_latlon_box_value():
+    # The ONE "lat, lon (Name)" box format _parse_latlon reads back; name optional (explicit) + stripped.
+    assert latlon_box_value(lat=47.5, lon=9.5, name="Zürich Bahnhof") == "47.50000, 9.50000 (Zürich Bahnhof)"
+    assert latlon_box_value(lat=47.5, lon=9.5, name=None) == "47.50000, 9.50000"  # no name → bare coords
+    assert latlon_box_value(lat=47.5, lon=9.5, name="  ") == "47.50000, 9.50000"  # blank name dropped
+    assert _parse_latlon(place=latlon_box_value(lat=47.5, lon=9.5, name="X")) == (47.5, 9.5)  # round-trips to coords
+
+
+def test_marker_pick_geocodes_to_exact_coords_not_name():
+    # REGRESSION (bug 6/5): a valid marker/station pick must resolve to its EXACT clicked point via a
+    # single fill→geocode chain — never re-geocoding the (unresolvable) name (Schalkstetten, Zürich).
+    box_value = latlon_box_value(lat=47.98765, lon=9.12345, name="Schalkstetten Bahnhof")
+    never = MagicMock(side_effect=AssertionError("must NOT hit the network — coords resolve directly"))
+    assert geocode(place=box_value, geocode_fn=never) == (47.98765, 9.12345)  # coords win, name ignored, no lookup
+
+
+def test_box_display_label():
+    # Shows the (Name) inside a coords literal, else the value verbatim (a plain place name).
+    assert box_display_label("47.50000, 9.50000 (Zürich Bahnhof)") == "Zürich Bahnhof"
+    assert box_display_label("Freudenstadt, Germany") == "Freudenstadt, Germany"  # not a coords literal → as-is
+    assert box_display_label("47.50000, 9.50000") == "47.50000, 9.50000"  # coords, no name → the value
 
 
 def test_geocode_endpoint():
@@ -232,14 +262,52 @@ def test_as_bahnhof():
     assert as_bahnhof(name="Konstanz BAHNHOF") == "Konstanz BAHNHOF"
 
 
+def test_photon_features():
+    # The ONE raw-feature query: returns the payload's features; blank term / any error → [].
+    payload = {"features": [_photon_feature(name="Langenargen", lon=9.55, lat=47.6)]}
+    got = _photon_features(
+        term="Lang", bbox=_BBOX, limit=1, osm_tag=PhotonConfig.STATION_OSM_TAG, http_get=MagicMock(return_value=payload)
+    )
+    assert len(got) == 1 and got[0]["properties"]["name"] == "Langenargen"
+    blank = MagicMock()
+    assert _photon_features(term="  ", bbox=_BBOX, limit=1, osm_tag="x", http_get=blank) == []
+    blank.assert_not_called()
+    boom = MagicMock(side_effect=requests.RequestException("timeout"))
+    assert _photon_features(term="Lang", bbox=_BBOX, limit=1, osm_tag="x", http_get=boom) == []
+
+
+def test_feature_lonlat():
+    # (lon, lat) from a Point geometry; malformed/absent geometry → None.
+    assert _feature_lonlat(_photon_feature(name="X", lon=9.55, lat=47.6)) == (9.55, 47.6)
+    assert _feature_lonlat({"properties": {"name": "X"}}) is None  # no geometry
+    assert _feature_lonlat({"geometry": {"coordinates": [9.55]}}) is None  # not a pair
+
+
+def test_feature_properties():
+    # The ONE typed properties accessor: the dict when present, {} when absent/malformed.
+    assert _feature_properties(_photon_feature(name="X", lon=9.0, lat=48.0)) == {"name": "X"}
+    assert _feature_properties({"geometry": {}}) == {}  # no properties
+    assert _feature_properties({"properties": "nope"}) == {}  # not a dict
+
+
+def test_feature_name():
+    # The stripped feature name, or "" when absent/malformed.
+    assert _feature_name(_photon_feature(name="  Langenargen ", lon=9.0, lat=48.0)) == "Langenargen"
+    assert _feature_name({"properties": {}}) == ""  # no name
+    assert _feature_name({}) == ""  # no properties at all
+
+
 def test_bahnhof_suggestion():
-    # A station match → the concatenated "<name> Bahnhof" label (the station-first OSM query);
-    # no station → None; a name already ending in "Bahnhof" is not doubled.
+    # A station match → a "lat, lon (Name Bahnhof)" box value using the station's OWN coordinates
+    # (station-first OSM query); no station → None; a name already ending in "Bahnhof" isn't doubled.
     def station(*, url, params, timeout):  # noqa: ANN001, ANN202
         assert params["osm_tag"] == PhotonConfig.STATION_OSM_TAG  # station-first query
         return {"features": [_photon_feature(name="Langenargen", lon=9.55, lat=47.6)]}
 
-    assert bahnhof_suggestion(term="Langenargen", bbox=_BBOX, http_get=station) == "Langenargen Bahnhof"
+    assert (
+        bahnhof_suggestion(term="Langenargen", bbox=_BBOX, http_get=station)
+        == "47.60000, 9.55000 (Langenargen Bahnhof)"
+    )
 
     none = MagicMock(return_value={"features": []})
     assert bahnhof_suggestion(term="zzz", bbox=_BBOX, http_get=none) is None
@@ -247,19 +315,21 @@ def test_bahnhof_suggestion():
     already = MagicMock(
         return_value={"features": [_photon_feature(name="Zürich Flughafen Bahnhof", lon=8.5, lat=47.5)]}
     )
-    assert bahnhof_suggestion(term="Zürich", bbox=_BBOX, http_get=already) == "Zürich Flughafen Bahnhof"
+    assert (
+        bahnhof_suggestion(term="Zürich", bbox=_BBOX, http_get=already)
+        == "47.50000, 8.50000 (Zürich Flughafen Bahnhof)"
+    )
 
 
 def test_autocomplete_with_stations():
-    # (bahnhof_label, place_labels): the red-button Bahnhof pick leads; a place duplicating it is dropped.
+    # (bahnhof_box_value, place_labels): the red-button station pick (coords + Bahnhof name) leads; the
+    # ordinary settlement suggestions follow. A station match → a "lat, lon (Name Bahnhof)" pick.
     def by_tag(*, url, params, timeout):  # noqa: ANN001, ANN202  # station vs place mock
-        if params["osm_tag"] == PhotonConfig.STATION_OSM_TAG:
-            return {"features": [_photon_feature(name="Langenargen", lon=9.55, lat=47.6)]}
         return {"features": [_photon_feature(name="Langenargen", lon=9.55, lat=47.6)]}
 
     bahnhof, places = autocomplete_with_stations(term="Langenargen", bbox=_BBOX, limit=7, http_get=by_tag)
-    assert bahnhof == "Langenargen Bahnhof"  # concatenated red-button pick
-    assert "Langenargen, Baden-Württemberg" in places or places == ["Langenargen"]  # place kept, distinct label
+    assert bahnhof == "47.60000, 9.55000 (Langenargen Bahnhof)"  # coords-carrying red-button pick
+    assert places  # settlement suggestions still offered
 
     # No station → no Bahnhof pick; just the place suggestions.
     place_only = MagicMock(

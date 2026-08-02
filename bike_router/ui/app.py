@@ -26,7 +26,12 @@ from bike_router.core.constants import (
     WebMapConfig,
 )
 from bike_router.core.errors import BikeRouterError
-from bike_router.core.geocoding import autocomplete_with_stations, default_http_get, nearest_place_name
+from bike_router.core.geocoding import (
+    autocomplete_with_stations,
+    box_display_label,
+    default_http_get,
+    nearest_place_name,
+)
 from bike_router.core.graph_store import download_graph_from_hf, load_meta, top_stations
 from bike_router.core.pipeline import RouteResult, plan_route, resolve_endpoints
 from bike_router.core.simplify import format_bike_legs, format_rail_legs, rail_leg_tooltips
@@ -151,10 +156,10 @@ def fill_box(field: str, value: str) -> None:
 def place_input(field: str, label: str, placeholder: str, bbox: tuple[float, float, float, float]) -> str:
     """An editable place box (type/paste freely) with click-to-fill suggestions below it.
 
-    The text_input is the SINGLE source of truth (returned + geocoded verbatim); suggestions are
-    convenience — the red "<place> Bahnhof" pick (if a station matches) leads, then settlements.
+    Returns the box text STRIPPED (the single source of truth, geocoded verbatim); the red station
+    pick fills a "lat, lon (Name)" value (exact coords) but shows its readable name, then settlements.
     """
-    typed: str = st.text_input(label, key=field, placeholder=placeholder)
+    typed: str = st.text_input(label, key=field, placeholder=placeholder).strip()
     if typed == st.session_state[f"{field}_resolved"]:
         return typed  # already resolved to this text → no stale suggestions under the box
     bahnhof, places = suggest(term=typed, bbox=bbox)
@@ -162,7 +167,7 @@ def place_input(field: str, label: str, placeholder: str, bbox: tuple[float, flo
     if bahnhof is not None and bahnhof != typed:
         seen.add(bahnhof)
         st.button(
-            f"🚉 {bahnhof}",
+            f"🚉 {box_display_label(bahnhof)}",  # readable name; the button FILLS the exact-coords value
             key=f"{field}_sug_bahnhof",
             type=ST_PRIMARY,  # red button, first position
             on_click=fill_box,
@@ -237,7 +242,7 @@ def capture_gps() -> None:
         return
     lat, lon, accuracy = coords["latitude"], coords["longitude"], coords.get("accuracy", 0.0)
     st.session_state._pending_start = f"{lat:.5f}, {lon:.5f}"
-    st.session_state.gps_accuracy_m = accuracy
+    st.toast(f"📍 Location set as Start (±{accuracy:.0f} m accuracy).", icon="📍")
     logger.info(f"GPS fix → Start box {st.session_state._pending_start!r} (±{accuracy:.0f} m)")
     st.rerun()
 
@@ -290,7 +295,6 @@ def seed_state() -> None:
         "camera_epoch": 0,
         "show_top_stations": False,  # rail-purple top-station inspiration markers toggle
         "gps_requested": False,  # armed by "My location", read on the next render
-        "gps_accuracy_m": None,  # last GPS fix accuracy (metres) for the caption
     }.items():
         st.session_state.setdefault(key, initial)
     if st.session_state.get("_pending_start") is not None:
@@ -300,7 +304,11 @@ def seed_state() -> None:
 
 
 def render_controls() -> tuple[str, str]:
-    """Draw the Start/End boxes (+ swap), the Set / My-location / Top-stations row; return (origin, dest)."""
+    """Draw the Start/End boxes (+ swap) and the Set / GPS / Top-stations row; return (origin, dest).
+
+    The two secondary actions are ICON-ONLY (emoji + tooltip): a fixed tiny footprint that stays on
+    ONE row at any width, so on a narrow mobile viewport their labels can't wrap into extra lines.
+    """
     bbox = tuple(load_meta(graph_dir=GraphConfig.GRAPH_DIR)["bbox"])  # coverage box biases + limits suggestions
     col_start, col_swap, col_end = st.columns([1, 0.18, 1])
     with col_start:
@@ -311,29 +319,25 @@ def render_controls() -> tuple[str, str]:
     with col_end:
         destination = place_input(field=SessionKey.END_BOX, label="End", placeholder="End location", bbox=bbox)
 
-    col_set, col_gps, col_top = st.columns([4, 1, 1])
+    # Set is the wide primary; GPS + Top-stations are icon-only so the row never wraps on mobile.
+    col_set, col_gps, col_top = st.columns([6, 1, 1])
     with col_set:
         st.button(SET_LABEL, width="stretch", help="Geocode the Start/End places", on_click=set_endpoints)
     with col_gps:
         st.button(
-            "📍 My location",
+            "📍",
             width="stretch",
-            help="Fill Start with your current GPS position (asks the browser for permission)",
+            help="Use my current GPS location as Start (asks the browser for permission)",
             on_click=request_gps,
         )
     with col_top:
         st.button(
-            "🚞 Top stations",
+            "🚞",
             width="stretch",
             help="Show local-maximum rail stations to start a downhill trip from",
             on_click=toggle_top_stations,
         )
     capture_gps()  # if armed by the button, read the browser fix → stash into the Start box (reruns)
-
-    if st.session_state.start_latlon is not None:
-        st.caption(f"🔵 Start: **{origin}**    🔷 End: **{destination}**")
-    if st.session_state.get("gps_accuracy_m") is not None:
-        st.caption(f"📍 GPS fix accuracy: ±{st.session_state.gps_accuracy_m:.0f} m")
     return origin, destination
 
 
@@ -432,7 +436,9 @@ def render_map(origin: str, destination: str) -> None:
         waypoints=waypoints,
         top_stations=tops,
     )
-    map_key = map_remount_key(camera_epoch=st.session_state.camera_epoch, top_down=show_tops)
+    map_key = map_remount_key(
+        camera_epoch=st.session_state.camera_epoch, top_down=show_tops, has_ribbon=ribbon is not None
+    )
     event = st_deckgl(deck, key=map_key, height=WebMapConfig.MAP_HEIGHT_PX, events=["click"])
     handle_top_station_click(event=event)
 

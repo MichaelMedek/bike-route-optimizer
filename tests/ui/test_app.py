@@ -73,7 +73,7 @@ def test_page_renders(fixture_graph):
     assert at.title[0].value == "🚲 Bike Route Optimizer"
     assert len(at.text_input) == 2
     labels = [b.label for b in at.button]
-    assert "📍 Set start & end" in labels and "🚞 Top stations" in labels and "🧭 Compute route" in labels
+    assert "📍 Set start & end" in labels and "🚞" in labels and "🧭 Compute route" in labels
 
 
 def test_download_graph_with_bar():
@@ -97,7 +97,7 @@ def test_render_controls(fixture_graph):
     # Draws the two place boxes + the Set/GPS/Top-stations button row.
     at = _run()
     labels = [b.label for b in at.button]
-    assert "⇄" in labels and "📍 My location" in labels
+    assert "⇄" in labels and "📍" in labels
 
 
 def test_compute_button(fixture_graph):
@@ -156,7 +156,7 @@ def test_render_route_output(fixture_graph, tmp_path):
 def test_render_map(fixture_graph):
     # Turning top stations on flattens the camera + renders the map with no exception.
     at = _run()
-    _click(at, "🚞 Top stations")
+    _click(at, "🚞")
     assert at.session_state["show_top_stations"] is True and not at.exception
 
 
@@ -223,9 +223,9 @@ def test_swap_endpoints(fixture_graph):
 def test_toggle_top_stations(fixture_graph):
     # 🚞 flips show_top_stations on, then off.
     at = _run()
-    _click(at, "🚞 Top stations")
+    _click(at, "🚞")
     assert at.session_state["show_top_stations"] is True
-    _click(at, "🚞 Top stations")
+    _click(at, "🚞")
     assert at.session_state["show_top_stations"] is False
 
 
@@ -263,14 +263,21 @@ def test_capture_gps_not_armed():
 
 
 def test_handle_top_station_click():
-    # A simulated top-station click stashes the "<name> Bahnhof" pending value, then reruns.
+    # A simulated top-station click stashes the "lat, lon (Name Bahnhof)" pending value (exact coords
+    # from the marker's position), then reruns.
     fake_state = _State()
     with patch.object(app, "st") as fake_st:
         fake_st.session_state = fake_state
         fake_st.rerun = MagicMock(side_effect=RuntimeError("rerun"))
         with pytest.raises(RuntimeError, match="rerun"):
-            app.handle_top_station_click(event={"name": "Sauldorf", "eventType": app.WebMapConfig.DECK_CLICK_EVENT})
-    assert fake_state["_pending_start"] == "Sauldorf Bahnhof"
+            app.handle_top_station_click(
+                event={
+                    "name": "Sauldorf",
+                    "position": [9.0, 47.9, 600.0],
+                    "eventType": app.WebMapConfig.DECK_CLICK_EVENT,
+                }
+            )
+    assert fake_state["_pending_start"] == "47.90000, 9.00000 (Sauldorf Bahnhof)"
 
 
 def test_top_station_markers(fixture_graph):

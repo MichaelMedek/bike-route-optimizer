@@ -292,9 +292,23 @@ _FORMAT_SPEC = re.compile(r"[<>=^+\- #0-9.,_]*[bcdeEfFgGnosxX%]?\Z")
 # would wrongly couple unrelated things (or is a language idiom). NOT drift-prone; intentionally exempt.
 #   __main__: the `if __name__ ==` idiom.  lat/lon/name/bbox: external API param AND DataFrame column.
 #   color/width/path: deck.gl prop-dict keys.  origin/destination: CLI arg names AND gmaps params.
-_COINCIDENTAL = frozenset(
-    {"__main__", "lat", "lon", "name", "bbox", "color", "width", "path", "origin", "destination", "y"}
-)
+# Same-spelling-different-domain identifiers, each justified (≤5 words) — NOT a shared-constant miss.
+_COINCIDENTAL_REASONS = {
+    "__main__": "Python entry-point guard",
+    "lat": "latitude arg name everywhere",
+    "lon": "longitude arg name everywhere",
+    "name": "generic name field/column/datum",
+    "bbox": "coverage-box arg name everywhere",
+    "color": "deck datum + plot key",
+    "width": "deck datum + ribbon key",
+    "path": "filesystem + deck path key",
+    "origin": "endpoint arg + Maps param",
+    "destination": "endpoint arg + Maps param",
+    "y": "OSMnx lat attr + axis",
+    "position": "deck.gl marker datum key",
+    "geometry": "GeoJSON field vs OSMnx attr",
+}
+_COINCIDENTAL = frozenset(_COINCIDENTAL_REASONS)
 
 
 def _is_domain_string(value: str) -> bool:

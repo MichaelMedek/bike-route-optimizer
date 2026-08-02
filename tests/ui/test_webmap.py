@@ -34,7 +34,7 @@ from bike_router.ui.webmap import (
     map_waypoint_markers,
     output_donuts,
     output_stat_rows,
-    picked_station_name,
+    picked_station,
     profile_markers,
     ribbon_width_m,
     route_ribbon_segments,
@@ -276,13 +276,22 @@ def test_endpoint_labels():
 
 
 def test_map_remount_key():
-    # Keyed on camera_epoch (bumped by Set start & end) AND the top-down flag (top-stations toggle),
-    # so the map remounts to move the camera or flip pitch; a colour-scale toggle repaints in place.
-    assert map_remount_key(camera_epoch=3, top_down=False) == "bike_map_3_tilted"
-    assert map_remount_key(camera_epoch=0, top_down=True) == "bike_map_0_topdown"
-    assert map_remount_key(camera_epoch=1, top_down=False) != map_remount_key(camera_epoch=2, top_down=False)
+    # Keyed on camera_epoch (bumped by Set), the top-down flag (top-stations toggle), AND ribbon
+    # presence — so the map remounts to move the camera, flip pitch, OR show a freshly-computed route
+    # immediately (a colour-scale toggle still repaints in place).
+    assert map_remount_key(camera_epoch=3, top_down=False, has_ribbon=False) == "bike_map_3_tilted_none"
+    assert map_remount_key(camera_epoch=0, top_down=True, has_ribbon=True) == "bike_map_0_topdown_ribbon"
+    assert map_remount_key(camera_epoch=1, top_down=False, has_ribbon=False) != map_remount_key(
+        camera_epoch=2, top_down=False, has_ribbon=False
+    )
     # flipping top-down (pitch change) must remount so st_deckgl applies the new pose
-    assert map_remount_key(camera_epoch=1, top_down=False) != map_remount_key(camera_epoch=1, top_down=True)
+    assert map_remount_key(camera_epoch=1, top_down=False, has_ribbon=False) != map_remount_key(
+        camera_epoch=1, top_down=True, has_ribbon=False
+    )
+    # a fresh route ribbon must remount so it draws immediately, not only after a later toggle
+    assert map_remount_key(camera_epoch=1, top_down=False, has_ribbon=False) != map_remount_key(
+        camera_epoch=1, top_down=False, has_ribbon=True
+    )
 
 
 def test_flattened_view():
@@ -396,30 +405,36 @@ def test_named_waypoints():
     assert _named_waypoints(waypoints=[], village_of=lambda lat, lon: "X") == []  # no waypoints → empty
 
 
-def test_picked_station_name():
+def test_picked_station():
     # st_deckgl spreads the picked datum at TOP LEVEL with deck.gl's OWN eventType
-    # ("deck-click-event", NOT "click"); a top-station click with a name yields it, everything
-    # else (other event, no name, blank, non-dict) yields None.
+    # ("deck-click-event", NOT "click"); a top-station click yields (name, lat, lon) from its
+    # name + position [lon, lat, z], everything else (other event, no name/position, blank) → None.
     click = WebMapConfig.DECK_CLICK_EVENT
-    assert picked_station_name({"name": "Freudenstadt Stadt", "eventType": click}) == "Freudenstadt Stadt"
-    assert picked_station_name({"tooltip": "route seg", "eventType": click}) is None  # no name (route/waypoint)
-    assert picked_station_name({"name": "X", "eventType": "click"}) is None  # raw "click" is NOT the deck event
-    assert picked_station_name({"name": "X", "eventType": "deck-hover-event"}) is None  # not a click
-    assert picked_station_name({"eventType": click}) is None  # empty-terrain click, no datum
-    assert picked_station_name(None) is None  # no event at all
-    assert picked_station_name({"name": "", "eventType": click}) is None  # blank name ignored
+    assert picked_station({"name": "Freudenstadt Stadt", "position": [8.41, 48.46, 730.0], "eventType": click}) == (
+        "Freudenstadt Stadt",
+        48.46,
+        8.41,
+    )
+    assert picked_station({"tooltip": "route seg", "eventType": click}) is None  # no name (route/waypoint)
+    assert picked_station({"name": "X", "eventType": click}) is None  # name but no position → not a marker
+    assert picked_station({"name": "X", "position": [8.0, 48.0], "eventType": "click"}) is None  # raw "click"
+    assert picked_station({"name": "X", "position": [8.0, 48.0], "eventType": "deck-hover-event"}) is None
+    assert picked_station({"eventType": click}) is None  # empty-terrain click, no datum
+    assert picked_station(None) is None  # no event at all
+    assert picked_station({"name": "", "position": [8.0, 48.0], "eventType": click}) is None  # blank name
 
 
 def test_station_click_pending():
-    # A top-station click fills the "<name> Bahnhof" form (bare name → town centre, not the platform);
-    # st_deckgl re-returns the last event every rerun, so the SAME pending value dedups to None.
+    # A top-station click fills a "lat, lon (Name Bahnhof)" value from the marker's EXACT position, so
+    # it snaps to the platform without re-geocoding a name; the re-returned event dedups to None.
     click = WebMapConfig.DECK_CLICK_EVENT
-    event = {"name": "Sauldorf", "eventType": click}
-    assert station_click_pending(event=event, last_applied=None) == "Sauldorf Bahnhof"  # Bahnhof appended
-    assert station_click_pending(event=event, last_applied="Sauldorf Bahnhof") is None  # re-returned → dedup
-    assert station_click_pending(event=event, last_applied="Konstanz Bahnhof") == "Sauldorf Bahnhof"  # a NEW station
-    already = {"name": "Sauldorf Bahnhof", "eventType": click}
-    assert station_click_pending(event=already, last_applied=None) == "Sauldorf Bahnhof"  # not doubled
+    event = {"name": "Sauldorf", "position": [9.0, 47.9, 600.0], "eventType": click}
+    pending = station_click_pending(event=event, last_applied=None)
+    assert pending == "47.90000, 9.00000 (Sauldorf Bahnhof)"  # exact coords + Bahnhof label
+    assert station_click_pending(event=event, last_applied=pending) is None  # re-returned → dedup
+    assert station_click_pending(event=event, last_applied="other") == pending  # a NEW/changed click
+    already = {"name": "Sauldorf Bahnhof", "position": [9.0, 47.9, 600.0], "eventType": click}
+    assert station_click_pending(event=already, last_applied=None) == "47.90000, 9.00000 (Sauldorf Bahnhof)"
     assert station_click_pending(event=None, last_applied=None) is None  # no click at all
 
 

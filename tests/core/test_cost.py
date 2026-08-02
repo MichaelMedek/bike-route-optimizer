@@ -90,14 +90,15 @@ def test_tag_included():
 
 
 def test_surface_tier():
-    # Tier is the CAPPED binary colour bucket (color_tier): asphalt 0.0→0, gravel 0.9→1, grass 1.5→1.
-    # Even the roughest surface caps at 1 (never a third colour); firm surfaces rounding to 0 read good.
+    # Tier is the capped colour bucket color_tier(rolling-share-scaled weight): asphalt/gravel round to 0
+    # (gravel Crr only ~2× asphalt), genuinely rough sett/grass/ground round to 1. Never a third colour.
     assert surface_tier(surface="asphalt") == 0
-    assert surface_tier(surface="compacted") == 0  # firm (weight 0.4 → rounds to good)
-    assert surface_tier(surface="gravel") == 1  # loose (0.9 → 1)
-    assert surface_tier(surface="grass") == 1  # roughest rideable, capped at 1 (weight 1.5)
-    assert surface_tier(surface=["asphalt", "gravel"]) == 1  # worst wins (0 vs 1 → 1)
-    assert surface_tier(surface="spacedust") == 1  # unknown → DEFAULT_TIER (loose)
+    assert surface_tier(surface="compacted") == 0  # firm, low Crr
+    assert surface_tier(surface="gravel") == 0  # Crr ~2× asphalt × ~0.4 share → weight 0.40 → good
+    assert surface_tier(surface="grass") == 1  # soft turf, high Crr → bad
+    assert surface_tier(surface="sett") == 1  # impedance-rough → bad
+    assert surface_tier(surface=["asphalt", "grass"]) == 1  # worst wins (0 vs 1 → 1)
+    assert surface_tier(surface="spacedust") == 1  # unknown → DEFAULT_TIER
     assert surface_tier(surface=None) == 1  # untagged → DEFAULT_TIER
     assert surface_tier(surface=float("nan")) == 1  # nan is missing → DEFAULT_TIER
 
@@ -123,8 +124,8 @@ def test_surface_included():
 
 
 def test_road_tier():
-    # Tier is the capped colour bucket color_tier(weight): LTS4 (secondary/primary/trunk) → w 1.0 → 1;
-    # LTS3 (tertiary/unclassified) → w 0.5 → rounds to 0 (quiet/blue); LTS1-2 (residential/track) → 0.
+    # Tier is the capped colour bucket color_tier(RP weight): arterials (secondary/primary/trunk, w≥0.65)
+    # → 1 (main/red); quiet + minor through-roads (residential/tertiary/unclassified/track, w≤0.45) → 0.
     assert all(road_tier(highway=h) == 1 for h in ("secondary", "primary", "trunk", "primary_link"))
     assert all(road_tier(highway=h) == 0 for h in ("residential", "cycleway", "tertiary", "unclassified", "track"))
     assert road_tier(highway=["residential", "secondary"]) == 1  # worst wins → main
@@ -133,15 +134,13 @@ def test_road_tier():
 
 
 def test_road_weight():
-    # LTS-derived weight: LTS≤2 (cycleway/residential/track) free 0.0; LTS3 (tertiary/unclassified) 0.5;
-    # LTS4 (secondary/primary/trunk) 1.0. Worst wins; untagged → default (worst, pessimistic).
-    assert road_weight(highway="cycleway") == 0.0 and road_weight(highway="residential") == 0.0
+    # Revealed-preference detour weight (Broach): cycleway 0.0, quiet local ~0.15, minor through ~0.45,
+    # arterial ~0.65, trunk 1.0. Worst wins; untagged → default (worst, pessimistic).
+    assert road_weight(highway="cycleway") == 0.0
     assert road_weight(highway="trunk") == 1.0
-    # Inversion fix: 'unclassified' is no longer worse than 'tertiary' — cited LTS puts both at LTS 3
-    # (equal, 0.5), the low-stress classes below them free, and secondary/primary above (LTS 4).
-    assert road_weight(highway="unclassified") == road_weight(highway="tertiary")
+    # Monotone by measured avoidance: local < minor through-road < arterial < major arterial.
     assert road_weight(highway="residential") < road_weight(highway="tertiary") < road_weight(highway="secondary")
-    assert road_weight(highway="secondary") == road_weight(highway="primary")  # both LTS 4
+    assert road_weight(highway="secondary") < road_weight(highway="primary") < road_weight(highway="trunk")
     assert road_weight(highway=["residential", "secondary"]) == RoadConfig.ROAD_WEIGHT["secondary"]  # worst wins
     assert road_weight(highway=None) == RoadConfig.DEFAULT_WEIGHT  # untagged → default
 
