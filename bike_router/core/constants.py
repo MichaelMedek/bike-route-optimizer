@@ -101,10 +101,13 @@ class Grade:
 
 
 class SurfaceLabel:
-    """Human surface/road words shown in tooltips + the tier tables (paved vs unpaved, quiet vs main)."""
+    """Our INTERNAL display words (tooltips + tier-label swatches) — NOT OSM tag values.
 
-    PAVED = "paved"
-    UNPAVED = "unpaved"
+    Deliberately distinct from the raw OSM ``surface`` values ("paved"/"unpaved") that key the tier maps.
+    """
+
+    PAVED = "paved road"
+    UNPAVED = "unpaved path"
     QUIET_WAY = "quiet way"
     MAIN_ROAD = "main road"
 
@@ -267,88 +270,133 @@ class Palette:
         return (int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16))
 
 
-class SurfaceConfig:
-    """Surface → penalty TIER (0 = paved/good, 1 = loose/moderate, 2 = rough/natural).
+def color_tier(weight: float) -> int:
+    """Binary colour bucket for a continuous cost weight: 0 (good) iff round(weight) == 0, else 1 (bad).
 
-    ALLOWLIST: only listed categories enter the graph (others dropped at build; untagged →
-    DEFAULT_TIER). The tier is a literal multiplier on --extra_km_per_unpaved_km (0 free, 1 ×1, 2 ×2).
+    Caps the physically-ordered weight to two optical classes — even a very bad surface (weight rounding
+    to 2, 3, …) still shows as the single "bad" colour, so colour never gains a third meaning.
+    """
+    return 0 if round(weight) == 0 else 1
+
+
+def surface_weight_from_crr(crr: float) -> float:
+    """Cost weight (extra equivalent-km per km) from a raw Crr: (crr/Crr_asphalt − 1), floored at 0.
+
+    Rolling energy over distance is Crr·m·g·d, so a surface's energy equals riding crr/Crr_asphalt× as
+    far on asphalt; the EXTRA fraction is the detour weight. Smoother-than-asphalt earns no credit (floor 0).
+    """
+    return max(0.0, crr / _CRR_ASPHALT - 1.0)
+
+
+def road_weight_from_lts(lts: int) -> float:
+    """Cost weight from Level of Traffic Stress: LTS≤2 (Mekuria/Furth low-stress network) free, then
+    (lts−2)/(LTS_MAX−2) above it — LTS1/2→0, LTS3→0.5, LTS4→1.0. Only stressful roads earn a detour.
+    """
+    return max(0.0, (lts - 2) / (_LTS_MAX - 2))
+
+
+# Reference anchors for the two weight formulas (module scope so the class-body comprehensions see them).
+_CRR_ASPHALT = 0.006  # measured touring-tyre Crr on asphalt — the 0-weight anchor (bicyclerollingresistance.com)
+_LTS_MAX = 4  # worst Level of Traffic Stress — the 1.0-weight anchor (Mekuria/Furth)
+
+
+class SurfaceConfig:
+    """Surface → FROZEN cited raw Crr (single source) → COST weight (formula) → COLOUR tier (capped).
+
+    SURFACE_CRR holds frozen literature Crr per OSM surface (inline source each); SURFACE_WEIGHT is
+    DERIVED via surface_weight_from_crr; SURFACE_TIER caps to good/bad. Only the formula/sliders tune.
     """
 
-    SURFACE_TIER = {
-        # tier 0 — paved / good (no unpaved penalty, colored blue)
-        "asphalt": 0,
-        "concrete": 0,
-        "concrete:plates": 0,
-        "concrete:lanes": 0,
-        "asphalt:lanes": 0,
-        SurfaceLabel.PAVED: 0,
-        "paving_stones": 0,
-        "sett": 0,
-        "cobblestone": 0,
-        "unhewn_cobblestone": 0,
-        "chipseal": 0,
-        "bricks": 0,
-        "wood": 0,
-        "metal": 0,
-        # tier 1 — loose / compacted-gravel (penalty ×1, colored red)
-        "compacted": 1,
-        "fine_gravel": 1,
-        "gravel": 1,
-        "pebblestone": 1,
-        SurfaceLabel.UNPAVED: 1,
-        "grass_paver": 1,
-        "stone": 1,
-        "metal_grid": 1,
-        "shells": 1,
-        # tier 2 — natural / rough but rideable (penalty ×2 — the tier IS the multiplier)
-        "ground": 2,
-        "dirt": 2,
-        "earth": 2,
-        "grass": 2,
-        "woodchips": 2,
+    # Reference: measured touring-tyre Crr on asphalt — the 0-weight anchor (bicyclerollingresistance.com).
+    CRR_ASPHALT = _CRR_ASPHALT
+    # Cited raw rolling-resistance coefficient per OSM surface (touring tyre). FROZEN literature values —
+    # each carries its ≤5-word source; the paper's raw-Crr table holds ranges + confidence.
+    SURFACE_CRR = {
+        "asphalt": 0.006,  # bicyclerollingresistance.com tour drum
+        "concrete": 0.0055,  # de.wikipedia Rollwiderstand
+        "concrete:plates": 0.008,  # de.wikipedia Rollwiderstand est.
+        "concrete:lanes": 0.008,  # de.wikipedia Rollwiderstand est.
+        "asphalt:lanes": 0.006,  # = asphalt (bicyclerollingresistance)
+        "paved": 0.0065,  # BRR + Wikipedia rollers
+        "paving_stones": 0.011,  # SILCA impedance + de.wikipedia
+        "sett": 0.016,  # de.wikipedia + SILCA impedance
+        "cobblestone": 0.022,  # de.wikipedia Kopfsteinpflaster measured
+        "unhewn_cobblestone": 0.030,  # de.wikipedia upper + SILCA
+        "chipseal": 0.0085,  # SILCA chip-seal test
+        "bricks": 0.013,  # de.wikipedia (pavers↔sett)
+        "wood": 0.005,  # Wikipedia wooden-track rollers
+        "metal": 0.005,  # Wikipedia smooth-drum baseline
+        "compacted": 0.008,  # Omni cycling-wattage (gravel)
+        "fine_gravel": 0.009,  # Omni + de.wikipedia
+        "gravel": 0.011,  # de.wikipedia gravel-bike measured
+        "pebblestone": 0.015,  # de.wikipedia loose-stone est.
+        "unpaved": 0.012,  # Omni off-road / de.wikipedia
+        "grass_paver": 0.018,  # de.wikipedia (pavers↔grass)
+        "stone": 0.020,  # de.wikipedia rough-stone est.
+        "metal_grid": 0.007,  # de.wikipedia grid est.
+        "shells": 0.013,  # de.wikipedia loose-shell est.
+        "ground": 0.012,  # Omni off-road / de.wikipedia
+        "dirt": 0.013,  # Omni grass↔off-road interp.
+        "earth": 0.013,  # Omni (= dirt/ground)
+        "grass": 0.035,  # de.wikipedia soft-turf est.
+        "woodchips": 0.050,  # extrapolated loose-granular (Omni)
     }
-    # Untagged surface (~35% of raw ways) → assume tier 1 (loose, pessimistic but rideable).
-    DEFAULT_TIER = 1
-    # Per-tier human label + swatch. Tier 2 is a COMPUTE-only split.
+    # Cost weight = extra equivalent-km per km from rolling resistance (surface_weight_from_crr); this is
+    # what the cost + speed read. A surface smoother than asphalt earns no detour credit (floored at 0).
+    SURFACE_WEIGHT = {value: surface_weight_from_crr(crr=crr) for value, crr in SURFACE_CRR.items()}
+    # Binary colour bucket, DERIVED via color_tier so it can never drift from the weight (0 paved/blue,
+    # 1 unpaved/orange — a bad surface caps at 1 even if its weight rounds to 2+).
+    SURFACE_TIER = {value: color_tier(weight=weight) for value, weight in SURFACE_WEIGHT.items()}
+    # Untagged surface (~44% of length) → assume Crr 0.012 (unpaved-ish) → weight 1.0, tier 1 (orange).
+    # (Class-conditional prior is a follow-up needing an artifact rebuild — see the paper's rollout.)
+    DEFAULT_WEIGHT = surface_weight_from_crr(crr=0.012)  # "unpaved"
+    DEFAULT_TIER = color_tier(weight=DEFAULT_WEIGHT)
+    # Per-tier human label + swatch: 0 paved/blue, 1 unpaved/orange (the two capped colour classes).
     TIER_LABEL_COLORS = {
-        0: ("paved road", Palette.BLUE),
-        1: ("unpaved path", Palette.ORANGE),
-        2: ("unpaved path", Palette.ORANGE),  # COMPUTE-only, same optic
+        0: (SurfaceLabel.PAVED, Palette.BLUE),
+        1: (SurfaceLabel.UNPAVED, Palette.ORANGE),
     }
 
 
 class RoadConfig:
-    """Highway class → penalty TIER (0 = quiet/bike-friendly, 1 = main road). Symmetric with
-    SurfaceConfig: an ALLOWLIST — listed classes enter the graph, others (motorway/raceway/…)
-    are dropped, missing/untagged → DEFAULT_TIER (main, pessimistic). Tier 1 adds one main-road penalty.
+    """Highway class → FROZEN cited raw LTS (single source) → COST weight (formula) → COLOUR tier (capped).
+
+    ROAD_LTS holds frozen Level-of-Traffic-Stress (1–4) per OSM class (inline source each); ROAD_WEIGHT is
+    DERIVED via road_weight_from_lts (LTS≤2 free); ROAD_TIER caps to quiet/main. Only the formula/sliders tune.
     """
 
-    ROAD_TIER = {
-        # tier 0 — quiet / bike-friendly (no main-road penalty, colored blue)
-        "cycleway": 0,
-        "path": 0,
-        "footway": 0,
-        "bridleway": 0,
-        "steps": 0,
-        "pedestrian": 0,
-        "living_street": 0,
-        "residential": 0,
-        "service": 0,
-        "track": 0,
-        "tertiary": 0,
-        "tertiary_link": 0,
-        "road": 0,
-        # tier 1 — main road (penalty ×1, kept, colored red)
-        "trunk": 1,
-        "primary": 1,
-        "secondary": 1,
-        "unclassified": 1,
-        "trunk_link": 1,
-        "primary_link": 1,
-        "secondary_link": 1,
+    LTS_MAX = _LTS_MAX  # the worst Level of Traffic Stress — the 1.0-weight anchor (Mekuria/Furth)
+    # Cited Level of Traffic Stress per OSM highway class (typical German instance). FROZEN literature
+    # values — each carries its ≤5-word source (BikeOttawa stressmodel.js operationalising Mekuria/Furth).
+    ROAD_LTS = {
+        "cycleway": 1,  # BikeOttawa: separated path
+        "path": 1,  # BikeOttawa: separated path
+        "footway": 1,  # BikeOttawa: non-crossing footway
+        "bridleway": 1,  # BikeOttawa: off-road, no traffic
+        "steps": 1,  # BikeOttawa: no motor traffic
+        "pedestrian": 1,  # BikeOttawa: pedestrian zone
+        "living_street": 1,  # Mekuria: walking-pace shared
+        "residential": 2,  # BikeOttawa: ≤40 km/h, ≤3 lanes
+        "service": 2,  # BikeOttawa: alley/access
+        "track": 2,  # BikeOttawa: track = LTS2
+        "unclassified": 3,  # BikeOttawa: non-residential 50 km/h
+        "road": 3,  # BikeOttawa: unknown-class ~50 km/h
+        "tertiary": 3,  # BikeOttawa: non-residential 50 km/h
+        "tertiary_link": 3,  # BikeOttawa: inherits tertiary
+        "secondary": 4,  # BikeOttawa: >50 km/h
+        "secondary_link": 4,  # BikeOttawa: inherits secondary
+        "primary": 4,  # BikeOttawa: >50 km/h multilane
+        "primary_link": 4,  # BikeOttawa: inherits primary
+        "trunk": 4,  # BikeOttawa: expressway >50 km/h
+        "trunk_link": 4,  # BikeOttawa: inherits trunk
     }
-    # Untagged highway (~0% in practice) → assume main road (kept, penalised).
-    DEFAULT_TIER = 1
+    # Cost weight = LTS≤2-free normalised stress (road_weight_from_lts): LTS1/2→0.0, 3→0.5, 4→1.0.
+    ROAD_WEIGHT = {value: road_weight_from_lts(lts=lts) for value, lts in ROAD_LTS.items()}
+    # Binary colour bucket, DERIVED via color_tier (never drifts): 0 quiet/blue, 1 main/red.
+    ROAD_TIER = {value: color_tier(weight=weight) for value, weight in ROAD_WEIGHT.items()}
+    # Untagged highway (~0% in practice) → assume worst LTS 4 → weight 1.0, tier 1 (red, pessimistic).
+    DEFAULT_WEIGHT = road_weight_from_lts(lts=_LTS_MAX)
+    DEFAULT_TIER = color_tier(weight=DEFAULT_WEIGHT)
     # Per-tier human label + swatch (donut colours): tier 0 (quiet) blue, tier 1 (main) red.
     TIER_LABEL_COLORS = {0: (SurfaceLabel.QUIET_WAY, Palette.BLUE), 1: (SurfaceLabel.MAIN_ROAD, Palette.RED)}
 
@@ -390,7 +438,7 @@ PARAM_SPECS = (
         label="Unpaved avoidance (extra km per unpaved km)",
         help="Extra km you'd ride to swap 1 km of gravel/dirt for pavement. 0 = don't avoid unpaved; higher = detour to stay paved.",
         default=1.0,
-        abbrev=SurfaceLabel.UNPAVED,
+        abbrev="unpaved",
     ),
     RoutingParamSpec(
         field="extra_km_per_main_road_km",
@@ -458,12 +506,16 @@ class GradeConfig:
 
 
 class SpeedConfig:
-    """Surface- and grade-adaptive cycling speed (km/h), two anchors linearly interpolated: at
-    0 % grade the rider does the surface's base speed; at WALK_GRADE (a steep 12 %) they slow to
-    WALK_KMH. Flat/downhill hold base; above WALK_GRADE stay WALK_KMH. Applied per edge as one grade.
+    """Surface- and grade-adaptive cycling speed (km/h). Base speed interpolates linearly with the
+    continuous surface WEIGHT (0.0 → BASE_KMH_AT_WEIGHT0, SURFACE_WEIGHT_MAX → BASE_KMH_AT_WEIGHT_MAX);
+    then a second linear ramp drops it to WALK_KMH at WALK_GRADE. Flat/downhill hold the surface base.
     """
 
-    BASE_KMH_BY_TIER = {0: 25.0, 1: 20.0, 2: 15.0}  # paved / loose / natural-rough surface
+    BASE_KMH_AT_WEIGHT0 = 25.0  # paved (weight 0.0) base speed
+    BASE_KMH_AT_WEIGHT_MAX = 15.0  # roughest rideable surface base speed
+    # Weight at which the base speed bottoms out: 1.0 = the unpaved/ground anchor (Crr ~2× asphalt);
+    # rougher surfaces (gravel-loose, grass, woodchips) clamp to BASE_KMH_AT_WEIGHT_MAX.
+    SURFACE_WEIGHT_MAX = 1.0
     WALK_KMH = 5.0  # speed at WALK_GRADE and steeper (pushing the bike)
     WALK_GRADE = 0.12  # rise/run at which the rider drops to walking pace
 

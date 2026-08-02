@@ -9,17 +9,20 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from bike_router.core.constants import Mode
+from bike_router.core.constants import Mode, RoadConfig, SurfaceConfig
 from bike_router.core.cost import (
     _as_values,
     _is_missing,
     edge_cost_array,
     road_included,
     road_tier,
+    road_weight,
     surface_included,
     surface_tier,
+    surface_weight,
     tag_included,
     tag_tier,
+    tag_weight,
 )
 from tests.conftest import ZERO_PARAMS, zero_params
 
@@ -68,6 +71,15 @@ def test_tag_tier():
     assert tag_tier(tag=None, tier_map=tiers, default_tier=2) == 2  # missing → default
 
 
+def test_tag_weight():
+    # Shared continuous-weight resolver: worst (highest) known value wins; all-unknown/missing → default.
+    weights = {"asphalt": 0.0, "gravel": 0.9, "ground": 1.0}
+    assert tag_weight(tag="asphalt", weight_map=weights, default_weight=1.0) == 0.0
+    assert tag_weight(tag=["asphalt", "gravel"], weight_map=weights, default_weight=1.0) == 0.9  # worst wins
+    assert tag_weight(tag="spacedust", weight_map=weights, default_weight=0.5) == 0.5  # unknown → default
+    assert tag_weight(tag=None, weight_map=weights, default_weight=0.5) == 0.5  # missing → default
+
+
 def test_tag_included():
     # Shared allowlist gate: False iff a tag names a category outside the map; missing → True.
     tiers = {"asphalt": 0, "gravel": 1}
@@ -78,15 +90,25 @@ def test_tag_included():
 
 
 def test_surface_tier():
+    # Tier is the CAPPED binary colour bucket (color_tier): asphalt 0.0→0, gravel 0.9→1, grass 1.5→1.
+    # Even the roughest surface caps at 1 (never a third colour); firm surfaces rounding to 0 read good.
     assert surface_tier(surface="asphalt") == 0
-    assert surface_tier(surface="concrete:plates") == 0  # paved variant → good
-    assert surface_tier(surface="gravel") == 1  # loose
-    assert surface_tier(surface="ground") == 2  # natural/rough but rideable
+    assert surface_tier(surface="compacted") == 0  # firm (weight 0.4 → rounds to good)
+    assert surface_tier(surface="gravel") == 1  # loose (0.9 → 1)
+    assert surface_tier(surface="grass") == 1  # roughest rideable, capped at 1 (weight 1.5)
     assert surface_tier(surface=["asphalt", "gravel"]) == 1  # worst wins (0 vs 1 → 1)
-    assert surface_tier(surface=["gravel", "ground"]) == 2  # worst wins (1 vs 2 → 2)
     assert surface_tier(surface="spacedust") == 1  # unknown → DEFAULT_TIER (loose)
     assert surface_tier(surface=None) == 1  # untagged → DEFAULT_TIER
     assert surface_tier(surface=float("nan")) == 1  # nan is missing → DEFAULT_TIER
+
+
+def test_surface_weight():
+    # Continuous Crr-ordered weight: asphalt 0.0, gravel worse than compacted, worst wins, untagged → default.
+    assert surface_weight(surface="asphalt") == 0.0
+    assert surface_weight(surface="compacted") < surface_weight(surface="gravel")  # firm cheaper than loose
+    assert surface_weight(surface=["asphalt", "gravel"]) == SurfaceConfig.SURFACE_WEIGHT["gravel"]  # worst wins
+    assert surface_weight(surface="spacedust") == SurfaceConfig.DEFAULT_WEIGHT  # unknown → default
+    assert surface_weight(surface=None) == SurfaceConfig.DEFAULT_WEIGHT  # untagged → default
 
 
 def test_surface_included():
@@ -101,11 +123,27 @@ def test_surface_included():
 
 
 def test_road_tier():
-    assert all(road_tier(highway=h) == 1 for h in ("secondary", "primary", "unclassified", "trunk", "primary_link"))
-    assert all(road_tier(highway=h) == 0 for h in ("residential", "cycleway", "tertiary"))
+    # Tier is the capped colour bucket color_tier(weight): LTS4 (secondary/primary/trunk) → w 1.0 → 1;
+    # LTS3 (tertiary/unclassified) → w 0.5 → rounds to 0 (quiet/blue); LTS1-2 (residential/track) → 0.
+    assert all(road_tier(highway=h) == 1 for h in ("secondary", "primary", "trunk", "primary_link"))
+    assert all(road_tier(highway=h) == 0 for h in ("residential", "cycleway", "tertiary", "unclassified", "track"))
     assert road_tier(highway=["residential", "secondary"]) == 1  # worst wins → main
     assert road_tier(highway=None) == 1  # untagged → DEFAULT_TIER (main, pessimistic)
     assert road_tier(highway=float("nan")) == 1  # nan is missing → DEFAULT_TIER
+
+
+def test_road_weight():
+    # LTS-derived weight: LTS≤2 (cycleway/residential/track) free 0.0; LTS3 (tertiary/unclassified) 0.5;
+    # LTS4 (secondary/primary/trunk) 1.0. Worst wins; untagged → default (worst, pessimistic).
+    assert road_weight(highway="cycleway") == 0.0 and road_weight(highway="residential") == 0.0
+    assert road_weight(highway="trunk") == 1.0
+    # Inversion fix: 'unclassified' is no longer worse than 'tertiary' — cited LTS puts both at LTS 3
+    # (equal, 0.5), the low-stress classes below them free, and secondary/primary above (LTS 4).
+    assert road_weight(highway="unclassified") == road_weight(highway="tertiary")
+    assert road_weight(highway="residential") < road_weight(highway="tertiary") < road_weight(highway="secondary")
+    assert road_weight(highway="secondary") == road_weight(highway="primary")  # both LTS 4
+    assert road_weight(highway=["residential", "secondary"]) == RoadConfig.ROAD_WEIGHT["secondary"]  # worst wins
+    assert road_weight(highway=None) == RoadConfig.DEFAULT_WEIGHT  # untagged → default
 
 
 def test_road_included():
@@ -148,33 +186,47 @@ def test_edge_cost_array():
         == 1000.0
     )  # downhill free
 
-    # unpaved: the tier is a literal multiplier — tier 1 +1000 m, tier 2 +2000 m (at 1 extra-km/km)
+    # unpaved: the continuous WEIGHT is the multiplier — asphalt 0.0 (free), gravel 0.9, ground 1.0
+    # (at 1 extra-km/km) → +weight·length. Weights come from SurfaceConfig.SURFACE_WEIGHT (Crr-ordered).
     unp = zero_params(extra_km_per_unpaved_km=1.0)
     assert _cost(mode=Mode.BIKE, length=1000.0, surface="asphalt", highway="residential", params=unp) == 1000.0
     assert _cost(mode=Mode.BIKE, length=1000.0, surface="gravel", highway="residential", params=unp) == pytest.approx(
-        2000.0
+        1000.0 + 1000.0 * SurfaceConfig.SURFACE_WEIGHT["gravel"]
     )
     assert _cost(mode=Mode.BIKE, length=1000.0, surface="ground", highway="residential", params=unp) == pytest.approx(
-        3000.0
+        1000.0 + 1000.0 * SurfaceConfig.SURFACE_WEIGHT["ground"]
     )
 
-    # main road: +extra-km/km on a main road, nothing on a quiet way
+    # main road: +weight·extra-km/km on a main road (secondary weight 0.55), nothing on a quiet way
     main = zero_params(extra_km_per_main_road_km=2.0)
     assert _cost(mode=Mode.BIKE, length=1000.0, surface="asphalt", highway="secondary", params=main) == pytest.approx(
-        3000.0
+        1000.0 + 2.0 * 1000.0 * RoadConfig.ROAD_WEIGHT["secondary"]
     )
-    assert _cost(mode=Mode.BIKE, length=1000.0, surface="asphalt", highway="residential", params=main) == 1000.0
+    assert _cost(mode=Mode.BIKE, length=1000.0, surface="asphalt", highway="residential", params=main) == pytest.approx(
+        1000.0 + 2.0 * 1000.0 * RoadConfig.ROAD_WEIGHT["residential"]
+    )
 
     # additive: uphill + unpaved + main-road all stack on top of length
     add = zero_params(extra_km_per_uphill_100m=5.0, extra_km_per_unpaved_km=1.0, extra_km_per_main_road_km=1.0)
     assert _cost(
         mode=Mode.BIKE, length=1000.0, surface="gravel", highway="secondary", to_elev=100.0, params=add
-    ) == pytest.approx(8000.0)
+    ) == pytest.approx(
+        1000.0 + 5000.0 + 1000.0 * SurfaceConfig.SURFACE_WEIGHT["gravel"] + 1000.0 * RoadConfig.ROAD_WEIGHT["secondary"]
+    )
 
     # never below raw length (penalties fire, total > length)
     floor = zero_params(extra_km_per_uphill_100m=10.0, extra_km_per_unpaved_km=3.0, extra_km_per_main_road_km=3.0)
     c = _cost(mode=Mode.BIKE, length=500.0, surface="gravel", highway="primary", to_elev=100.0, params=floor)
-    assert c == pytest.approx(500.0 + 10000.0 + 1500.0 + 1500.0) and c > 500.0
+    assert (
+        c
+        == pytest.approx(
+            500.0
+            + 10000.0
+            + 3.0 * 500.0 * SurfaceConfig.SURFACE_WEIGHT["gravel"]
+            + 3.0 * 500.0 * RoadConfig.ROAD_WEIGHT["primary"]
+        )
+        and c > 500.0
+    )
 
     # rail: per-km rail charge only; terrain/surface/road ignored; boarding NOT here
     assert _cost(
@@ -214,4 +266,43 @@ def test_edge_cost_array():
         extra_km_per_unpaved_km=1.0, extra_km_per_main_road_km=1.0, extra_km_per_rail_km=2.0, extra_km_per_boarding=10.0
     )
     got = edge_cost_array(edges_df=edges_df, elev_by_osmid=dict.fromkeys([1, 2, 3, 4], 0.0), params=params)
-    assert np.allclose(got, [1000.0 + 1000.0 + 1000.0, 10_000.0 + 20_000.0, 150.0 + 5000.0])
+    bike_expected = (
+        1000.0 + 1000.0 * SurfaceConfig.SURFACE_WEIGHT["gravel"] + 1000.0 * RoadConfig.ROAD_WEIGHT["secondary"]
+    )
+    assert np.allclose(got, [bike_expected, 10_000.0 + 20_000.0, 150.0 + 5000.0])
+
+
+def test_untagged_default_weight_applies_in_cost():
+    # REGRESSION: an untagged surface/highway edge is costed at the flat DEFAULT_WEIGHT (1.0) — the
+    # pessimistic prior for the ~44% of length with no surface tag (paper §4; class-conditional prior
+    # is a follow-up needing an artifact rebuild). Both penalties fire at exactly weight·length.
+    unp = zero_params(extra_km_per_unpaved_km=1.0)
+    assert _cost(mode=Mode.BIKE, length=1000.0, surface=None, highway="residential", params=unp) == pytest.approx(
+        1000.0 + 1000.0 * SurfaceConfig.DEFAULT_WEIGHT
+    )
+    main = zero_params(extra_km_per_main_road_km=1.0)
+    assert _cost(mode=Mode.BIKE, length=1000.0, surface="asphalt", highway=None, params=main) == pytest.approx(
+        1000.0 + 1000.0 * RoadConfig.DEFAULT_WEIGHT
+    )
+
+
+def test_continuous_cost_ordering_beyond_colour_bucket():
+    # REGRESSION (continuous tiers): identical-length bike edges cost STRICTLY more as the surface
+    # roughens (asphalt < compacted < gravel < grass, by Crr) and the road stress rises by LTS level
+    # (residential LTS2 < tertiary LTS3 < secondary LTS4) — orderings the old integer buckets collapsed.
+    surf = zero_params(extra_km_per_unpaved_km=1.0)
+    surfaces = ["asphalt", "compacted", "gravel", "grass"]
+    surf_costs = [_cost(mode=Mode.BIKE, length=1000.0, surface=s, highway="residential", params=surf) for s in surfaces]
+    assert all(surf_costs[i] < surf_costs[i + 1] for i in range(len(surf_costs) - 1))
+
+    road = zero_params(extra_km_per_main_road_km=1.0)
+    roads = ["residential", "tertiary", "secondary"]  # LTS 2→3→4 → weight 0.0 < 0.5 < 1.0
+    road_costs = [_cost(mode=Mode.BIKE, length=1000.0, surface="asphalt", highway=h, params=road) for h in roads]
+    assert all(road_costs[i] < road_costs[i + 1] for i in range(len(road_costs) - 1))
+
+    # Colour ≠ cost: 'compacted' and 'fine_gravel' both COLOUR paved (tier 0) yet cost differently —
+    # proving the continuous weight carries information the binary colour bucket throws away.
+    assert surface_tier(surface="compacted") == surface_tier(surface="fine_gravel") == 0
+    assert _cost(mode=Mode.BIKE, length=1000.0, surface="compacted", highway="residential", params=surf) < _cost(
+        mode=Mode.BIKE, length=1000.0, surface="fine_gravel", highway="residential", params=surf
+    )

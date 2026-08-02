@@ -12,15 +12,27 @@ def kmh_to_ms(kmh: float) -> float:
     return kmh * GpxConfig.METERS_PER_KM / GpxConfig.SECONDS_PER_HOUR
 
 
-def effective_speed_kmh(surface_tier: int, grade: float) -> float:
-    """Ride speed (km/h) for a surface tier and linear grade.
+def base_speed_kmh(surface_weight: float) -> float:
+    """Flat-ground base speed (km/h) for a continuous surface weight.
+
+    Linear from BASE_KMH_AT_WEIGHT0 (weight 0.0, paved) to BASE_KMH_AT_WEIGHT_MAX (SURFACE_WEIGHT_MAX);
+    weights beyond the max clamp to the rough-surface floor (never below it).
+    """
+    frac = min(surface_weight / SpeedConfig.SURFACE_WEIGHT_MAX, 1.0)
+    return SpeedConfig.BASE_KMH_AT_WEIGHT0 + frac * (
+        SpeedConfig.BASE_KMH_AT_WEIGHT_MAX - SpeedConfig.BASE_KMH_AT_WEIGHT0
+    )
+
+
+def effective_speed_kmh(surface_weight: float, grade: float) -> float:
+    """Ride speed (km/h) for a continuous surface weight and linear grade.
 
     Args:
-        surface_tier: 0 paved / 1 loose / 2 natural-rough (see SurfaceConfig).
+        surface_weight: Crr-ordered surface cost weight (0.0 paved … ~1.7 rough; see SurfaceConfig).
         grade: rise/run fraction over the edge (<= 0 = flat/downhill).
     """
-    assert surface_tier in SpeedConfig.BASE_KMH_BY_TIER, "unknown surface tier"
-    base = SpeedConfig.BASE_KMH_BY_TIER[surface_tier]
+    assert surface_weight >= 0.0, "surface weight must be non-negative"
+    base = base_speed_kmh(surface_weight=surface_weight)
     if grade <= 0.0:
         return base
     if grade >= SpeedConfig.WALK_GRADE:

@@ -9,7 +9,7 @@ from dataclasses import dataclass
 import numpy as np
 
 from bike_router.core.constants import Condition, GpxConfig, Grade, GradeConfig, Mode, Palette, RailConfig, SpeedConfig
-from bike_router.core.cost import road_tier, surface_tier
+from bike_router.core.cost import road_tier, surface_tier, surface_weight
 from bike_router.core.geo import haversine_vec
 from bike_router.core.route_path import RouteEdge, RouteNode, RoutePath
 from bike_router.core.speed import effective_speed_kmh, kmh_to_ms
@@ -146,9 +146,10 @@ def edge_condition_speed(*, edge: RouteEdge, elev_source: float, elev_target: fl
     model. rail / station: never bad, fixed RAIL_SPEED_KMH / walking pace.
     """
     if edge.mode == Mode.BIKE:
+        # colour reads the discrete tier (paved vs unpaved / quiet vs main); speed reads the continuous weight.
         s_tier = surface_tier(surface=edge.surface)
         grade = edge_grade(elev_source=elev_source, elev_target=elev_target, length_m=edge.length_m)
-        speed_kmh = effective_speed_kmh(surface_tier=s_tier, grade=grade)
+        speed_kmh = effective_speed_kmh(surface_weight=surface_weight(surface=edge.surface), grade=grade)
         return s_tier != 0, road_tier(highway=edge.highway) != 0, speed_kmh
     elif edge.mode == Mode.RAIL:
         return False, False, RailConfig.RAIL_SPEED_KMH
@@ -290,11 +291,11 @@ def build_track(route: RoutePath) -> Track:
 
     assert total_m > 0, "route distance must be positive"
     assert total_s > 0, "route duration must be positive"
-    # sanity: average BIKE speed must sit between the walking floor and the best base
+    # sanity: average BIKE speed must sit between the walking floor and the best (paved) base
     # speed (rail legs are excluded — 80 km/h would trip it).
     if bike_s > 0:
         avg_kmh = (bike_m / GpxConfig.METERS_PER_KM) / (bike_s / GpxConfig.SECONDS_PER_HOUR)
-        assert SpeedConfig.WALK_KMH - 1e-9 <= avg_kmh <= max(SpeedConfig.BASE_KMH_BY_TIER.values()) + 1e-9, (
+        assert SpeedConfig.WALK_KMH - 1e-9 <= avg_kmh <= SpeedConfig.BASE_KMH_AT_WEIGHT0 + 1e-9, (
             f"implausible average speed {avg_kmh:.1f} km/h"
         )
     # bike stats = pedalled legs only; total = whole journey (bike + rail climb), matching total_m.

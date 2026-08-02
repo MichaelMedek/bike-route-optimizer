@@ -37,6 +37,9 @@ from bike_router.core.constants import (
     SurfaceConfig,
     SurfaceLabel,
     WebMapConfig,
+    color_tier,
+    road_weight_from_lts,
+    surface_weight_from_crr,
 )
 from bike_router.core.errors import ParamOutOfRangeError
 from tests.conftest import params as make_params
@@ -68,7 +71,7 @@ class TestRailConfig:
     def test_speed_wait_and_tags(self):
         assert RailConfig.RAIL_SPEED_KMH > 0 and RailConfig.BOARDING_WAIT_S > 0
         assert RailConfig.STATION_RADIUS_M > 0 and RailConfig.STATION_MAX_ENTRANCES >= 1
-        assert max(SpeedConfig.BASE_KMH_BY_TIER.values()) < RailConfig.RAIL_SPEED_KMH  # rail beats any bike leg
+        assert SpeedConfig.BASE_KMH_AT_WEIGHT0 < RailConfig.RAIL_SPEED_KMH  # rail beats any bike leg
         assert "rail" in RailConfig.RAIL_TAGS and "station" in RailConfig.STATION_TAGS
 
 
@@ -105,11 +108,28 @@ class TestPalette:
 class TestSurfaceConfig:
     def test_tiers_labels_and_default(self):
         assert SurfaceConfig.SURFACE_TIER  # not empty
-        assert set(SurfaceConfig.SURFACE_TIER.values()) <= {0, 1, 2}
+        assert set(SurfaceConfig.SURFACE_TIER.values()) <= {0, 1}  # capped binary colour bucket
         assert SurfaceConfig.SURFACE_TIER["asphalt"] == 0 and SurfaceConfig.SURFACE_TIER["gravel"] == 1
-        assert SurfaceConfig.SURFACE_TIER["ground"] == 2
+        assert SurfaceConfig.SURFACE_TIER["grass"] == 1  # roughest rideable, capped at 1
         assert set(SurfaceConfig.TIER_LABEL_COLORS) == set(SurfaceConfig.SURFACE_TIER.values())
         assert SurfaceConfig.DEFAULT_TIER in SurfaceConfig.SURFACE_TIER.values()
+
+    def test_weight_derived_from_cited_crr_and_tier_capped(self):
+        # Chain: raw cited Crr → weight = surface_weight_from_crr → tier = color_tier(weight) (capped 0/1).
+        # No hand-set weight/tier: both are FUNCTIONS of SURFACE_CRR, so nothing can drift.
+        assert set(SurfaceConfig.SURFACE_CRR) == set(SurfaceConfig.SURFACE_WEIGHT) == set(SurfaceConfig.SURFACE_TIER)
+        assert all(
+            SurfaceConfig.SURFACE_WEIGHT[k] == surface_weight_from_crr(crr=SurfaceConfig.SURFACE_CRR[k])
+            for k in SurfaceConfig.SURFACE_CRR
+        )
+        assert all(
+            SurfaceConfig.SURFACE_TIER[k] == color_tier(weight=w) for k, w in SurfaceConfig.SURFACE_WEIGHT.items()
+        )
+        assert color_tier(weight=SurfaceConfig.DEFAULT_WEIGHT) == SurfaceConfig.DEFAULT_TIER
+        # Crr-ordered ⇒ weight-ordered: asphalt cheapest (0.0), firm < loose < rough.
+        assert SurfaceConfig.SURFACE_WEIGHT["asphalt"] == 0.0
+        assert SurfaceConfig.SURFACE_WEIGHT["compacted"] < SurfaceConfig.SURFACE_WEIGHT["gravel"]
+        assert SurfaceConfig.SURFACE_WEIGHT["gravel"] < SurfaceConfig.SURFACE_WEIGHT["grass"]
 
 
 class TestRoadConfig:
@@ -119,6 +139,48 @@ class TestRoadConfig:
         assert RoadConfig.ROAD_TIER["residential"] == 0 and RoadConfig.ROAD_TIER["primary"] == 1
         assert RoadConfig.DEFAULT_TIER in {0, 1}
         assert set(RoadConfig.TIER_LABEL_COLORS) == set(RoadConfig.ROAD_TIER.values())
+
+    def test_weight_derived_from_cited_lts_and_fixes_inversion(self):
+        # Chain: cited LTS → weight = road_weight_from_lts → tier = color_tier(weight). No hand-set values.
+        assert set(RoadConfig.ROAD_LTS) == set(RoadConfig.ROAD_WEIGHT) == set(RoadConfig.ROAD_TIER)
+        assert all(
+            RoadConfig.ROAD_WEIGHT[k] == road_weight_from_lts(lts=RoadConfig.ROAD_LTS[k]) for k in RoadConfig.ROAD_LTS
+        )
+        assert all(RoadConfig.ROAD_TIER[k] == color_tier(weight=w) for k, w in RoadConfig.ROAD_WEIGHT.items())
+        assert color_tier(weight=RoadConfig.DEFAULT_WEIGHT) == RoadConfig.DEFAULT_TIER
+        assert RoadConfig.ROAD_WEIGHT["cycleway"] == 0.0 and RoadConfig.ROAD_WEIGHT["trunk"] == 1.0
+        # Inversion fix: 'unclassified' (LTS 3) is no longer WORSE than 'tertiary' — the cited LTS makes
+        # them EQUAL (both 50 km/h non-residential), and both strictly below secondary/primary (LTS 4).
+        assert RoadConfig.ROAD_WEIGHT["unclassified"] == RoadConfig.ROAD_WEIGHT["tertiary"]
+        assert (
+            RoadConfig.ROAD_WEIGHT["tertiary"]
+            < RoadConfig.ROAD_WEIGHT["secondary"]
+            == RoadConfig.ROAD_WEIGHT["primary"]
+        )
+        assert all(0.0 <= w <= 1.0 for w in RoadConfig.ROAD_WEIGHT.values())
+
+
+def test_color_tier():
+    # Binary colour cap: 0 iff round(weight) == 0, else 1 — even a very bad surface (weight 4, 7) stays 1.
+    assert color_tier(weight=0.0) == 0 and color_tier(weight=0.4) == 0  # rounds to 0 → good
+    assert color_tier(weight=0.6) == 1 and color_tier(weight=1.0) == 1  # rounds to ≥1 → bad
+    assert color_tier(weight=7.33) == 1  # capped: never a third colour class
+
+
+def test_surface_weight_from_crr():
+    # Weight = extra equivalent-km per km = crr/Crr_asphalt − 1, floored at 0.
+    assert surface_weight_from_crr(crr=SurfaceConfig.CRR_ASPHALT) == 0.0  # asphalt anchor
+    assert surface_weight_from_crr(crr=2 * SurfaceConfig.CRR_ASPHALT) == pytest.approx(1.0)  # 2× Crr → weight 1
+    assert surface_weight_from_crr(crr=0.5 * SurfaceConfig.CRR_ASPHALT) == 0.0  # smoother → floored at 0
+    assert surface_weight_from_crr(crr=0.030) == pytest.approx(0.030 / SurfaceConfig.CRR_ASPHALT - 1.0)
+
+
+def test_road_weight_from_lts():
+    # LTS≤2 is the low-stress network → free; above it normalise (lts−2)/(LTS_MAX−2): 3→0.5, 4→1.0.
+    assert road_weight_from_lts(lts=1) == 0.0
+    assert road_weight_from_lts(lts=2) == 0.0
+    assert road_weight_from_lts(lts=3) == pytest.approx(0.5)
+    assert road_weight_from_lts(lts=RoadConfig.LTS_MAX) == pytest.approx(1.0)
 
 
 class TestRoutingDefaults:
@@ -171,9 +233,11 @@ class TestGradeConfig:
 
 
 class TestSpeedConfig:
-    def test_base_speeds_cover_tiers_and_exceed_walk(self):
-        assert set(SpeedConfig.BASE_KMH_BY_TIER) == set(SurfaceConfig.SURFACE_TIER.values())
-        assert all(v > SpeedConfig.WALK_KMH for v in SpeedConfig.BASE_KMH_BY_TIER.values())
+    def test_weight_anchors_ordered_and_exceed_walk(self):
+        # Continuous base-speed anchors: paved (weight 0) fastest, rough floor slower, both above walk;
+        # the weight span is positive so the interpolation is well-defined.
+        assert SpeedConfig.BASE_KMH_AT_WEIGHT0 > SpeedConfig.BASE_KMH_AT_WEIGHT_MAX > SpeedConfig.WALK_KMH
+        assert SpeedConfig.SURFACE_WEIGHT_MAX > 0
         assert SpeedConfig.WALK_GRADE > 0
 
 
@@ -242,7 +306,8 @@ class TestGrade:
 
 class TestSurfaceLabel:
     def test_human_surface_and_road_words(self):
-        assert SurfaceLabel.PAVED == "paved" and SurfaceLabel.UNPAVED == "unpaved"
+        # Internal DISPLAY words — deliberately distinct from the raw OSM "paved"/"unpaved" tag values.
+        assert SurfaceLabel.PAVED == "paved road" and SurfaceLabel.UNPAVED == "unpaved path"
         assert SurfaceLabel.QUIET_WAY == "quiet way" and SurfaceLabel.MAIN_ROAD == "main road"
 
 

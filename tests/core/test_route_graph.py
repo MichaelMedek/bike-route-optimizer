@@ -87,7 +87,9 @@ def test_shortest_path():
     line = RouteGraph.from_arrays(**make_line_edges().route_graph_args(params=ZERO_PARAMS))
     assert shortest_path(route_graph=line, source_osmid=1, target_osmid=3) == [1, 2, 3]
 
-    penalise = zero_params(extra_km_per_uphill_100m=5.0, extra_km_per_main_road_km=1.0)
+    # main-road weight (secondary 0.55) + uphill penalties large enough to justify the longer flat
+    # quiet detour via node 3 over the short steep secondary via node 2.
+    penalise = zero_params(extra_km_per_uphill_100m=5.0, extra_km_per_main_road_km=5.0)
     avoid = RouteGraph.from_arrays(**make_choice_edges().route_graph_args(params=penalise))
     assert shortest_path(route_graph=avoid, source_osmid=1, target_osmid=5) == [1, 3, 5]  # detour hill+road
     direct = RouteGraph.from_arrays(**make_choice_edges().route_graph_args(params=ZERO_PARAMS))

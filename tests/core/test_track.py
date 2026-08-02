@@ -167,7 +167,7 @@ def test_edge_condition_speed():
     s_bad, r_bad, speed = edge_condition_speed(
         edge=_bike_edge(surface="asphalt", highway="residential"), elev_source=100.0, elev_target=100.0
     )
-    assert s_bad is False and r_bad is False and speed == pytest.approx(SpeedConfig.BASE_KMH_BY_TIER[0])
+    assert s_bad is False and r_bad is False and speed == pytest.approx(SpeedConfig.BASE_KMH_AT_WEIGHT0)
     s_bad, r_bad, _ = edge_condition_speed(
         edge=_bike_edge(surface="gravel", highway="primary"), elev_source=100.0, elev_target=100.0
     )
@@ -273,7 +273,7 @@ def test_build_track():
     assert (elapsed[1] - elapsed[0]) > (elapsed[2] - elapsed[1])  # uphill 1→2 slower than downhill 2→3
     assert [round(p.elevation_m) for p in track.points] == [100, 130, 100]
     avg_kmh = track.total.distance_km / (track.total.duration_min / GpxConfig.MINUTES_PER_HOUR)
-    assert SpeedConfig.WALK_KMH <= avg_kmh <= max(SpeedConfig.BASE_KMH_BY_TIER.values())
+    assert SpeedConfig.WALK_KMH <= avg_kmh <= SpeedConfig.BASE_KMH_AT_WEIGHT0
 
     # rail route: one station edge (board) → half a wait, route ends on the train (no alight hop)
     rail = build_track(route=make_rail_route())

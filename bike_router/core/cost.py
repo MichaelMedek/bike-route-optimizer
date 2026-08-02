@@ -38,15 +38,25 @@ def _is_missing(value: object) -> bool:
 
 
 def tag_tier(tag: object, tier_map: dict[str, int], default_tier: int) -> int:
-    """Penalty tier for an OSM tag against its tier map: worst (highest) wins.
+    """Discrete COLOUR tier for an OSM tag against its tier map: worst (highest) wins.
 
-    Shared by surface_tier and road_tier. Unknown values in the tag are ignored;
+    Shared by surface_tier and road_tier (drives blue/orange/red). Unknown values ignored;
     an all-unknown / missing tag falls back to ``default_tier``.
     """
     tiers = [tier_map[value] for value in _as_values(tag=tag) if value in tier_map]
     tier = max(tiers) if tiers else default_tier
     assert tier in {0, 1, 2}, "tier must be 0, 1, or 2"
     return tier
+
+
+def tag_weight(tag: object, weight_map: dict[str, float], default_weight: float) -> float:
+    """Continuous COST weight for an OSM tag against its weight map: worst (highest) wins.
+
+    Shared by surface_weight and road_weight (drives cost + speed). Unknown values ignored;
+    an all-unknown / missing tag falls back to ``default_weight``.
+    """
+    weights = [weight_map[value] for value in _as_values(tag=tag) if value in weight_map]
+    return max(weights) if weights else default_weight
 
 
 def tag_included(tag: object, tier_map: dict[str, int]) -> bool:
@@ -62,8 +72,13 @@ def tag_included(tag: object, tier_map: dict[str, int]) -> bool:
 
 
 def surface_tier(surface: object) -> int:
-    """Penalty tier for a surface tag: 0 good, 1 moderate (worst wins; untagged → default)."""
+    """Discrete colour tier for a surface tag: 0 paved, 1|2 unpaved (worst wins; untagged → default)."""
     return tag_tier(tag=surface, tier_map=SurfaceConfig.SURFACE_TIER, default_tier=SurfaceConfig.DEFAULT_TIER)
+
+
+def surface_weight(surface: object) -> float:
+    """Continuous cost weight for a surface tag (Crr-ordered; worst wins; untagged → default)."""
+    return tag_weight(tag=surface, weight_map=SurfaceConfig.SURFACE_WEIGHT, default_weight=SurfaceConfig.DEFAULT_WEIGHT)
 
 
 def surface_included(surface: object) -> bool:
@@ -72,8 +87,13 @@ def surface_included(surface: object) -> bool:
 
 
 def road_tier(highway: object) -> int:
-    """Penalty tier for a highway tag: 0 quiet, 1 main road (worst wins; untagged → default)."""
+    """Discrete colour tier for a highway tag: 0 quiet, 1 main road (worst wins; untagged → default)."""
     return tag_tier(tag=highway, tier_map=RoadConfig.ROAD_TIER, default_tier=RoadConfig.DEFAULT_TIER)
+
+
+def road_weight(highway: object) -> float:
+    """Continuous cost weight for a highway tag (LTS-ordered; worst wins; untagged → default)."""
+    return tag_weight(tag=highway, weight_map=RoadConfig.ROAD_WEIGHT, default_weight=RoadConfig.DEFAULT_WEIGHT)
 
 
 def road_included(highway: object) -> bool:
@@ -92,15 +112,15 @@ def edge_cost_array(*, edges_df: pd.DataFrame, elev_by_osmid: dict[int, float], 
     length_km = length / mpk
     from_elev = edges_df["from_node"].map(elev_by_osmid).to_numpy(dtype=np.float64)
     to_elev = edges_df["to_node"].map(elev_by_osmid).to_numpy(dtype=np.float64)
-    s_tier = edges_df["surface"].map(surface_tier).to_numpy(dtype=np.float64)
-    r_tier = edges_df["highway"].map(road_tier).to_numpy(dtype=np.float64)
+    s_weight = edges_df["surface"].map(surface_weight).to_numpy(dtype=np.float64)
+    r_weight = edges_df["highway"].map(road_weight).to_numpy(dtype=np.float64)
 
     climb_m = np.maximum(to_elev - from_elev, 0.0)  # uphill only; downhill = 0
     bike_cost = (
         length
         + (climb_m / CostConfig.UPHILL_REFERENCE_M) * params.extra_km_per_uphill_100m * mpk
-        + s_tier * params.extra_km_per_unpaved_km * length_km * mpk
-        + r_tier * params.extra_km_per_main_road_km * length_km * mpk
+        + s_weight * params.extra_km_per_unpaved_km * length_km * mpk
+        + r_weight * params.extra_km_per_main_road_km * length_km * mpk
     )
     rail_cost = length + params.extra_km_per_rail_km * length_km * mpk
     # Half the boarding charge per station edge: entry + exit sum to one full boarding.
