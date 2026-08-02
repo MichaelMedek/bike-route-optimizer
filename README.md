@@ -103,9 +103,6 @@ python scripts/build_dach_graph.py --only karlsruhe-regbez --bbox 8.30 48.40 8.8
 # full DACH (~5 GB, hours; output dir must be empty). Detached + no-sleep, logs to build_dach.log:
 nohup caffeinate -s .venv/bin/python -u scripts/build_dach_graph.py > build_dach.log 2>&1 &
 
-# post-process (~15-20 min): flag bike edges whose baked terrain deviates from the node-to-node line, so the router penalizes them. Detached + no-sleep, logs to flag_unreliable.log:
-nohup caffeinate -s .venv/bin/python -u scripts/flag_unreliable_elevation.py > flag_unreliable.log 2>&1 &
-
 # publish the finished graph to Hugging Face (separate step; log in once when prompted)
 python scripts/upload_graph_to_huggingface.py
 ```
