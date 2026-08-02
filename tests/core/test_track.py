@@ -14,6 +14,9 @@ from bike_router.core.track import (
     RouteStats,
     Track,
     TrackPoint,
+    _bike_leg_profile,
+    _polyline_cumulative_m,
+    _split_bike_legs,
     _track_point,
     build_track,
     classify_condition,
@@ -29,14 +32,17 @@ from bike_router.core.track import (
     grade_color,
     leg_km,
     project_markers_onto_track,
+    resampled_climb_totals,
     segment_color,
     track_has_unreliable_elevation,
+    windowed_climb,
 )
 from tests.conftest import (
     make_condition_route,
     make_densify_detour_route,
     make_exchange_rail_route,
     make_line_route,
+    make_mixed_mode_route,
     make_rail_route,
 )
 
@@ -158,6 +164,92 @@ def test_climb_totals():
     up, down = climb_totals(deltas=[+30.0, -10.0, +5.0, -25.0])  # rolling hills, net 0
     assert up == 35.0 and down == 35.0
     assert climb_totals(deltas=[]) == (0.0, 0.0)
+
+
+def test_resampled_climb_totals():
+    # Resampling a fine sawtooth onto a coarse window sheds the sub-window wiggle, keeping the real hill.
+    # A pure 0→100 ramp is preserved; a flat series → 0; a series shorter than 2 pts → (0,0).
+    cum = np.linspace(0.0, 1000.0, 101)
+    ramp = np.linspace(0.0, 100.0, 101)  # steady 100 m climb over 1 km
+    up, down = resampled_climb_totals(cum_dist=cum, z=ramp, window_m=200.0)
+    assert up == pytest.approx(100.0) and down == pytest.approx(0.0)  # ramp survives resampling
+
+    # A ±5 m sawtooth riding ON the ramp: raw sum ≫ 100, but a 200 m window keeps ~the ramp only.
+    saw = ramp + 5.0 * np.sign(np.sin(np.arange(101) * 2.0))
+    raw_up = float(np.diff(saw)[np.diff(saw) > 0].sum())
+    win_up, _ = resampled_climb_totals(cum_dist=cum, z=saw, window_m=200.0)
+    assert win_up < raw_up and win_up == pytest.approx(100.0, abs=15.0)  # sawtooth largely shed
+
+    assert resampled_climb_totals(cum_dist=np.array([0.0]), z=np.array([5.0]), window_m=200.0) == (0.0, 0.0)
+
+
+def test_resampled_climb_totals_descent_and_hill():
+    # Descent is booked symmetrically to ascent; over a symmetric hill (up then down to start) the
+    # resampled ascent and descent match, and a monotone drop books pure descent, zero ascent.
+    cum = np.linspace(0.0, 2000.0, 201)
+    hill = np.concatenate([np.linspace(0.0, 80.0, 101), np.linspace(80.0, 0.0, 100)])  # up 80, down 80
+    up, down = resampled_climb_totals(cum_dist=cum, z=hill, window_m=200.0)
+    assert up == pytest.approx(down, abs=1.0) and up == pytest.approx(80.0, abs=10.0)
+
+    drop = np.linspace(50.0, 0.0, 201)  # steady descent only
+    up2, down2 = resampled_climb_totals(cum_dist=cum, z=drop, window_m=200.0)
+    assert up2 == pytest.approx(0.0) and down2 == pytest.approx(50.0)
+
+
+def test_polyline_cumulative_m():
+    # Cumulative along-polyline distance: starts at 0, monotone non-decreasing; a single vertex → [0.0].
+    xy = np.array([[8.0, 48.0], [8.01, 48.0], [8.02, 48.0]], dtype=float)
+    cum = _polyline_cumulative_m(xy=xy)
+    assert cum[0] == 0.0 and len(cum) == 3 and np.all(np.diff(cum) > 0)
+    assert cum[2] == pytest.approx(2 * cum[1])  # equal spacing → cumulative doubles at the far vertex
+    assert list(_polyline_cumulative_m(xy=np.array([[8.0, 48.0]]))) == [0.0]  # single vertex
+
+
+def test_split_bike_legs():
+    # Contiguous bike runs + each rail/station hop's node delta; a train gap splits the bike run in two.
+    route = make_mixed_mode_route(sequence=[(1, 2, Mode.BIKE), (2, 3, Mode.STATION), (3, 4, Mode.RAIL)])
+    legs, nonbike = _split_bike_legs(route=route)
+    assert len(legs) == 1 and len(legs[0]) == 1  # one bike leg (edge 1→2); rail/station are not bike
+    assert len(nonbike) == 2  # the station and rail hops each contribute one node delta
+
+    all_bike, none = _split_bike_legs(route=make_line_route())
+    assert len(all_bike) == 1 and len(all_bike[0]) == 2 and none == []  # pure bike → one leg, no gaps
+
+
+def test_bike_leg_profile():
+    # Concatenates a contiguous bike leg's REAL baked terrain into (cum_dist, z), joining at shared
+    # vertices so the last z of one edge is not duplicated as the first of the next.
+    route = make_line_route()  # 3 bike nodes, 2 edges, baked geometry_z present
+    leg = list(route.iter_edges())
+    cum, z = _bike_leg_profile(leg_edges=leg)
+    assert len(cum) == len(z) and cum[0] == 0.0 and np.all(np.diff(cum) >= 0)  # monotone cumulative distance
+    # z starts/ends at the leg's node elevations (baked endpoints coincide with node elevations)
+    assert z[0] == pytest.approx(route.nodes[0].elevation_m)
+    assert z[-1] == pytest.approx(route.nodes[-1].elevation_m)
+
+
+def test_windowed_climb():
+    # An all-bike route puts ALL climb in the bike totals and nothing in non-bike; the line route
+    # (100→130→100) yields +30 bike ascent / -30 bike descent via the (geometry-less) node profile.
+    bike_up, bike_down, non_up, non_down = windowed_climb(route=make_line_route(), window_m=200.0)
+    assert bike_up == pytest.approx(30.0) and bike_down == pytest.approx(30.0)
+    assert non_up == 0.0 and non_down == 0.0  # no rail/station leg → no non-bike climb
+
+    # A rail leg routes its node-delta climb into the NON-bike totals, never the bike ones, and splits
+    # the bike legs around it. make_rail_route has bike→station→rail→station→bike with elevation changes.
+    b_up, b_down, n_up, n_down = windowed_climb(route=make_rail_route(), window_m=200.0)
+    assert (b_up, b_down, n_up, n_down) == tuple(round(v, 6) for v in (b_up, b_down, n_up, n_down))  # finite
+    assert b_up >= 0 and n_up >= 0  # both buckets non-negative; rail climb kept separate from bike
+
+
+def test_windowed_climb_splits_bike_legs_at_train_gap():
+    # REGRESSION: a train gap must SPLIT bike legs so the altitude the train covers is never booked as
+    # bike climb. Two bike legs separated by a rail hop, each flat internally but at different altitudes:
+    # the big step across the train must land in non-bike, with ~0 bike climb.
+    route = make_mixed_mode_route(sequence=[(1, 2, Mode.BIKE), (2, 3, Mode.STATION), (3, 4, Mode.RAIL)])
+    b_up, b_down, _n_up, _n_down = windowed_climb(route=route, window_m=200.0)
+    # every node is at the same elevation in this fixture, so bike legs contribute no phantom climb
+    assert b_up == pytest.approx(0.0) and b_down == pytest.approx(0.0)
 
 
 # --- grade / condition / speed (single branch points) ------------------------
@@ -313,16 +405,42 @@ def test_build_track():
 
 
 def test_edge_vertices_3d():
-    # Real 2D polyline with elevation interpolated LINEARLY node-to-node by along-edge distance;
-    # a geometry-less hop is a straight two-node segment at the node elevations.
+    # A BIKE edge with baked geometry_z uses the REAL terrain z (hugs the ground); without baked z, or
+    # for a rail/station edge, z falls back to LINEAR node-to-node; a geometry-less hop is a straight seg.
     node_a = RouteNode(osmid=1, lat=48.0, lon=8.0, elevation_m=100.0, node_type=NodeType.BIKE, station_name=None)
     node_b = RouteNode(osmid=2, lat=48.0, lon=8.02, elevation_m=200.0, node_type=NodeType.BIKE, station_name=None)
     geom = [(8.0, 48.0), (8.01, 48.0), (8.02, 48.0)]  # straight, midpoint halfway
-    edge = RouteEdge(
+    # bike + baked z dipping to 60 at the midpoint → the real z is used verbatim (NOT linear 150)
+    real = RouteEdge(
+        from_node=1,
+        to_node=2,
+        mode=Mode.BIKE,
+        length_m=1500.0,
+        surface="asphalt",
+        highway="residential",
+        geometry=geom,
+        geometry_z=[100.0, 60.0, 200.0],
+    )
+    assert [round(z) for _x, _y, z in edge_vertices_3d(node_a=node_a, node_b=node_b, edge=real)] == [100, 60, 200]
+
+    # bike WITHOUT baked z → linear 100→150→200
+    no_z = RouteEdge(
         from_node=1, to_node=2, mode=Mode.BIKE, length_m=1500.0, surface="asphalt", highway="residential", geometry=geom
     )
-    verts = edge_vertices_3d(node_a=node_a, node_b=node_b, edge=edge)
-    assert [round(z) for _x, _y, z in verts] == [100, 150, 200]  # linear z 100→150→200
+    assert [round(z) for _x, _y, z in edge_vertices_3d(node_a=node_a, node_b=node_b, edge=no_z)] == [100, 150, 200]
+
+    # a RAIL edge with baked z still interpolates LINEARLY (trains tunnel/bridge — no terrain hug)
+    rail_geom = RouteEdge(
+        from_node=1,
+        to_node=2,
+        mode=Mode.RAIL,
+        length_m=1500.0,
+        surface=None,
+        highway=None,
+        geometry=geom,
+        geometry_z=[100.0, 60.0, 200.0],
+    )
+    assert [round(z) for _x, _y, z in edge_vertices_3d(node_a=node_a, node_b=node_b, edge=rail_geom)] == [100, 150, 200]
 
     straight = RouteEdge(
         from_node=1, to_node=2, mode=Mode.RAIL, length_m=1500.0, surface=None, highway=None, geometry=None

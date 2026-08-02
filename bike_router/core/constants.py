@@ -254,7 +254,7 @@ class Palette:
     RAIL = "#9600c8"  # purple — trains only
     START = "#0096ff"  # blue — start marker
     END = "#00e5ff"  # cyan — destination marker
-    GRAY = "#8a8a8a"  # edge whose displayed elevation is unreliable (long-edge interpolation warning)
+    GRAY = "#8a8a8a"  # edge whose baked terrain strays far from the router's node-to-node line
 
     # Route-segment CONDITION → hex, the road-QUALITY scale (3 bike colours + train purple).
     # "main road + unpaved" folds into the main-road red (a main road is the dominant hazard).
@@ -501,6 +501,10 @@ class GradeConfig:
 
     MARGIN = 0.02  # rise/run: |grade| BELOW this reads as flat (so only ~-1/0/+1% is flat, ≥2% slopes)
     ELEVATION_DEVIATION_WARN_M = 50.0  # warn the user and gray that edge if below or above the ground
+    # Rolling-window length (m) the displayed ascent/descent stats resample the REAL bike terrain onto,
+    # to shed DEM coastline-paradox terracing without erasing real hills. ~7× the ~30 m EuroDEM posting;
+    # corroborated by GraphHopper's 150 m avg / 60 m resample + BRouter ~100 m (see elevation-ascent-research.md).
+    ASCENT_RESAMPLE_WINDOW_M = 200.0
 
 
 class SpeedConfig:

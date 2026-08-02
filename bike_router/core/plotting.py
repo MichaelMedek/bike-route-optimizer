@@ -68,8 +68,8 @@ def _figsize_for_route(*, route_lons: list[float], route_lats: list[float]) -> t
 def _draw_route_overlay(*, axes: Axes, route: RoutePath) -> None:
     """Draw each route edge along its real polyline, coloured by condition (one legend entry each).
 
-    An bike edge whose displayed elevation is unreliable (long-edge interpolation) is drawn gray, matching
-    the app's map warning, so the debug PNG flags the same questionable stretches.
+    A bike edge whose baked terrain strays far from the coarse node-to-node elevation the router used is
+    drawn gray, matching the app's map warning, so the debug PNG flags the same questionable stretches.
     """
     seen_labels: set[str] = set()
     for node_a, node_b, edge in route.iter_edges():

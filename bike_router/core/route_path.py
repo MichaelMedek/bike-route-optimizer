@@ -23,8 +23,8 @@ class RouteNode:
 @dataclass(frozen=True)
 class RouteEdge:
     """One hop on the route, oriented from_node → to_node: mode, length, OSM tags, oriented 2D
-    ``geometry`` (or None for a straight rail/station hop), and ``geometry_z`` (baked per-vertex
-    elevation, same length as geometry, or None) for the elevation-deviation warning.
+    ``geometry`` (or None for a straight rail/station hop), and ``geometry_z`` (baked per-vertex real
+    elevation, same length as geometry, or None) — the terrain a bike edge's display + stats hug.
     """
 
     from_node: int

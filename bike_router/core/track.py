@@ -30,7 +30,7 @@ class TrackPoint:
     road_bad: bool  # pedalled segment on a main road (road tier != 0); False for rail
     grade: float  # signed rise/run of the arriving edge (+ uphill, − downhill); 0 for the start
     speed_kmh: float  # segment speed (bike: adaptive; rail: RAIL_SPEED_KMH) — drives ribbon width
-    unreliable_elev: bool  # arriving edge's displayed elevation deviates far from baked terrain
+    unreliable_elev: bool  # arriving edge's baked terrain strays far from the router's node-to-node line
 
 
 @dataclass(frozen=True)
@@ -132,11 +132,91 @@ def climb_totals(deltas: list[float]) -> tuple[float, float]:
     """(ascent, descent) in metres from per-edge Δelevations: gross up- vs down-sum.
 
     Ascent sums the positive deltas, descent the magnitude of the negative ones (NOT the
-    net change). One source for both the whole-journey and the bike-only climb tallies.
+    net change). Used for the whole-journey tally over non-bike (rail/station) node deltas.
     """
     ascent = sum(d for d in deltas if d > 0)
     descent = sum(-d for d in deltas if d < 0)
     return ascent, descent
+
+
+def resampled_climb_totals(*, cum_dist: np.ndarray, z: np.ndarray, window_m: float) -> tuple[float, float]:
+    """(ascent, descent) of a real elevation series resampled onto a window_m grid over cumulative distance.
+
+    Resampling to a coarser-than-DEM window sheds the coastline-paradox terracing (66-91% of raw gain sits
+    in ≥5 m steps at ~12-24 m spacing) while keeping real hills — see docs/elevation-ascent-research.md.
+    """
+    z = np.asarray(z, dtype=np.float64)
+    if z.size < 2 or cum_dist[-1] <= 0:
+        return 0.0, 0.0
+    n = max(2, int(np.ceil(cum_dist[-1] / window_m)) + 1)
+    grid = np.linspace(0.0, float(cum_dist[-1]), n)
+    zr = np.interp(grid, cum_dist, z)
+    diffs = np.diff(zr)
+    return float(diffs[diffs > 0].sum()), float(-diffs[diffs < 0].sum())
+
+
+def _polyline_cumulative_m(*, xy: np.ndarray) -> np.ndarray:
+    """Cumulative along-polyline distance (m) at each (lon, lat) vertex — the ONE walk-the-polyline step.
+
+    Shared by edge_vertices_3d, edge_elevation_deviation_m, and _bike_leg_profile; a single vertex → [0.0].
+    """
+    if len(xy) < 2:
+        return np.zeros(len(xy))
+    seg = haversine_vec(lat_a=xy[:-1, 1], lon_a=xy[:-1, 0], lat_b=xy[1:, 1], lon_b=xy[1:, 0])
+    return np.concatenate(([0.0], np.cumsum(seg)))
+
+
+def _bike_leg_profile(*, leg_edges: list[tuple[RouteNode, RouteNode, RouteEdge]]) -> tuple[np.ndarray, np.ndarray]:
+    """(cum_dist_m, z) over one contiguous bike leg, concatenating each edge's REAL baked terrain.
+
+    Uses edge_vertices_3d (real geometry_z for bike); the shared join vertex between edges is dropped so
+    it isn't duplicated, and cumulative distance is measured once over the whole concatenated polyline.
+    """
+    verts: list[tuple[float, float, float]] = []
+    for i, (node_a, node_b, edge) in enumerate(leg_edges):
+        edge_verts = edge_vertices_3d(node_a=node_a, node_b=node_b, edge=edge)
+        verts.extend(edge_verts[1:] if i else edge_verts)  # drop the vertex shared with the previous edge
+    arr = np.asarray(verts, dtype=np.float64)
+    return _polyline_cumulative_m(xy=arr[:, :2]), arr[:, 2]
+
+
+def _split_bike_legs(*, route: RoutePath) -> tuple[list[list[tuple[RouteNode, RouteNode, RouteEdge]]], list[float]]:
+    """Contiguous BIKE-edge runs, plus the node-Δelevation of each interleaving rail/station hop.
+
+    A train/station hop ends the current bike leg (its climb is never summed across the gap) and
+    contributes a single node delta; used by windowed_climb to keep bike vs non-bike climb separate.
+    """
+    legs: list[list[tuple[RouteNode, RouteNode, RouteEdge]]] = []
+    nonbike_deltas: list[float] = []
+    current: list[tuple[RouteNode, RouteNode, RouteEdge]] = []
+    for node_a, node_b, edge in route.iter_edges():
+        if edge.mode == Mode.BIKE:
+            current.append((node_a, node_b, edge))
+        else:
+            if current:
+                legs.append(current)
+                current = []
+            nonbike_deltas.append(node_b.elevation_m - node_a.elevation_m)
+    if current:
+        legs.append(current)
+    return legs, nonbike_deltas
+
+
+def windowed_climb(*, route: RoutePath, window_m: float) -> tuple[float, float, float, float]:
+    """(bike_ascent, bike_descent, nonbike_ascent, nonbike_descent) for the whole route.
+
+    Bike ascent/descent is the window-resampled real terrain summed PER contiguous bike leg (never across a
+    train gap); rail/station legs contribute plain node-delta climb (trains tunnel/bridge — no terrain hug).
+    """
+    legs, nonbike_deltas = _split_bike_legs(route=route)
+    bike_up = bike_down = 0.0
+    for leg in legs:
+        cum, z = _bike_leg_profile(leg_edges=leg)
+        up, down = resampled_climb_totals(cum_dist=cum, z=z, window_m=window_m)
+        bike_up += up
+        bike_down += down
+    nonbike_up, nonbike_down = climb_totals(deltas=nonbike_deltas)
+    return bike_up, bike_down, nonbike_up, nonbike_down
 
 
 def edge_grade(*, elev_source: float, elev_target: float, length_m: float) -> float:
@@ -258,18 +338,13 @@ def build_track(route: RoutePath) -> Track:
         )
     ]
     total_m = total_s = 0.0
-    total_deltas: list[float] = []  # Δelevation of EVERY edge (whole-journey climb)
-    bike_deltas: list[float] = []  # Δelevation of pedalled edges only
     bike_m = bike_s = 0.0  # only bike legs feed the avg-speed assert (rail is far faster)
     rail_speed_ms = kmh_to_ms(kmh=RailConfig.RAIL_SPEED_KMH)
 
     for node_a, node_b, edge in route.iter_edges():
         length_m = edge.length_m
-        delta = node_b.elevation_m - node_a.elevation_m
-        total_deltas.append(delta)  # every edge feeds the whole-journey climb (same scope as total_m)
 
         if edge.mode == Mode.BIKE:
-            bike_deltas.append(delta)
             _s, _r, speed_kmh = edge_condition_speed(
                 edge=edge, elev_source=node_a.elevation_m, elev_target=node_b.elevation_m
             )
@@ -306,9 +381,12 @@ def build_track(route: RoutePath) -> Track:
         assert SpeedConfig.WALK_KMH - 1e-9 <= avg_kmh <= SpeedConfig.BASE_KMH_AT_WEIGHT0 + 1e-9, (
             f"implausible average speed {avg_kmh:.1f} km/h"
         )
-    # bike stats = pedalled legs only; total = whole journey (bike + rail climb), matching total_m.
-    bike_ascent, bike_descent = climb_totals(deltas=bike_deltas)
-    total_ascent, total_descent = climb_totals(deltas=total_deltas)
+    # Ascent/descent from the REAL bike terrain (window-resampled per contiguous bike leg) + rail/station
+    # node deltas; bike stats = pedalled legs only, total = whole journey (incl. the climb the train covers).
+    bike_ascent, bike_descent, nonbike_ascent, nonbike_descent = windowed_climb(
+        route=route, window_m=GradeConfig.ASCENT_RESAMPLE_WINDOW_M
+    )
+    total_ascent, total_descent = bike_ascent + nonbike_ascent, bike_descent + nonbike_descent
     bike_stats = RouteStats(
         distance_km=bike_m / GpxConfig.METERS_PER_KM,
         duration_min=bike_s / GpxConfig.SECONDS_PER_HOUR * GpxConfig.MINUTES_PER_HOUR,
@@ -325,34 +403,34 @@ def build_track(route: RoutePath) -> Track:
 
 
 def edge_vertices_3d(*, node_a: RouteNode, node_b: RouteNode, edge: RouteEdge) -> list[tuple[float, float, float]]:
-    """(lon, lat, elev) vertices of an edge: REAL 2D polyline, elevation LINEAR node-to-node.
+    """(lon, lat, elev) vertices of an edge: REAL 2D polyline; z from baked terrain for BIKE, else linear.
 
-    z interpolates between the two node elevations by along-edge distance (the single elevation
-    source the optimiser + stats use); a geometry-less hop (rail/station) is a straight segment.
+    A bike edge uses its baked per-vertex ``geometry_z`` so the profile hugs the real ground; rail/station
+    hops keep LINEAR node-to-node z so tunnels/bridges stay straight (a train's terrain gap is expected).
     """
     ea, eb = node_a.elevation_m, node_b.elevation_m
     if edge.geometry is None:
         return [(node_a.lon, node_a.lat, ea), (node_b.lon, node_b.lat, eb)]
     xy = np.asarray(edge.geometry, dtype=np.float64)  # already oriented a→b, 2D lon/lat
-    seg = haversine_vec(lat_a=xy[:-1, 1], lon_a=xy[:-1, 0], lat_b=xy[1:, 1], lon_b=xy[1:, 0])
-    cum = np.concatenate(([0.0], np.cumsum(seg)))
-    frac = cum / (cum[-1] or 1.0)
-    z = ea + (eb - ea) * frac
+    if edge.mode == Mode.BIKE and edge.geometry_z is not None:
+        z = np.asarray(edge.geometry_z, dtype=np.float64)  # real baked terrain, hugs the ground
+    else:
+        cum = _polyline_cumulative_m(xy=xy)
+        z = ea + (eb - ea) * (cum / (cum[-1] or 1.0))  # linear node-to-node (rail/station, or no baked z)
     return [(float(x), float(y), float(zi)) for (x, y), zi in zip(xy, z, strict=True)]
 
 
 def edge_elevation_deviation_m(*, node_a: RouteNode, node_b: RouteNode, edge: RouteEdge) -> float:
-    """Max |displayed − baked| elevation (m) along an edge — how far the linear display sinks/rises.
+    """Max |node-to-node line − baked terrain| (m) along an edge — how far the router's estimate strays.
 
-    The display interpolates elevation linearly between the two node heights; the graph baked the
+    The router costs each edge on the straight line between the two node heights; the graph baked the
     REAL terrain per vertex in ``edge.geometry_z``. Returns the largest gap; 0 when no baked z.
     """
     if edge.geometry_z is None or edge.geometry is None:
         return 0.0  # straight hop (no baked polyline) → nothing to deviate from; documented dual-state
     ea, eb = node_a.elevation_m, node_b.elevation_m
     xy = np.asarray(edge.geometry, dtype=np.float64)
-    seg = haversine_vec(lat_a=xy[:-1, 1], lon_a=xy[:-1, 0], lat_b=xy[1:, 1], lon_b=xy[1:, 0])
-    cum = np.concatenate(([0.0], np.cumsum(seg)))
+    cum = _polyline_cumulative_m(xy=xy)
     linear_z = ea + (eb - ea) * (cum / (cum[-1] or 1.0))
     baked = np.asarray(edge.geometry_z, dtype=np.float64)
     gaps = np.abs(linear_z - baked)
@@ -361,10 +439,10 @@ def edge_elevation_deviation_m(*, node_a: RouteNode, node_b: RouteNode, edge: Ro
 
 
 def edge_display_unreliable(*, node_a: RouteNode, node_b: RouteNode, edge: RouteEdge) -> bool:
-    """True iff a BIKE edge's displayed elevation deviates beyond GradeConfig.ELEVATION_DEVIATION_WARN_M.
+    """True iff a BIKE edge's baked terrain strays past GradeConfig.ELEVATION_DEVIATION_WARN_M from the line.
 
-    Only bike edges: trains legitimately tunnel/bridge, so a rail edge's linear-vs-baked gap is
-    expected, not a display bug. Non-bike edges are never flagged (no banner, no gray).
+    Only bike edges: trains legitimately tunnel/bridge, so a rail edge's line-vs-baked gap is
+    expected, not a routing concern. Non-bike edges are never flagged (no banner, no gray).
     """
     if edge.mode != Mode.BIKE:
         return False
@@ -372,7 +450,7 @@ def edge_display_unreliable(*, node_a: RouteNode, node_b: RouteNode, edge: Route
 
 
 def track_has_unreliable_elevation(*, track: Track) -> bool:
-    """True iff any track point sits on an edge whose displayed elevation is unreliable (for the banner)."""
+    """True iff any track point sits on an edge whose baked terrain strays far from the line (for the banner)."""
     return any(point.unreliable_elev for point in track.points)
 
 

@@ -170,8 +170,8 @@ GRADE_SCALE = "grade"  # blue flat / red uphill / green downhill
 def _point_color(*, point: TrackPoint, scale: str) -> list[int]:
     """RGB for one point's arriving edge on the chosen scale (both single-sourced in track).
 
-    An edge whose displayed elevation is unreliable (long-edge interpolation) is drawn GRAY on both
-    scales, matching the warning banner, so the questionable stretch stands out on the map.
+    An edge whose baked terrain strays far from the coarse node-to-node elevation the router used is drawn
+    GRAY on both scales, matching the warning banner, so the questionable stretch stands out on the map.
     """
     if point.unreliable_elev:
         return list(Palette.hex_to_rgb(hex_color=Palette.GRAY))

@@ -406,13 +406,10 @@ def render_map(origin: str, destination: str) -> None:
             key="color_scale",
             horizontal=True,
         )
-    # Warn ONE line above the map when a long edge's displayed elevation is unreliable (those edges
-    # also render gray on the map).
+    # Warn ONE line above the map when a long edge's baked terrain strays far from the coarse node-to-node
+    # elevation the router used (those edges also render gray on the map).
     if result is not None and track_has_unreliable_elevation(track=result.track):
-        st.warning(
-            "⚠️ Some long route edges have unreliable displayed elevation (the line is interpolated "
-            "between stops and may dip below the real terrain). Those stretches are shown in gray."
-        )
+        st.warning("⚠️ Gray stretches: the real terrain strays far from the coarse elevation the router used.")
     ribbon = (
         route_ribbon_segments(
             track=result.track,
