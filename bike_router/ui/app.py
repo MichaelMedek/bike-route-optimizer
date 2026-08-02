@@ -36,7 +36,6 @@ from bike_router.core.geocoding import (
 from bike_router.core.graph_store import download_graph_from_hf, load_meta, top_stations
 from bike_router.core.pipeline import RouteResult, plan_route, resolve_endpoints
 from bike_router.core.simplify import format_bike_legs, format_rail_legs, rail_leg_tooltips
-from bike_router.core.track import track_has_unreliable_elevation
 from bike_router.ui.webmap import (
     COMPUTE_LABEL,
     GRADE_SCALE,
@@ -406,10 +405,6 @@ def render_map(origin: str, destination: str) -> None:
             key="color_scale",
             horizontal=True,
         )
-    # Warn ONE line above the map when a long edge's baked terrain strays far from the coarse node-to-node
-    # elevation the router used (those edges also render gray on the map).
-    if result is not None and track_has_unreliable_elevation(track=result.track):
-        st.warning("⚠️ Gray stretches: the real terrain strays far from the coarse elevation the router used.")
     ribbon = (
         route_ribbon_segments(
             track=result.track,

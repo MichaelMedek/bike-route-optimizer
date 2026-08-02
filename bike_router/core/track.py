@@ -30,7 +30,6 @@ class TrackPoint:
     road_bad: bool  # pedalled segment on a main road (road tier != 0); False for rail
     grade: float  # signed rise/run of the arriving edge (+ uphill, − downhill); 0 for the start
     speed_kmh: float  # segment speed (bike: adaptive; rail: RAIL_SPEED_KMH) — drives ribbon width
-    unreliable_elev: bool  # arriving edge's baked terrain strays far from the router's node-to-node line
 
 
 @dataclass(frozen=True)
@@ -158,7 +157,7 @@ def resampled_climb_totals(*, cum_dist: np.ndarray, z: np.ndarray, window_m: flo
 def _polyline_cumulative_m(*, xy: np.ndarray) -> np.ndarray:
     """Cumulative along-polyline distance (m) at each (lon, lat) vertex — the ONE walk-the-polyline step.
 
-    Shared by edge_vertices_3d, edge_elevation_deviation_m, and _bike_leg_profile; a single vertex → [0.0].
+    Shared by edge_vertices_3d and _bike_leg_profile; a single vertex → [0.0].
     """
     if len(xy) < 2:
         return np.zeros(len(xy))
@@ -294,17 +293,13 @@ def grade_color(*, mode: str, grade: float) -> list[int]:
     return list(Palette.hex_to_rgb(hex_color=Palette.GRADE_COLORS[classify_grade(mode=mode, grade=grade)]))
 
 
-def _track_point(
-    *, at: RouteNode, edge: RouteEdge, elev_from: float, elev_to: float, elapsed_s: float, unreliable: bool
-) -> TrackPoint:
+def _track_point(*, at: RouteNode, edge: RouteEdge, elev_from: float, elev_to: float, elapsed_s: float) -> TrackPoint:
     """A TrackPoint at ``at``, carrying ``edge``'s condition/grade/speed — the ONE point builder.
 
     ``elev_from``/``elev_to`` are the edge's elevations in TRAVEL direction (node_a → node_b), so
     grade + speed reflect the direction ridden, not which endpoint the point sits at.
     """
     surface_bad, road_bad, speed_kmh = edge_condition_speed(edge=edge, elev_source=elev_from, elev_target=elev_to)
-    # Invariant: ONLY bike edges may be flagged unreliable (trains legitimately tunnel/bridge).
-    assert not unreliable or edge.mode == Mode.BIKE, f"only bike edges may be unreliable, got {edge.mode!r}"
     return TrackPoint(
         lat=at.lat,
         lon=at.lon,
@@ -315,7 +310,6 @@ def _track_point(
         road_bad=road_bad,
         grade=edge_grade(elev_source=elev_from, elev_target=elev_to, length_m=edge.length_m),
         speed_kmh=speed_kmh,
-        unreliable_elev=unreliable,
     )
 
 
@@ -334,7 +328,6 @@ def build_track(route: RoutePath) -> Track:
             elev_from=first_node.elevation_m,
             elev_to=second_node.elevation_m,
             elapsed_s=0.0,
-            unreliable=edge_display_unreliable(node_a=first_node, node_b=second_node, edge=first_edge),
         )
     ]
     total_m = total_s = 0.0
@@ -368,7 +361,6 @@ def build_track(route: RoutePath) -> Track:
                 elev_from=node_a.elevation_m,
                 elev_to=node_b.elevation_m,
                 elapsed_s=total_s,
-                unreliable=edge_display_unreliable(node_a=node_a, node_b=node_b, edge=edge),
             )
         )
 
@@ -420,40 +412,6 @@ def edge_vertices_3d(*, node_a: RouteNode, node_b: RouteNode, edge: RouteEdge) -
     return [(float(x), float(y), float(zi)) for (x, y), zi in zip(xy, z, strict=True)]
 
 
-def edge_elevation_deviation_m(*, node_a: RouteNode, node_b: RouteNode, edge: RouteEdge) -> float:
-    """Max |node-to-node line − baked terrain| (m) along an edge — how far the router's estimate strays.
-
-    The router costs each edge on the straight line between the two node heights; the graph baked the
-    REAL terrain per vertex in ``edge.geometry_z``. Returns the largest gap; 0 when no baked z.
-    """
-    if edge.geometry_z is None or edge.geometry is None:
-        return 0.0  # straight hop (no baked polyline) → nothing to deviate from; documented dual-state
-    ea, eb = node_a.elevation_m, node_b.elevation_m
-    xy = np.asarray(edge.geometry, dtype=np.float64)
-    cum = _polyline_cumulative_m(xy=xy)
-    linear_z = ea + (eb - ea) * (cum / (cum[-1] or 1.0))
-    baked = np.asarray(edge.geometry_z, dtype=np.float64)
-    gaps = np.abs(linear_z - baked)
-    finite = gaps[np.isfinite(gaps)]
-    return float(finite.max()) if finite.size else 0.0
-
-
-def edge_display_unreliable(*, node_a: RouteNode, node_b: RouteNode, edge: RouteEdge) -> bool:
-    """True iff a BIKE edge's baked terrain strays past GradeConfig.ELEVATION_DEVIATION_WARN_M from the line.
-
-    Only bike edges: trains legitimately tunnel/bridge, so a rail edge's line-vs-baked gap is
-    expected, not a routing concern. Non-bike edges are never flagged (no banner, no gray).
-    """
-    if edge.mode != Mode.BIKE:
-        return False
-    return edge_elevation_deviation_m(node_a=node_a, node_b=node_b, edge=edge) > GradeConfig.ELEVATION_DEVIATION_WARN_M
-
-
-def track_has_unreliable_elevation(*, track: Track) -> bool:
-    """True iff any track point sits on an edge whose baked terrain strays far from the line (for the banner)."""
-    return any(point.unreliable_elev for point in track.points)
-
-
 def densify_track(route: RoutePath, track: Track) -> Track:
     """Expand the node-level track into the full 3D road polyline (no DEM at inference).
 
@@ -487,7 +445,6 @@ def densify_track(route: RoutePath, track: Track) -> Track:
                     road_bad=leg_point.road_bad,
                     grade=leg_point.grade,
                     speed_kmh=leg_point.speed_kmh,
-                    unreliable_elev=leg_point.unreliable_elev,
                 )
             )
             if i < len(seg_lengths):
