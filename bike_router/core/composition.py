@@ -7,11 +7,8 @@ Built once from the Track, consumed identically by the Streamlit donuts, PNG ove
 from collections.abc import Callable
 from dataclasses import dataclass
 
-import numpy as np
-
 from bike_router.core.constants import Condition, Grade, Mode, Palette, WebMapConfig
-from bike_router.core.geo import haversine_vec
-from bike_router.core.track import Track, TrackPoint, classify_condition, classify_grade
+from bike_router.core.track import Track, TrackPoint, classify_condition, classify_grade, leg_km
 
 # The three donut label→hex-colour maps, each from a single Palette/config source (no re-typed labels).
 _QUALITY_LABELS = (Condition.GOOD, Condition.UNPAVED, Condition.MAIN_ROAD)
@@ -44,14 +41,12 @@ class RouteComposition:
 def _leg_km_by(*, track: Track, bucket_of: Callable[[TrackPoint], str], bike_only: bool) -> dict[str, float]:
     """Great-circle km per bucket over the track's legs; ``bike_only`` skips non-bike points.
 
-    Each point (after the first) is one edge's far end; its leg is the great-circle gap from the
-    previous point (vectorized). One walk serves the quality, grade AND mode breakdowns (no duplication).
+    Each point (after the first) is one edge's far end; its leg km comes from the shared leg_km. One
+    walk serves the quality, grade AND mode breakdowns (no duplication).
     """
-    lats = np.array([p.lat for p in track.points], dtype=np.float64)
-    lons = np.array([p.lon for p in track.points], dtype=np.float64)
-    leg_km = haversine_vec(lat_a=lats[:-1], lon_a=lons[:-1], lat_b=lats[1:], lon_b=lons[1:]) / 1000.0
+    leg_kms = leg_km(points=track.points)
     by_km: dict[str, float] = {}
-    for point, km in zip(track.points[1:], leg_km, strict=True):
+    for point, km in zip(track.points[1:], leg_kms, strict=True):
         if bike_only and point.mode != str(Mode.BIKE):
             continue
         bucket = bucket_of(point)

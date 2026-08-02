@@ -165,6 +165,20 @@ def photon_label(properties: dict[str, object]) -> str:
     return ", ".join(part for part in parts if part)
 
 
+def _photon_query(*, url: str, params: HttpParams, http_get: HttpGetter) -> list[dict[str, object]]:
+    """GET a Photon endpoint and return its GeoJSON ``features`` (empty on ANY network/parse error).
+
+    The ONE Photon call site — the search + reverse helpers share it, so error tolerance and the
+    features extraction live in a single place. A per-keystroke/per-marker lookup must never crash.
+    """
+    try:
+        payload = http_get(url=url, params=params, timeout=PhotonConfig.TIMEOUT_S)
+    except requests.RequestException as exc:
+        logger.info(f"Photon request to {url} failed — no results ({exc})")
+        return []
+    return list(payload["features"])  # type: ignore[index]  # a well-formed Photon reply always has it
+
+
 def _photon_features(
     *,
     term: str,
@@ -175,8 +189,7 @@ def _photon_features(
 ) -> list[dict[str, object]]:
     """Raw Photon GeoJSON features for a typed term, biased to ``bbox`` (empty on blank/any error).
 
-    The ONE Photon query; ``photon_autocomplete`` maps these to labels, the station pick reads their
-    geometry for exact coordinates. A per-keystroke typeahead must never crash, so all errors → [].
+    ``photon_autocomplete`` maps these to labels; the station pick reads their geometry for exact coords.
 
     Args:
         term: The partial text the user has typed.
@@ -197,12 +210,7 @@ def _photon_features(
         "lon": (west + east) / 2.0,  # centre bias so nearer places rank first
         "lat": (south + north) / 2.0,
     }
-    try:
-        payload = http_get(url=PhotonConfig.BASE_URL, params=params, timeout=PhotonConfig.TIMEOUT_S)
-    except requests.RequestException as exc:  # ONLY the genuine network/HTTP failure
-        logger.info(f"Photon autocomplete failed for {term!r} — offering no suggestions ({exc})")
-        return []
-    return list(payload["features"])  # type: ignore[index]  # a well-formed Photon reply always has it
+    return _photon_query(url=PhotonConfig.BASE_URL, params=params, http_get=http_get)
 
 
 def photon_autocomplete(
@@ -314,12 +322,5 @@ def nearest_place_name(*, lat: float, lon: float, http_get: HttpGetter) -> str |
         "limit": 1,
     }
     reverse_url = PhotonConfig.BASE_URL.removesuffix("/api") + "/reverse"
-    try:
-        payload = http_get(url=reverse_url, params=params, timeout=PhotonConfig.TIMEOUT_S)
-    except requests.RequestException as exc:
-        logger.info(f"Photon reverse lookup failed at ({lat:.4f}, {lon:.4f}) — no name ({exc})")
-        return None
-    features = payload["features"]  # type: ignore[index]
-    if not features:
-        return None
-    return _feature_name(features[0]) or None
+    features = _photon_query(url=reverse_url, params=params, http_get=http_get)
+    return (_feature_name(features[0]) or None) if features else None

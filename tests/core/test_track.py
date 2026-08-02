@@ -27,6 +27,7 @@ from bike_router.core.track import (
     edge_grade,
     edge_vertices_3d,
     grade_color,
+    leg_km,
     project_markers_onto_track,
     segment_color,
     track_has_unreliable_elevation,
@@ -121,6 +122,14 @@ class TestTrack:
 
 
 # --- distance / climb --------------------------------------------------------
+
+
+def test_leg_km():
+    # Per-consecutive-point great-circle km (length n-1); cumulative_km is its running sum.
+    track = build_track(route=make_line_route())
+    legs = leg_km(points=track.points)
+    assert len(legs) == len(track.points) - 1 and all(km > 0 for km in legs)
+    assert cumulative_km(points=track.points)[-1] == pytest.approx(float(sum(legs)))  # cumsum == Σ legs
 
 
 def test_cumulative_km():

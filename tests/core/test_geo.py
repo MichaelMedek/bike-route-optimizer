@@ -3,7 +3,7 @@
 import numpy as np
 
 from bike_router.core.constants import GeoConfig
-from bike_router.core.geo import haversine_distance_m, haversine_vec
+from bike_router.core.geo import haversine_distance_m, haversine_vec, nearest_index
 
 
 def test_haversine_vec():
@@ -34,6 +34,15 @@ def test_haversine_distance_m():
     assert isinstance(d, float) and d > 0
     assert d == float(haversine_vec(lat_a=48.0, lon_a=8.0, lat_b=49.0, lon_b=9.0))
     assert haversine_distance_m(lat_a=48.0, lon_a=8.0, lat_b=48.0, lon_b=8.0) == 0.0
+
+
+def test_nearest_index():
+    # Index of the closest (lats, lons) point by great-circle distance — the shared snap primitive.
+    lats = np.array([48.0, 48.5, 49.0], dtype=np.float64)
+    lons = np.array([8.0, 8.5, 9.0], dtype=np.float64)
+    assert nearest_index(lat=48.52, lon=8.48, lats=lats, lons=lons) == 1  # closest to the middle point
+    assert nearest_index(lat=48.0, lon=8.0, lats=lats, lons=lons) == 0  # exact match → its own index
+    assert nearest_index(lat=60.0, lon=20.0, lats=lats, lons=lons) == 2  # far NE → the last (nearest) point
 
 
 def test_haversine_quarter_and_half_circumference():

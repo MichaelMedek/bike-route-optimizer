@@ -25,7 +25,7 @@ from bike_router.core.constants import (
     SurfaceLabel,
     WebMapConfig,
 )
-from bike_router.core.geo import haversine_vec
+from bike_router.core.geo import haversine_vec, nearest_index
 from bike_router.core.geocoding import as_bahnhof, latlon_box_value
 from bike_router.core.simplify import place_label, route_station_markers  # place_label re-exported for the app shell
 from bike_router.core.track import (
@@ -514,7 +514,7 @@ def map_waypoint_markers(
     plats = np.array([p.lat for p in points], dtype=np.float64)
     plons = np.array([p.lon for p in points], dtype=np.float64)
     for lat, lon, name in _named_waypoints(waypoints=result.waypoints, village_of=village_of):
-        idx = int(haversine_vec(lat_a=lat, lon_a=lon, lat_b=plats, lon_b=plons).argmin())
+        idx = nearest_index(lat=lat, lon=lon, lats=plats, lons=plons)
         elev = points[idx].elevation_m
         markers.append((lat, lon, elev, place_label(name=name, elevation_m=elev)))
     return markers

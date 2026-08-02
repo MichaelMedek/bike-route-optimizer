@@ -30,6 +30,7 @@ from bike_router.core.geocoding import (
     autocomplete_with_stations,
     box_display_label,
     default_http_get,
+    latlon_box_value,
     nearest_place_name,
 )
 from bike_router.core.graph_store import download_graph_from_hf, load_meta, top_stations
@@ -241,7 +242,7 @@ def capture_gps() -> None:
         st.toast("Couldn't read your location (permission denied or unavailable).", icon="⚠️")
         return
     lat, lon, accuracy = coords["latitude"], coords["longitude"], coords.get("accuracy", 0.0)
-    st.session_state._pending_start = f"{lat:.5f}, {lon:.5f}"
+    st.session_state._pending_start = latlon_box_value(lat=lat, lon=lon, name=None)  # same box-coord format as picks
     st.toast(f"📍 Location set as Start (±{accuracy:.0f} m accuracy).", icon="📍")
     logger.info(f"GPS fix → Start box {st.session_state._pending_start!r} (±{accuracy:.0f} m)")
     st.rerun()

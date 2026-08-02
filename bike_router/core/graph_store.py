@@ -20,7 +20,7 @@ from shapely.geometry import Polygon, box
 from bike_router.core.constants import GraphConfig, Mode, NodeType, RailConfig, RoutingParams, Schema
 from bike_router.core.cost import edge_cost_array
 from bike_router.core.errors import OutOfCoverageError
-from bike_router.core.geo import haversine_vec
+from bike_router.core.geo import haversine_vec, nearest_index
 from bike_router.core.progress import ProgressFn
 from bike_router.core.route_path import RouteEdge, RouteNode, RoutePath
 
@@ -362,8 +362,7 @@ def snap_to_node(lat: float, lon: float, graph_dir: Path) -> tuple[float, float,
         raise OutOfCoverageError(f"No routable graph near ({lat:.4f}, {lon:.4f}) — outside the covered region.")
     lats = nodes_df["lat"].to_numpy()
     lons = nodes_df["lon"].to_numpy()
-    dists = haversine_vec(lat_a=lat, lon_a=lon, lat_b=lats, lon_b=lons)  # shared vectorized great-circle
-    row = nodes_df.iloc[int(dists.argmin())]
+    row = nodes_df.iloc[nearest_index(lat=lat, lon=lon, lats=lats, lons=lons)]  # shared nearest-point snap
     return float(row["lat"]), float(row["lon"]), float(row["elevation_m"])
 
 

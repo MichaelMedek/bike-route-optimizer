@@ -10,7 +10,7 @@ import numpy as np
 
 from bike_router.core.constants import Condition, GpxConfig, Grade, GradeConfig, Mode, Palette, RailConfig, SpeedConfig
 from bike_router.core.cost import road_tier, surface_tier, surface_weight
-from bike_router.core.geo import haversine_vec
+from bike_router.core.geo import haversine_vec, nearest_index
 from bike_router.core.route_path import RouteEdge, RouteNode, RoutePath
 from bike_router.core.speed import effective_speed_kmh, kmh_to_ms
 
@@ -90,16 +90,24 @@ class Track:
     total: RouteStats
 
 
-def cumulative_km(points: "list[TrackPoint]") -> "np.ndarray":
-    """Cumulative great-circle distance (km) at each track point — the ONE distance axis.
+def leg_km(points: "list[TrackPoint]") -> "np.ndarray":
+    """Great-circle km of each consecutive-point leg (length n-1) — the ONE per-leg distance.
 
-    Shared by the elevation profile (x-axis) and marker projection so both read the same
-    km. Vectorized haversine over consecutive points; point 0 is at 0 km.
+    Shared by cumulative_km (the profile x-axis) and the composition km breakdowns, so both slice
+    the route the exact same way. Vectorized haversine over consecutive points.
     """
     lats = np.array([p.lat for p in points], dtype=np.float64)
     lons = np.array([p.lon for p in points], dtype=np.float64)
-    step_km = haversine_vec(lat_a=lats[:-1], lon_a=lons[:-1], lat_b=lats[1:], lon_b=lons[1:]) / 1000.0
-    return np.concatenate(([0.0], np.cumsum(step_km)))
+    return haversine_vec(lat_a=lats[:-1], lon_a=lons[:-1], lat_b=lats[1:], lon_b=lons[1:]) / 1000.0
+
+
+def cumulative_km(points: "list[TrackPoint]") -> "np.ndarray":
+    """Cumulative great-circle distance (km) at each track point — the ONE distance axis.
+
+    Shared by the elevation profile (x-axis) and marker projection so both read the same km;
+    point 0 is at 0 km. Sums the per-leg distances from leg_km (the single per-leg source).
+    """
+    return np.concatenate(([0.0], np.cumsum(leg_km(points=points))))
 
 
 def project_markers_onto_track(
@@ -115,7 +123,7 @@ def project_markers_onto_track(
     plons = np.array([p.lon for p in track.points], dtype=np.float64)
     placed: list[tuple[float, float, str]] = []
     for lat, lon, label in markers:
-        idx = int(haversine_vec(lat_a=lat, lon_a=lon, lat_b=plats, lon_b=plons).argmin())
+        idx = nearest_index(lat=lat, lon=lon, lats=plats, lons=plons)
         placed.append((float(dists[idx]), track.points[idx].elevation_m, label))
     return placed
 

@@ -19,7 +19,7 @@ from matplotlib.ticker import MaxNLocator  # noqa: E402
 
 from bike_router.core.composition import RouteComposition, format_composition  # noqa: E402
 from bike_router.core.constants import ELEVATION_AXIS_LABEL, PLOT_BG, Palette, PlotConfig, RoutingParams  # noqa: E402
-from bike_router.core.geo import haversine_vec  # noqa: E402
+from bike_router.core.geo import nearest_index  # noqa: E402
 from bike_router.core.route_path import RoutePath  # noqa: E402
 from bike_router.core.track import (  # noqa: E402
     Track,
@@ -106,7 +106,7 @@ def _marker_node_indices(*, route: RoutePath, marker_points: list[tuple[float, f
     plons = np.array([n.lon for n in route.nodes], dtype=np.float64)
     idxs = {0, len(route.nodes) - 1}
     for lat, lon in marker_points:
-        idxs.add(int(haversine_vec(lat_a=lat, lon_a=lon, lat_b=plats, lon_b=plons).argmin()))
+        idxs.add(nearest_index(lat=lat, lon=lon, lats=plats, lons=plons))
     return sorted(idxs)
 
 

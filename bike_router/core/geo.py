@@ -35,3 +35,12 @@ def haversine_distance_m(lat_a: float, lon_a: float, lat_b: float, lon_b: float)
     distance = float(haversine_vec(lat_a=lat_a, lon_a=lon_a, lat_b=lat_b, lon_b=lon_b))
     assert distance >= 0, "distance must be non-negative"
     return distance
+
+
+def nearest_index(*, lat: float, lon: float, lats: "npt.NDArray[np.float64]", lons: "npt.NDArray[np.float64]") -> int:
+    """Index of the (lats, lons) point closest to (lat, lon) by great-circle distance — the ONE snap.
+
+    Shared everywhere a query point snaps to a node/track array (marker projection, PNG markers,
+    endpoint/waypoint snapping, graph node snap), so the nearest-point rule lives in a single place.
+    """
+    return int(haversine_vec(lat_a=lat, lon_a=lon, lat_b=lats, lon_b=lons).argmin())
