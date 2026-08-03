@@ -424,14 +424,14 @@ PARAM_SPECS = (
         field="extra_km_per_uphill_100m",
         label="Hill avoidance (extra km per 100 m climb)",
         help="How far out of your way you'd ride to dodge 100 m of climbing. 0 = shortest route, ignore hills; higher = detour to stay flat.",
-        default=14.0,
+        default=12.0,
         abbrev=Grade.UPHILL,
     ),
     RoutingParamSpec(
         field="extra_km_per_unpaved_km",
         label="Unpaved avoidance (extra km per unpaved km)",
         help="Extra km you'd ride to swap 1 km of gravel/dirt for pavement. 0 = don't avoid unpaved; higher = detour to stay paved.",
-        default=1.0,
+        default=3.0,
         abbrev="unpaved",
     ),
     RoutingParamSpec(
