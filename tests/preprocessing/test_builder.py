@@ -235,6 +235,19 @@ def test_dedup_true_duplicate_edge_dropped_after_repoint():
     assert len(ke) == 1 and list(ke["from_node"]) == [0] and list(ke["to_node"]) == [1]
 
 
+def test_dedup_drops_bike_self_loop_created_by_repoint():
+    # REGRESSION: a short bike edge whose two endpoints coincide (round to the same node) repoints to
+    # u→u — a routing no-op with a degenerate elevation band. It MUST be dropped (rail loop is kept).
+    g = "LINESTRING (8.0 48.0, 8.0 48.0)"
+    nodes = _nodes([(0, 48.0, 8.0), (1, 48.0, 8.0)])  # 0 and 1 coincide → 1 repoints to 0
+    edges = _edges([(0, 1, 0, "bike", g), (0, 1, 1, "rail", g)])
+    kn, ke = dedup_by_geometry(nodes_df=nodes, edges_df=edges)
+    assert sorted(kn["osmid"]) == [0]  # coincident pair → one node
+    modes = list(ke["mode"])
+    assert "bike" not in modes  # bike self-loop dropped
+    assert "rail" in modes  # rail self-loop kept (harmless)
+
+
 def test_dedup_null_geometry_edges_dedup_on_endpoints_and_mode():
     # Null-geometry hops (rail/station) with the SAME endpoints+mode collapse; a DIFFERENT mode
     # between the same nodes is kept (station vs rail are distinct edges).
@@ -273,11 +286,12 @@ def test_dedup_bike_and_rail_at_same_coord_NOT_merged():
 
 def test_dedup_same_type_at_same_coord_still_merges():
     # The node_type key must NOT over-separate: two BIKE nodes at one coord still collapse to one.
+    # The edge between them repoints to 0→0 — a zero-length bike self-loop, which is then DROPPED.
     nodes = _typed_nodes([(0, 48.0, 8.0, "bike"), (1, 48.0, 8.0, "bike")])
     edges = _edges([(1, 0, 0, "bike", None)])
     kn, ke = dedup_by_geometry(nodes_df=nodes, edges_df=edges)
     assert list(kn["osmid"]) == [0]  # merged to the lower id
-    assert list(ke["from_node"]) == [0] and list(ke["to_node"]) == [0]  # edge repointed onto survivor
+    assert len(ke) == 0  # the collapsed bike self-loop is dropped (routing no-op)
 
 
 def test_dedup_two_rail_at_same_coord_merge_but_not_with_bike():

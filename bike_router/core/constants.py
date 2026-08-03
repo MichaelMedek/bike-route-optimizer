@@ -74,8 +74,10 @@ class Schema:
     HIGHWAY = "highway"
     MODE = "mode"
     GEOMETRY_WKT = "geometry_wkt"
-    # OSMnx in-memory node/edge attrs (x=lon, y=lat) + the polyline attr; distinct from the on-disk names.
+    # OSMnx in-memory node/edge attrs (x=lon, y=lat) + the polyline + length attr; distinct from on-disk names.
     GEOMETRY = "geometry"
+    LENGTH = "length"
+    HEIGHT_DIFF = "height_diff"
 
 
 class Condition:

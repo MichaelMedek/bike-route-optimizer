@@ -129,8 +129,8 @@ def graph_from_tables(nodes_df: pd.DataFrame, edges_df: pd.DataFrame) -> nx.Mult
             int(e.to_node),
             int(e.key),
             {
-                "length": float(e.length_m),
-                "height_diff": float(e.height_diff_m),
+                Schema.LENGTH: float(e.length_m),
+                Schema.HEIGHT_DIFF: float(e.height_diff_m),
                 Schema.SURFACE: str_or_none(value=e.surface),
                 Schema.HIGHWAY: str_or_none(value=e.highway),
                 Schema.MODE: e.mode,
@@ -174,7 +174,7 @@ def _assert_height_diffs_consistent(graph: nx.MultiDiGraph) -> None:
     tol = GraphConfig.HEIGHT_DIFF_TOLERANCE_M
     for u, v, data in graph.edges(data=True):
         expected = graph.nodes[v]["elevation"] - graph.nodes[u]["elevation"]
-        assert abs(data["height_diff"] - expected) <= tol, (
+        assert abs(data[Schema.HEIGHT_DIFF] - expected) <= tol, (
             f"height_diff mismatch on edge {u}->{v}: stored {data['height_diff']:.2f} m "
             f"vs nodes {expected:.2f} m (tol {tol} m) — artifact corrupt or stale"
         )
@@ -202,7 +202,7 @@ def graph_to_tables(graph: nx.MultiDiGraph) -> tuple[pd.DataFrame, pd.DataFrame]
             Schema.FROM_NODE: int(u),
             Schema.TO_NODE: int(v),
             Schema.KEY: int(k),
-            Schema.LENGTH_M: float(d["length"]),
+            Schema.LENGTH_M: float(d[Schema.LENGTH]),
             Schema.HEIGHT_DIFF_M: float(graph.nodes[v]["elevation"] - graph.nodes[u]["elevation"]),
             Schema.SURFACE: _scalar(d.get(Schema.SURFACE)),  # unknown → explicit None (external OSM)
             Schema.HIGHWAY: _scalar(d.get(Schema.HIGHWAY)),  # ditto (genuinely optional)
