@@ -13,7 +13,7 @@ from shapely.geometry import LineString
 
 from bike_router.core.constants import Mode, Schema
 from bike_router.core.cost import road_included, surface_included
-from bike_router.core.geo import haversine_distance_m
+from bike_router.core.geo import haversine_vec
 from bike_router.preprocessing.elevation import DEMService
 
 logger = logging.getLogger(__name__)
@@ -74,20 +74,19 @@ def consolidate_graph(graph: nx.MultiDiGraph, tolerance_m: float) -> nx.MultiDiG
 
 
 def _densify_coords(coords: list[tuple[float, float]], max_spacing_m: float) -> list[tuple[float, float]]:
-    """Subdivide a lon/lat polyline so no consecutive pair is within ``max_spacing_m`` (linear inserts).
+    """Subdivide a lon/lat polyline so no consecutive pair exceeds ``max_spacing_m`` (linear inserts).
 
-    Targets 90% of the cap so haversine sub-gaps stay STRICTLY under it despite lon/lat-linear interpolation
-    (evenly-spaced fractions aren't exactly evenly-spaced in metres); existing vertices are always kept.
+    Vectorized per segment: each over-long segment is filled with np.linspace-interpolated points. Targets
+    90% of the cap so haversine sub-gaps stay STRICTLY under it (lon/lat-linear ≠ great-circle even spacing).
     """
-    target = max_spacing_m * 0.9  # safety margin below the hard cap for the linear-vs-great-circle mismatch
-    out: list[tuple[float, float]] = [coords[0]]
-    for (lon_a, lat_a), (lon_b, lat_b) in zip(coords[:-1], coords[1:], strict=True):
-        gap = haversine_distance_m(lat_a=lat_a, lon_a=lon_a, lat_b=lat_b, lon_b=lon_b)
-        steps = int(gap // target) + 1  # e.g. 250 m @ 90 m target → 3 sub-segments, 2 inserted points
-        for s in range(1, steps):
-            frac = s / steps
-            out.append((lon_a + (lon_b - lon_a) * frac, lat_a + (lat_b - lat_a) * frac))
-        out.append((lon_b, lat_b))
+    target = max_spacing_m * 0.9  # margin below the hard cap for the linear-vs-great-circle mismatch
+    xy = np.asarray(coords, dtype=np.float64)
+    gaps = haversine_vec(lat_a=xy[:-1, 1], lon_a=xy[:-1, 0], lat_b=xy[1:, 1], lon_b=xy[1:, 0])
+    out: list[tuple[float, float]] = [(float(xy[0, 0]), float(xy[0, 1]))]
+    for i, gap in enumerate(gaps):
+        steps = int(gap // target) + 1  # 250 m @ 90 m target → 3 sub-segments → linspace(…, 4)[1:]
+        seg = np.linspace(xy[i], xy[i + 1], steps + 1)[1:]  # skip the shared start vertex (already appended)
+        out.extend((float(lon), float(lat)) for lon, lat in seg)
     return out
 
 

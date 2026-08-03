@@ -435,10 +435,11 @@ def dedup_by_geometry(nodes_df: pd.DataFrame, edges_df: pd.DataFrame) -> tuple[p
     edges_df = edges_df.copy()
     edges_df["from_node"] = edges_df["from_node"].map(repoint)
     edges_df["to_node"] = edges_df["to_node"].map(repoint)
-    # Repointing can collapse a short bike edge's two endpoints onto ONE canonical node → a u→u self-loop
-    # (routing no-op, degenerate elevation band). Drop bike self-loops; rail/station loops are harmless/kept.
-    self_loop = (edges_df["from_node"] == edges_df["to_node"]) & (edges_df["mode"] == Mode.BIKE)
-    edges_df = edges_df[~self_loop].reset_index(drop=True)
+    # Repointing can collapse a short bike edge's endpoints onto ONE canonical node → a u→u self-loop.
+    # This is the TABLE-side twin of graph_ops.drop_bike_self_loops (same rule, DataFrame vs nx graph):
+    # a bike self-loop is a routing no-op with a degenerate elevation band, so drop it (rail loops kept).
+    keep = ~((edges_df["from_node"] == edges_df["to_node"]) & (edges_df["mode"] == Mode.BIKE))
+    edges_df = edges_df[keep].reset_index(drop=True)
 
     # Edge identity = endpoints + geometry (rounded) + mode; parallel distinct roads differ
     # in geometry and are both kept. Null geometry (rail/station hop) dedups on endpoints+mode.
