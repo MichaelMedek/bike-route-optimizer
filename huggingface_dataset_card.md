@@ -54,7 +54,6 @@ The dataset is tiled on a 0.5° lat/lon grid so a consumer reads only the tiles 
 meta.json                     # bbox, tile_deg, consolidation tolerance, node/edge/station counts, source regions
 nodes/tile_<row>_<col>.parquet
 edges/tile_<row>_<col>.parquet
-edge_unreliable_elevation/tile_<row>_<col>.parquet   # optional; only where offenders exist
 dach_graph_overview.png       # whole-network preview image
 ```
 
@@ -67,8 +66,6 @@ dach_graph_overview.png       # whole-network preview image
 - `mode` is one of `bike`, `rail`, `station` (a `station` edge is the bike↔station access link).
 - `geometry_wkt` is a 3D `LINESTRING Z` for bike and rail edges; null for straight station hops.
 - `key` is the parallel-edge index (a `(from_node, to_node, key)` triple is unique).
-
-**edge_unreliable_elevation** *(optional)* — `from_node, to_node, key, elevation_deviation_m`: the max metres a bike edge's baked terrain deviates from its straight node-to-node line, for edges past a 50 m threshold only. A consumer may join it on `(from_node, to_node, key)` to deprioritize edges whose elevation profile is unreliable; routing works fine without it.
 
 Coordinates are WGS84 (EPSG:4326), rounded to 6 decimals (~0.1 m).
 

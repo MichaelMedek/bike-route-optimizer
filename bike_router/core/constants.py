@@ -74,10 +74,10 @@ class Schema:
     HIGHWAY = "highway"
     MODE = "mode"
     GEOMETRY_WKT = "geometry_wkt"
-    # Sister-file only: baked intra-edge elevation deviation (m), joined onto edges at load.
-    ELEVATION_DEVIATION_M = "elevation_deviation_m"
-    # OSMnx in-memory node/edge attrs (x=lon, y=lat) + the polyline attr; distinct from the on-disk names.
+    # OSMnx in-memory node/edge attrs (x=lon, y=lat) + the polyline + length attr; distinct from on-disk names.
     GEOMETRY = "geometry"
+    LENGTH = "length"
+    HEIGHT_DIFF = "height_diff"
 
 
 class Condition:
@@ -137,9 +137,10 @@ NAME_KEY = "name"
 # and the Start input box label (web app). Destination has no cross-file dup but pairs here for clarity.
 START_LABEL = "Start"
 DESTINATION_LABEL = "Destination"
-# Streamlit button ``type`` for the red primary action (the Bahnhof suggestion pick). Typed as the
-# exact Literal streamlit's API expects so mypy accepts it whether or not streamlit stubs are present.
+# Streamlit button ``type`` values — the red primary action (Bahnhof pick) and the default secondary.
+# Typed as the exact Literals streamlit's API expects so mypy accepts them whether or not it's stubbed.
 ST_PRIMARY: Literal["primary"] = "primary"
+ST_SECONDARY: Literal["secondary"] = "secondary"
 # Coordinate-range assertion messages, shared by the scalar (gmaps) + vectorized (geo) guards.
 LAT_OUT_OF_RANGE = "latitude out of range"
 LON_OUT_OF_RANGE = "longitude out of range"
@@ -180,10 +181,6 @@ class GraphConfig:
     GRAPH_DIR = DATA_DIR / "dach_graph"
     NODES_SUBDIR = "nodes"
     EDGES_SUBDIR = "edges"
-    # Sister to EDGES_SUBDIR: one tile per edge tile (same name) holding just the from/to/key + baked
-    # elevation deviation for edges past the warn threshold. Written only where offenders exist, joined
-    # onto edges at load for the routing penalty. Absent → no penalty (un-migrated graph).
-    UNRELIABLE_ELEVATION_SUBDIR = "edge_unreliable_elevation"
     TILE_SUFFIX = ".parquet"  # per-tile file extension (shared by the writer + the reader glob)
     META_FILENAME = "meta.json"
     OVERVIEW_FILENAME = "dach_graph_overview.png"  # whole-network preview, written into the artifact dir
@@ -254,7 +251,6 @@ class Palette:
     RAIL = "#9600c8"  # purple — trains only
     START = "#0096ff"  # blue — start marker
     END = "#00e5ff"  # cyan — destination marker
-    GRAY = "#8a8a8a"  # edge whose baked terrain strays far from the router's node-to-node line
 
     # Route-segment CONDITION → hex, the road-QUALITY scale (3 bike colours + train purple).
     # "main road + unpaved" folds into the main-road red (a main road is the dominant hazard).
@@ -428,14 +424,14 @@ PARAM_SPECS = (
         field="extra_km_per_uphill_100m",
         label="Hill avoidance (extra km per 100 m climb)",
         help="How far out of your way you'd ride to dodge 100 m of climbing. 0 = shortest route, ignore hills; higher = detour to stay flat.",
-        default=14.0,
+        default=12.0,
         abbrev=Grade.UPHILL,
     ),
     RoutingParamSpec(
         field="extra_km_per_unpaved_km",
         label="Unpaved avoidance (extra km per unpaved km)",
         help="Extra km you'd ride to swap 1 km of gravel/dirt for pavement. 0 = don't avoid unpaved; higher = detour to stay paved.",
-        default=1.0,
+        default=3.0,
         abbrev="unpaved",
     ),
     RoutingParamSpec(
@@ -500,11 +496,21 @@ class GradeConfig:
     """
 
     MARGIN = 0.02  # rise/run: |grade| BELOW this reads as flat (so only ~-1/0/+1% is flat, ≥2% slopes)
-    ELEVATION_DEVIATION_WARN_M = 50.0  # warn the user and gray that edge if below or above the ground
     # Rolling-window length (m) the displayed ascent/descent stats resample the REAL bike terrain onto,
     # to shed DEM coastline-paradox terracing without erasing real hills. ~7× the ~30 m EuroDEM posting;
     # corroborated by GraphHopper's 150 m avg / 60 m resample + BRouter ~100 m (see elevation-ascent-research.md).
     ASCENT_RESAMPLE_WINDOW_M = 200.0
+
+
+class BuildValidationConfig:
+    """STRICT build-time invariants on bike-edge geometry — a violation fails the build LOUD.
+
+    Guards against the two corruption classes that shipped bad graphs: sparse polylines that shortcut
+    across streets, and baked z that leaves the [endpoint-elevation] band (a tunnel/dip a bike can't take).
+    """
+
+    MAX_VERTEX_SPACING_M = 100.0  # no two consecutive bike-edge vertices may be farther apart than this
+    ELEV_BAND_MARGIN_M = 30.0  # bike-edge z must stay within [min,max endpoint elev] ± this (DEM noise)
 
 
 class SpeedConfig:
@@ -603,7 +609,7 @@ class WebMapConfig:
     DEFAULT_LAT = 47.6
     DEFAULT_LON = 9.4
     DEFAULT_ZOOM = 6.0  # far out (whole DACH); route framing uses VIEWING_ZOOM, not this
-    DEFAULT_PITCH = 30.0  # deck.gl pitch: 0 = top-down, 90 = horizon
+    DEFAULT_PITCH = 0.0  # start top-down (still 3D-draggable); pitch>0 breaks deck.gl terrain-click coords
     DEFAULT_BEARING = 0.0
     # Rendered map height in the browser, pixels.
     MAP_HEIGHT_PX = 600

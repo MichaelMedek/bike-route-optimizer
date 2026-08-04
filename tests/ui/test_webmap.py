@@ -21,6 +21,7 @@ from bike_router.ui.webmap import (
     ViewState,
     _hex,
     _named_waypoints,
+    _parse_deck_click,
     _point_color,
     _segment_tooltip,
     _station_marker_points,
@@ -30,11 +31,13 @@ from bike_router.ui.webmap import (
     elevation_profile_chart,
     endpoint_labels,
     flattened_view,
+    map_click_start_pending,
     map_remount_key,
     map_waypoint_markers,
     output_donuts,
     output_stat_rows,
     picked_station,
+    picked_terrain,
     profile_markers,
     ribbon_width_m,
     route_ribbon_segments,
@@ -436,6 +439,44 @@ def test_station_click_pending():
     already = {"name": "Sauldorf Bahnhof", "position": [9.0, 47.9, 600.0], "eventType": click}
     assert station_click_pending(event=already, last_applied=None) == "47.90000, 9.00000 (Sauldorf Bahnhof)"
     assert station_click_pending(event=None, last_applied=None) is None  # no click at all
+
+
+def test_parse_deck_click():
+    # The ONE shared event-shape guard: a deck-click-event dict passes through; anything else → None.
+    click = WebMapConfig.DECK_CLICK_EVENT
+    assert _parse_deck_click(event={"coordinate": [8.0, 48.0], "eventType": click})["coordinate"] == [8.0, 48.0]
+    assert _parse_deck_click(event={"eventType": "click"}) is None  # raw deck.gl "click", not the component type
+    assert _parse_deck_click(event={"eventType": "deck-hover-event"}) is None  # a hover, not a click
+    assert _parse_deck_click(event=None) is None and _parse_deck_click(event="nope") is None  # non-dict
+
+
+def test_picked_terrain():
+    # An empty-space (terrain) click yields (lat, lon) from deck.gl's coordinate [lon, lat]; a MARKER
+    # click (carries a name) is NOT terrain → None, so the two readers never both fire on one click.
+    click = WebMapConfig.DECK_CLICK_EVENT
+    assert picked_terrain({"coordinate": [8.41, 48.46], "eventType": click}) == (48.46, 8.41)
+    assert (
+        picked_terrain(
+            {"name": "Freudenstadt", "position": [8.41, 48.46], "coordinate": [8.41, 48.46], "eventType": click}
+        )
+        is None
+    )
+    assert picked_terrain({"eventType": click}) is None  # click with no coordinate
+    assert picked_terrain({"coordinate": [8.0, 48.0], "eventType": "click"}) is None  # raw "click"
+    assert picked_terrain(None) is None  # no event at all
+
+
+def test_map_click_start_pending():
+    # Only when ARMED and an empty-map click carries a coordinate; a "lat, lon" (no name) value results;
+    # unarmed → None, a marker click → None, and the re-returned event dedups against last_applied.
+    click = WebMapConfig.DECK_CLICK_EVENT
+    event = {"coordinate": [9.0, 47.9], "eventType": click}
+    assert map_click_start_pending(event=event, armed=False, last_applied=None) is None  # not armed → ignore
+    pending = map_click_start_pending(event=event, armed=True, last_applied=None)
+    assert pending == "47.90000, 9.00000"  # bare coords, no name (unlike a station pick)
+    assert map_click_start_pending(event=event, armed=True, last_applied=pending) is None  # re-returned → dedup
+    marker = {"name": "Freudenstadt", "position": [9.0, 47.9], "coordinate": [9.0, 47.9], "eventType": click}
+    assert map_click_start_pending(event=marker, armed=True, last_applied=None) is None  # marker click, not terrain
 
 
 def test_swapped_endpoint_state():

@@ -382,6 +382,7 @@ def test_default_params_pick_expected_mode(
 
 
 # GIVEN ground truth (origin, destination, expect_train) — real German towns, both directions.
+# STRICTLY FROZEN GROUND TRUTH - The code must prduce exatly this results!
 _REAL_CASES = [
     ("Baiersbronn, Germany", "Freudenstadt, Germany", True),
     ("Freudenstadt, Germany", "Baiersbronn, Germany", False),

@@ -25,7 +25,6 @@ from bike_router.core.track import (  # noqa: E402
     Track,
     classify_condition,
     edge_condition_speed,
-    edge_display_unreliable,
     edge_vertices_3d,
     segment_color,
 )
@@ -66,21 +65,14 @@ def _figsize_for_route(*, route_lons: list[float], route_lats: list[float]) -> t
 
 
 def _draw_route_overlay(*, axes: Axes, route: RoutePath) -> None:
-    """Draw each route edge along its real polyline, coloured by condition (one legend entry each).
-
-    A bike edge whose baked terrain strays far from the coarse node-to-node elevation the router used is
-    drawn gray, matching the app's map warning, so the debug PNG flags the same questionable stretches.
-    """
+    """Draw each route edge along its real polyline, coloured by condition (one legend entry each)."""
     seen_labels: set[str] = set()
     for node_a, node_b, edge in route.iter_edges():
         surface_bad, road_bad, _speed = edge_condition_speed(
             edge=edge, elev_source=node_a.elevation_m, elev_target=node_b.elevation_m
         )
-        if edge_display_unreliable(node_a=node_a, node_b=node_b, edge=edge):
-            rgb, edge_label = list(Palette.hex_to_rgb(hex_color=Palette.GRAY)), "unreliable elevation"
-        else:
-            rgb = segment_color(mode=edge.mode, surface_bad=surface_bad, road_bad=road_bad)
-            edge_label = classify_condition(mode=edge.mode, surface_bad=surface_bad, road_bad=road_bad)
+        rgb = segment_color(mode=edge.mode, surface_bad=surface_bad, road_bad=road_bad)
+        edge_label = classify_condition(mode=edge.mode, surface_bad=surface_bad, road_bad=road_bad)
         color = (rgb[0] / 255, rgb[1] / 255, rgb[2] / 255)
         label = edge_label if edge_label not in seen_labels else None
         seen_labels.add(edge_label)

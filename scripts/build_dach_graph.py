@@ -48,6 +48,7 @@ from matplotlib.collections import LineCollection  # noqa: E402
 from shapely import from_wkt, get_coordinates  # noqa: E402
 
 from bike_router.core.constants import DEMConfig, GraphConfig, Mode, Palette
+from bike_router.core.graph_validation import assert_bike_geometry_valid
 from bike_router.preprocessing.builder import (
     build_region_graph_clipped,
     remap_contiguous,
@@ -341,6 +342,9 @@ def main(argv: list[str] | None = None) -> int:
     built = sorted(r.key for r in regions)
     assert_all_regions_complete(regions_dir=_REGIONS_DIR, regions=built)
     nodes_df, edges_df = combine_regions(regions_dir=_REGIONS_DIR, regions=built)
+    # STRICT gate: fail LOUD if any bike edge shortcuts across streets or leaves its endpoint-elevation
+    # band — a corrupt artifact must never be written/uploaded (the whole-night-run guard).
+    assert_bike_geometry_valid(nodes_df=nodes_df, edges_df=edges_df)
     meta = {
         **base_meta(nodes_df=nodes_df, edges_df=edges_df, tolerance_m=tolerance_m),
         "regions_built": built,

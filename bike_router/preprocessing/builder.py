@@ -26,6 +26,7 @@ from shapely.ops import nearest_points
 from bike_router.core.constants import (
     NAME_KEY,
     WGS84_CRS,
+    BuildValidationConfig,
     GraphConfig,
     Mode,
     NodeType,
@@ -37,9 +38,12 @@ from bike_router.preprocessing.elevation import DEMService
 from bike_router.preprocessing.graph_ops import (
     bake_edge_geometry_elevations,
     consolidate_graph,
+    densify_edge_geometry,
+    drop_bike_self_loops,
     drop_disallowed_edges,
     enrich_elevations,
     normalize_pyrosm_graph,
+    split_bike_edges_at_extrema,
 )
 
 logger = logging.getLogger(__name__)
@@ -116,6 +120,8 @@ def build_layer_graph(osm: OSM, *, layer: LayerSpec, tolerance_m: float) -> nx.M
     graph = consolidate_graph(graph=graph, tolerance_m=tolerance_m)
     logger.info(f"  {layer.mode}: consolidated → {graph.number_of_nodes()} nodes")
     assert graph.number_of_nodes() > 0
+    if layer.surface_allowlist:  # bike only: densify so no vertex gap exceeds the strict build invariant
+        densify_edge_geometry(graph=graph, max_spacing_m=BuildValidationConfig.MAX_VERTEX_SPACING_M)
     _tag_layer(graph=graph, mode=layer.mode, node_type=layer.node_type)
     return graph
 
@@ -324,6 +330,13 @@ def build_region_graph(
     logger.info(f"{name}: [5/6] baked node elevations")
     bake_edge_geometry_elevations(graph=graph, dem=dem)  # 3D vertices → inference needs no DEM
     logger.info(f"{name}: [6/6] baked edge geometry elevations")
+    # Drop bike self-loops (consolidation artifacts, routing no-ops), then split remaining bike edges at
+    # real elevation extrema so every sub-edge's z stays within its endpoint band — strict build invariant.
+    n_loops = drop_bike_self_loops(graph=graph)
+    if n_loops:
+        logger.info(f"{name}: dropped {n_loops} bike self-loops")
+    next_id = max(graph.nodes) + 1
+    split_bike_edges_at_extrema(graph=graph, margin_m=BuildValidationConfig.ELEV_BAND_MARGIN_M, next_node_id=next_id)
     return graph
 
 
@@ -422,6 +435,11 @@ def dedup_by_geometry(nodes_df: pd.DataFrame, edges_df: pd.DataFrame) -> tuple[p
     edges_df = edges_df.copy()
     edges_df["from_node"] = edges_df["from_node"].map(repoint)
     edges_df["to_node"] = edges_df["to_node"].map(repoint)
+    # Repointing can collapse a short bike edge's endpoints onto ONE canonical node → a u→u self-loop.
+    # This is the TABLE-side twin of graph_ops.drop_bike_self_loops (same rule, DataFrame vs nx graph):
+    # a bike self-loop is a routing no-op with a degenerate elevation band, so drop it (rail loops kept).
+    keep = ~((edges_df["from_node"] == edges_df["to_node"]) & (edges_df["mode"] == Mode.BIKE))
+    edges_df = edges_df[keep].reset_index(drop=True)
 
     # Edge identity = endpoints + geometry (rounded) + mode; parallel distinct roads differ
     # in geometry and are both kept. Null geometry (rail/station hop) dedups on endpoints+mode.

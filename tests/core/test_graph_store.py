@@ -14,13 +14,12 @@ import pytest
 from shapely.geometry import box
 
 from bike_router.core import graph_store
-from bike_router.core.constants import GraphConfig, Mode, NodeType, RailConfig, Schema
+from bike_router.core.constants import GraphConfig, Mode, NodeType, RailConfig
 from bike_router.core.errors import OutOfCoverageError
 from bike_router.core.graph_store import (
     _covering_tiles,
     _intersecting_tiles,
     _load_layer,
-    _merge_unreliable_elevation,
     _oriented_geometry,
     _select_path_edges,
     download_graph_from_hf,
@@ -132,37 +131,6 @@ def test_load_layer(roundtrip_store: Path):
     assert inside_ids == {1, 2, 3, 4}
     assert set(edges_df["mode"]) == {Mode.BIKE}
     assert edges_df["from_node"].isin(inside_ids).all()
-    assert (edges_df[Schema.ELEVATION_DEVIATION_M] == 0.0).all()  # no sister folder → all-zero deviation
-
-
-def test_merge_unreliable_elevation(tmp_path: Path):
-    # Left-joins the sister tile's deviation by (from, to, key): a matched edge takes its value, an
-    # unmatched edge / absent folder reads 0.0. The join respects key so parallel edges don't collide.
-    edges = pd.DataFrame(
-        {
-            Schema.FROM_NODE: [1, 1, 2],
-            Schema.TO_NODE: [2, 2, 3],
-            Schema.KEY: [0, 1, 0],
-            "length_m": [800.0, 900.0, 700.0],
-        }
-    )
-    # No folder yet → every edge defaults to 0.0.
-    zeroed = _merge_unreliable_elevation(edges_df=edges.copy(), graph_dir=tmp_path, tiles=[(96, 16)])
-    assert (zeroed[Schema.ELEVATION_DEVIATION_M] == 0.0).all()
-
-    sister_dir = tmp_path / GraphConfig.UNRELIABLE_ELEVATION_SUBDIR
-    sister_dir.mkdir()
-    pd.DataFrame(
-        {
-            Schema.FROM_NODE: [1, 2],
-            Schema.TO_NODE: [2, 3],
-            Schema.KEY: [1, 0],
-            Schema.ELEVATION_DEVIATION_M: [80.0, 200.0],
-        }
-    ).to_parquet(sister_dir / f"{tile_name(row=96, col=16)}{GraphConfig.TILE_SUFFIX}", index=False)
-    merged = _merge_unreliable_elevation(edges_df=edges.copy(), graph_dir=tmp_path, tiles=[(96, 16)])
-    # (1,2,key=0) unmatched → 0; (1,2,key=1) → 80; (2,3,key=0) → 200 — key keeps the parallels distinct.
-    assert list(merged[Schema.ELEVATION_DEVIATION_M]) == [0.0, 80.0, 200.0]
 
 
 # --- combined routing window -------------------------------------------------
@@ -322,25 +290,6 @@ def test_download_graph_from_hf(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(graph_store, "snapshot_download", _boom)
     with pytest.raises(OSError, match="network died"):
         download_graph_from_hf(target_dir=tmp_path / "boom", progress=null_progress)
-
-
-def test_warn_if_missing_unreliable_elevation(tmp_path: Path, caplog):
-    # Warns (penalty inert) when no sister tiles exist; silent once at least one tile is present.
-    import logging
-
-    with caplog.at_level(logging.WARNING):
-        graph_store._warn_if_missing_unreliable_elevation(graph_dir=tmp_path)
-    assert any("penalty is INERT" in r.message for r in caplog.records)
-
-    sister = tmp_path / GraphConfig.UNRELIABLE_ELEVATION_SUBDIR
-    sister.mkdir()
-    pd.DataFrame(
-        {Schema.FROM_NODE: [1], Schema.TO_NODE: [2], Schema.KEY: [0], Schema.ELEVATION_DEVIATION_M: [80.0]}
-    ).to_parquet(sister / f"{tile_name(row=0, col=0)}{GraphConfig.TILE_SUFFIX}", index=False)
-    caplog.clear()
-    with caplog.at_level(logging.WARNING):
-        graph_store._warn_if_missing_unreliable_elevation(graph_dir=tmp_path)
-    assert not caplog.records  # sister tiles present → no warning
 
 
 def test_str_or_none():
