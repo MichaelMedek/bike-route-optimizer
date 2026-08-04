@@ -33,7 +33,11 @@ def upload_graph_to_hf() -> None:
     login()
     api = HfApi()
     api.create_repo(repo_id=GraphConfig.HF_REPO_ID, repo_type="dataset", exist_ok=True)
-    api.upload_folder(folder_path=str(artifact_dir), repo_id=GraphConfig.HF_REPO_ID, repo_type="dataset")
+    # delete_patterns=["*"] makes the upload a true MIRROR: remote files absent locally are deleted
+    # README.md is re-pushed just below.
+    api.upload_folder(
+        folder_path=str(artifact_dir), repo_id=GraphConfig.HF_REPO_ID, repo_type="dataset", delete_patterns=["*"]
+    )
     # Push the repo-root dataset card directly AS README.md so the Hub renders it.
     api.upload_file(
         path_or_fileobj=str(PROJECT_ROOT / "huggingface_dataset_card.md"),
