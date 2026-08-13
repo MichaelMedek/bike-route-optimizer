@@ -82,6 +82,10 @@ def test_composition_rows():
     assert quality_colors is QUALITY_COLORS and rows[2][2] is MODE_COLORS
     # quality labels appear in the fixed best→worst order (good before main road)
     assert list(quality_km) == ["good", "main road"]
+    # A train-only route has NO bike km → the bike-only Quality/Grade rows are DROPPED (issue #10:
+    # an empty donut used to divide by zero). Only Mode survives, so nothing renders a 0-total chart.
+    train_only = RouteComposition(by_quality_km={}, by_grade_km={}, by_mode_km={"train path": 5.0})
+    assert [title for title, _km, _colors in composition_rows(comp=train_only)] == ["Mode"]
 
 
 def test_ordered():

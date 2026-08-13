@@ -77,16 +77,17 @@ def route_composition(track: Track) -> RouteComposition:
 
 
 def composition_rows(comp: RouteComposition) -> tuple[tuple[str, dict[str, float], dict[str, str]], ...]:
-    """The THREE donut rows — (title, km-breakdown, label→hex colours) — the ONE shared source.
+    """The donut rows — (title, km-breakdown, label→hex colours) — the ONE shared source for donuts + PNG + CLI.
 
-    Donuts render each row as a chart; the PNG overlay and the CLI print the same rows as text
-    (format_composition). Order is fixed per donut so quality/grade read best→worst, mode bike→train.
+    A train-only route has no bike km, so the bike-only quality/grade rows are EMPTY and dropped here —
+    one source, so the donut/PNG/CLI all skip them together (no divide-by-zero on a 0-total breakdown).
     """
-    return (
+    rows = (
         ("Quality", _ordered(comp.by_quality_km, _QUALITY_ORDER), QUALITY_COLORS),
         ("Grade", _ordered(comp.by_grade_km, _GRADE_ORDER), GRADE_COLORS),
         ("Mode", _ordered(comp.by_mode_km, _MODE_ORDER), MODE_COLORS),
     )
+    return tuple((title, by_km, colors) for title, by_km, colors in rows if by_km)
 
 
 def _ordered(by_km: dict[str, float], order: dict[str, int]) -> dict[str, float]:

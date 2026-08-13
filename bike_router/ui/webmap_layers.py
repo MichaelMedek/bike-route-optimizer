@@ -8,7 +8,7 @@ from dataclasses import asdict
 
 import pydeck as pdk
 
-from bike_router.core.constants import WebMapConfig
+from bike_router.core.constants import NAME_KEY, ROLE_KEY, SessionKey, WebMapConfig
 from bike_router.core.simplify import place_label
 from bike_router.ui.webmap import RibbonSegment, ViewState
 
@@ -26,31 +26,30 @@ def create_terrain_layer(mesh_max_error: float) -> pdk.Layer:
     )
 
 
-def create_route_ribbon_layers(segments: list[RibbonSegment]) -> list[pdk.Layer]:
-    """ONE pickable PathLayer holding every contiguous run as a data row (path/color/width/tooltip).
+def _path_layer(*, segments: list[RibbonSegment], layer_id: str) -> pdk.Layer:
+    """ONE pickable PathLayer holding each RibbonSegment as a row (path/color/width/tooltip).
 
-    A single layer (not one-per-run) so deck.gl picking is uniform across the WHOLE ribbon — stacking
-    single-datum PathLayers left only the first few runs hoverable. Accessors read each row's fields.
-
-    Args:
-        segments: RibbonSegment runs from webmap.route_ribbon_segments (color RGB, width_m,
-            points ``[[lon, lat, z], ...]`` z-lifted, tooltip text).
+    A single layer (not one-per-run) so deck.gl picking is uniform across the whole path — stacking
+    single-datum PathLayers left only the first few runs hoverable. Shared by the route ribbon + ascents.
     """
     data = [{"path": seg.points, "color": seg.color, "width": seg.width_m, "tooltip": seg.tooltip} for seg in segments]
-    return [
-        pdk.Layer(
-            "PathLayer",
-            data,
-            get_path="path",
-            get_color="color",
-            get_width="width",
-            width_min_pixels=WebMapConfig.RIBBON_MIN_PIXELS,
-            cap_rounded=True,
-            joint_rounded=True,
-            id="route_ribbon",
-            pickable=True,
-        )
-    ]
+    return pdk.Layer(
+        "PathLayer",
+        data,
+        get_path="path",
+        get_color="color",
+        get_width="width",
+        width_min_pixels=WebMapConfig.RIBBON_MIN_PIXELS,
+        cap_rounded=True,
+        joint_rounded=True,
+        id=layer_id,
+        pickable=True,
+    )
+
+
+def create_route_ribbon_layers(segments: list[RibbonSegment]) -> list[pdk.Layer]:
+    """The route ribbon as a single pickable PathLayer (see _path_layer)."""
+    return [_path_layer(segments=segments, layer_id="route_ribbon")]
 
 
 def _marker_layer(*, layer_id: str, markers: list[dict[str, object]], radius_m: float, min_pixels: int) -> pdk.Layer:
@@ -124,29 +123,39 @@ def create_waypoint_layer(waypoints: list[tuple[float, float, float, str]]) -> p
     )
 
 
-def create_top_station_layer(top_stations: list[tuple[float, float, float, str]]) -> pdk.Layer:
-    """Rail-purple clickable markers at local-maximum ("top") rail stations — trip inspiration.
+def create_extremum_station_layer(
+    *, stations: list[tuple[float, float, float, str]], color: list[int], role: str, layer_id: str
+) -> pdk.Layer:
+    """Clickable extremum-station markers in one colour — green maxima (Start) or red minima (End).
 
-    Each row carries ``name`` (click-to-fill the Start box) + a "Name (elev m)" hover tooltip; clicks
-    are read via the deck ``events=['click']`` return.
+    Each row carries ``name`` (fills the box), ``role`` (Start/End box the click targets) + a
+    "Name (elev m)" hover tooltip; clicks are read via the deck ``events=['click']`` return.
 
     Args:
-        top_stations: ``(lat, lon, elevation_m, name)`` per local-maximum rail station.
+        stations: ``(lat, lon, elevation_m, name)`` per extremum station.
+        color: RGB fill (green for maxima, red for minima).
+        role: SessionKey.START_BOX (maxima) or SessionKey.END_BOX (minima) the click fills.
+        layer_id: unique deck layer id.
     """
-    purple = list(WebMapConfig.RAIL_COLOR)
     markers = [
         {
-            **_marker_row(lat=lat, lon=lon, elev=elev, color=purple, tooltip=place_label(name=name, elevation_m=elev)),
-            "name": name,
+            **_marker_row(lat=lat, lon=lon, elev=elev, color=color, tooltip=place_label(name=name, elevation_m=elev)),
+            NAME_KEY: name,
+            ROLE_KEY: role,
         }
-        for lat, lon, elev, name in top_stations
+        for lat, lon, elev, name in stations
     ]
     return _marker_layer(
-        layer_id="top_stations",
+        layer_id=layer_id,
         markers=markers,
         radius_m=WebMapConfig.ENDPOINT_RADIUS_M,
         min_pixels=WebMapConfig.ENDPOINT_MIN_PIXELS,
     )
+
+
+def create_rail_ascent_layer(*, segments: list[RibbonSegment]) -> pdk.Layer:
+    """A pickable purple PathLayer of "good ascent" rail legs (see _path_layer)."""
+    return _path_layer(segments=segments, layer_id="rail_ascents")
 
 
 def build_deck(
@@ -156,16 +165,30 @@ def build_deck(
     endpoints: tuple[tuple[float, float, float], tuple[float, float, float]] | None,
     endpoint_labels: tuple[str, str] | None,
     waypoints: list[tuple[float, float, float, str]] | None,
-    top_stations: list[tuple[float, float, float, str]] | None,
+    maxima: list[tuple[float, float, float, str]] | None,
+    minima: list[tuple[float, float, float, str]] | None,
+    rail_ascents: list[RibbonSegment] | None,
 ) -> pdk.Deck:
-    """Assemble the Deck bottom→top: terrain, top stations, waypoints, endpoints, then the route ribbon.
+    """Assemble the Deck bottom→top: terrain, ascent legs, min/max stations, waypoints, endpoints, ribbon.
 
-    One deck-level tooltip (``{tooltip}``) serves every pickable layer — each ribbon segment,
-    endpoint, and waypoint datum carries its own ``tooltip`` string (the proven pydeck idiom).
+    One deck-level tooltip (``{tooltip}``) serves every pickable layer — each ribbon segment, ascent leg,
+    station, endpoint, and waypoint datum carries its own ``tooltip`` string (the proven pydeck idiom).
     """
     layers = [create_terrain_layer(mesh_max_error=1.0)]
-    if top_stations:
-        layers.append(create_top_station_layer(top_stations=top_stations))
+    if rail_ascents:
+        layers.append(create_rail_ascent_layer(segments=rail_ascents))
+    if minima:
+        layers.append(
+            create_extremum_station_layer(
+                stations=minima, color=list(WebMapConfig.MINIMA_COLOR), role=SessionKey.END_BOX, layer_id="minima"
+            )
+        )
+    if maxima:
+        layers.append(
+            create_extremum_station_layer(
+                stations=maxima, color=list(WebMapConfig.MAXIMA_COLOR), role=SessionKey.START_BOX, layer_id="maxima"
+            )
+        )
     if waypoints:
         layers.append(create_waypoint_layer(waypoints=waypoints))
     if endpoints is not None:

@@ -11,8 +11,9 @@ from types import SimpleNamespace
 import pytest
 
 from bike_router.core.composition import MODE_COLORS
-from bike_router.core.constants import Mode, Palette, WebMapConfig
+from bike_router.core.constants import Mode, Palette, SessionKey, WebMapConfig
 from bike_router.core.geo import haversine_distance_m
+from bike_router.core.rail_ascent import RailAscent
 from bike_router.core.track import build_track
 from bike_router.ui.webmap import (
     GRADE_SCALE,
@@ -39,6 +40,7 @@ from bike_router.ui.webmap import (
     picked_station,
     picked_terrain,
     profile_markers,
+    rail_ascent_segments,
     ribbon_width_m,
     route_ribbon_segments,
     route_view_state,
@@ -410,35 +412,52 @@ def test_named_waypoints():
 
 def test_picked_station():
     # st_deckgl spreads the picked datum at TOP LEVEL with deck.gl's OWN eventType
-    # ("deck-click-event", NOT "click"); a top-station click yields (name, lat, lon) from its
-    # name + position [lon, lat, z], everything else (other event, no name/position, blank) → None.
+    # ("deck-click-event", NOT "click"); a marker click yields (name, lat, lon, role) from name +
+    # position [lon, lat, z] + role, everything else (other event, no name/position/role, blank) → None.
     click = WebMapConfig.DECK_CLICK_EVENT
-    assert picked_station({"name": "Freudenstadt Stadt", "position": [8.41, 48.46, 730.0], "eventType": click}) == (
-        "Freudenstadt Stadt",
-        48.46,
-        8.41,
-    )
+    start = SessionKey.START_BOX
+    assert picked_station(
+        {"name": "Freudenstadt Stadt", "position": [8.41, 48.46, 730.0], "role": start, "eventType": click}
+    ) == ("Freudenstadt Stadt", 48.46, 8.41, start)
     assert picked_station({"tooltip": "route seg", "eventType": click}) is None  # no name (route/waypoint)
-    assert picked_station({"name": "X", "eventType": click}) is None  # name but no position → not a marker
-    assert picked_station({"name": "X", "position": [8.0, 48.0], "eventType": "click"}) is None  # raw "click"
-    assert picked_station({"name": "X", "position": [8.0, 48.0], "eventType": "deck-hover-event"}) is None
+    assert picked_station({"name": "X", "role": start, "eventType": click}) is None  # no position → not a marker
+    assert picked_station({"name": "X", "position": [8.0, 48.0], "eventType": click}) is None  # no role → not extremum
+    assert picked_station({"name": "X", "position": [8.0, 48.0], "role": start, "eventType": "click"}) is None
     assert picked_station({"eventType": click}) is None  # empty-terrain click, no datum
     assert picked_station(None) is None  # no event at all
-    assert picked_station({"name": "", "position": [8.0, 48.0], "eventType": click}) is None  # blank name
+    assert picked_station({"name": "", "position": [8.0, 48.0], "role": start, "eventType": click}) is None  # blank
 
 
 def test_station_click_pending():
-    # A top-station click fills a "lat, lon (Name Bahnhof)" value from the marker's EXACT position, so
-    # it snaps to the platform without re-geocoding a name; the re-returned event dedups to None.
+    # An extremum click fills a "lat, lon (Name Bahnhof)" value from the marker's EXACT position (snaps
+    # without re-geocoding) plus the role (Start for a max, End for a min); the re-returned event dedups.
     click = WebMapConfig.DECK_CLICK_EVENT
-    event = {"name": "Sauldorf", "position": [9.0, 47.9, 600.0], "eventType": click}
+    end = SessionKey.END_BOX
+    event = {"name": "Sauldorf", "position": [9.0, 47.9, 600.0], "role": end, "eventType": click}
     pending = station_click_pending(event=event, last_applied=None)
-    assert pending == "47.90000, 9.00000 (Sauldorf Bahnhof)"  # exact coords + Bahnhof label
-    assert station_click_pending(event=event, last_applied=pending) is None  # re-returned → dedup
+    assert pending == ("47.90000, 9.00000 (Sauldorf Bahnhof)", end)  # exact coords + Bahnhof label + role
+    assert station_click_pending(event=event, last_applied=pending[0]) is None  # re-returned → dedup
     assert station_click_pending(event=event, last_applied="other") == pending  # a NEW/changed click
-    already = {"name": "Sauldorf Bahnhof", "position": [9.0, 47.9, 600.0], "eventType": click}
-    assert station_click_pending(event=already, last_applied=None) == "47.90000, 9.00000 (Sauldorf Bahnhof)"
     assert station_click_pending(event=None, last_applied=None) is None  # no click at all
+
+
+def test_rail_ascent_segments():
+    # One purple RibbonSegment per ascent: z-lifted track polyline + a "Train climb: … %" tooltip.
+    ascent = RailAscent(
+        low_name="Röt",
+        high_name="Freudenstadt Stadt",
+        gain_m=244.0,
+        direct_km=9.85,
+        grade=0.0248,
+        points=[[8.4, 48.5, 495.0], [8.41, 48.47, 739.0]],
+    )
+    segments = rail_ascent_segments(ascents=[ascent], float_above_m=100.0)
+    assert len(segments) == 1
+    seg = segments[0]
+    assert seg.color == list(WebMapConfig.RAIL_COLOR)  # purple, the train colour
+    assert seg.points[0][2] == 595.0 and seg.points[-1][2] == 839.0  # z lifted by float_above_m
+    assert "Train climb: Röt → Freudenstadt Stadt" in seg.tooltip and "+244 m" in seg.tooltip and "2%" in seg.tooltip
+    assert rail_ascent_segments(ascents=[], float_above_m=100.0) == []
 
 
 def test_parse_deck_click():

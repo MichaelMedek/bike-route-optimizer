@@ -35,7 +35,7 @@ def _clear_caches() -> None:
     """Drop the app's @st.cache_data results so each run starts from a cold, deterministic cache."""
     app.suggest.clear()
     app.village_names.clear()
-    app.top_station_markers.clear()
+    app.station_extrema_markers.clear()
 
 
 def _run() -> AppTest:
@@ -85,12 +85,14 @@ def test_download_graph_with_bar():
 
 
 def test_seed_state(fixture_graph):
-    # Seeds the gating defaults; a stashed _pending_start is applied to start_box before it renders.
+    # Seeds the gating defaults; a stashed _pending_<box> is applied to that box before it renders.
     at = _run()
     assert at.session_state["start_latlon"] is None and at.session_state["camera_epoch"] == 0
-    at.session_state["_pending_start"] = "Titisee Bahnhof"
+    at.session_state["_pending_start_box"] = "Titisee Bahnhof"
+    at.session_state["_pending_end_box"] = "Sauldorf Bahnhof"
     at.run()
-    assert at.session_state["start_box"] == "Titisee Bahnhof" and "_pending_start" not in at.session_state
+    assert at.session_state["start_box"] == "Titisee Bahnhof" and "_pending_start_box" not in at.session_state
+    assert at.session_state["end_box"] == "Sauldorf Bahnhof" and "_pending_end_box" not in at.session_state
 
 
 def test_render_controls(fixture_graph):
@@ -154,10 +156,10 @@ def test_render_route_output(fixture_graph, tmp_path):
 
 
 def test_render_map(fixture_graph):
-    # Turning top stations on flattens the camera + renders the map with no exception.
+    # Turning station extrema on flattens the camera + renders the map with no exception.
     at = _run()
     _click(at, "🚞")
-    assert at.session_state["show_top_stations"] is True and not at.exception
+    assert at.session_state["show_station_extrema"] is True and not at.exception
 
 
 # --- place-input + suggestions ------------------------------------------------
@@ -220,13 +222,13 @@ def test_swap_endpoints(fixture_graph):
     assert at.session_state["start_box"] == "BBB" and at.session_state["end_box"] == "AAA"
 
 
-def test_toggle_top_stations(fixture_graph):
-    # 🚞 flips show_top_stations on, then off.
+def test_toggle_station_extrema(fixture_graph):
+    # 🚞 flips show_station_extrema on, then off.
     at = _run()
     _click(at, "🚞")
-    assert at.session_state["show_top_stations"] is True
+    assert at.session_state["show_station_extrema"] is True
     _click(at, "🚞")
-    assert at.session_state["show_top_stations"] is False
+    assert at.session_state["show_station_extrema"] is False
 
 
 # --- GPS ----------------------------------------------------------------------
@@ -241,14 +243,14 @@ def test_request_gps():
 
 
 def test_capture_gps():
-    # When armed, a browser fix is stashed into _pending_start as a "lat, lon" literal, then reruns.
+    # When armed, a browser fix is stashed into _pending_start_box as a "lat, lon" literal, then reruns.
     with patch.object(app, "st") as fake_st, patch.object(app, "get_geolocation") as geo:
         fake_st.session_state = _State(gps_requested=True)
         fake_st.rerun = MagicMock(side_effect=RuntimeError("rerun"))
         geo.return_value = {"coords": {"latitude": 48.4, "longitude": 8.4, "accuracy": 12.0}}
         with pytest.raises(RuntimeError, match="rerun"):
             app.capture_gps()
-    assert fake_st.session_state["_pending_start"] == "48.40000, 8.40000"
+    assert fake_st.session_state["_pending_start_box"] == "48.40000, 8.40000"
 
 
 def test_capture_gps_not_armed():
@@ -259,36 +261,37 @@ def test_capture_gps_not_armed():
     geo.assert_not_called()
 
 
-# --- top-station click + map helpers -----------------------------------------
+# --- station click + map helpers ---------------------------------------------
 
 
-def test_handle_top_station_click():
-    # A simulated top-station click stashes the "lat, lon (Name Bahnhof)" pending value (exact coords
-    # from the marker's position), auto-disarms the markers, then reruns.
-    fake_state = _State(show_top_stations=True)
+def test_handle_station_click():
+    # A simulated max-marker click (role=Start) stashes the "lat, lon (Name Bahnhof)" pending value into
+    # start_box (exact coords from the marker's position), then reruns; markers stay shown (no auto-hide).
+    fake_state = _State(show_station_extrema=True)
     with patch.object(app, "st") as fake_st:
         fake_st.session_state = fake_state
         fake_st.rerun = MagicMock(side_effect=RuntimeError("rerun"))
         with pytest.raises(RuntimeError, match="rerun"):
-            app.handle_top_station_click(
+            app.handle_station_click(
                 event={
                     "name": "Sauldorf",
                     "position": [9.0, 47.9, 600.0],
+                    "role": constants.SessionKey.START_BOX,
                     "eventType": app.WebMapConfig.DECK_CLICK_EVENT,
                 }
             )
-    assert fake_state["_pending_start"] == "47.90000, 9.00000 (Sauldorf Bahnhof)"
-    assert fake_state["show_top_stations"] is False  # auto-disarmed after the pick
+    assert fake_state["_pending_start_box"] == "47.90000, 9.00000 (Sauldorf Bahnhof)"
+    assert fake_state["show_station_extrema"] is True  # markers stay shown for a second pick
 
 
-def test_apply_pending_start():
-    # The ONE stash+rerun path: writes the box value to _pending_start and reruns (GPS/station/map share it).
+def test_apply_pending_box():
+    # The ONE stash+rerun path: writes the value to _pending_<field> and reruns (GPS/station/map share it).
     with patch.object(app, "st") as fake_st:
         fake_st.session_state = _State()
         fake_st.rerun = MagicMock(side_effect=RuntimeError("rerun"))
         with pytest.raises(RuntimeError, match="rerun"):
-            app.apply_pending_start(box_value="48.0, 8.0")
-    assert fake_st.session_state["_pending_start"] == "48.0, 8.0"
+            app.apply_pending_box(field=constants.SessionKey.END_BOX, box_value="48.0, 8.0")
+    assert fake_st.session_state["_pending_end_box"] == "48.0, 8.0"
 
 
 def test_recenter_on_endpoints():
@@ -318,22 +321,23 @@ def test_handle_map_click_start():
         fake_st.rerun = MagicMock(side_effect=RuntimeError("rerun"))
         with pytest.raises(RuntimeError, match="rerun"):
             app.handle_map_click_start(event=event)
-    assert fake_st.session_state["_pending_start"] == "47.90000, 9.00000"
+    assert fake_st.session_state["_pending_start_box"] == "47.90000, 9.00000"
     assert fake_st.session_state["arm_map_click_start"] is False
     # unarmed → no stash, no rerun
     with patch.object(app, "st") as fake_st:
         fake_st.session_state = _State(arm_map_click_start=False)
         fake_st.rerun = MagicMock(side_effect=RuntimeError("rerun"))
         app.handle_map_click_start(event=event)  # must NOT raise
-    assert "_pending_start" not in fake_st.session_state
+    assert "_pending_start_box" not in fake_st.session_state
 
 
-def test_top_station_markers(fixture_graph):
-    # A cached whole-graph scan → (lat, lon, elev, name) tuples for local-maximum rail stations.
+def test_station_extrema_markers(fixture_graph):
+    # A cached whole-graph scan → green maxima + red minima marker tuples + purple ascent legs.
     _clear_caches()
-    tops = app.top_station_markers()
-    assert isinstance(tops, list)
-    assert all(len(t) == 4 and isinstance(t[3], str) for t in tops)
+    extrema = app.station_extrema_markers()
+    assert all(len(m) == 4 and isinstance(m[3], str) for m in extrema.maxima + extrema.minima)
+    assert "Freudenstadt Stadt" in {m[3] for m in extrema.maxima}
+    assert "Röt" in {m[3] for m in extrema.minima}
 
 
 def test_village_names(fixture_graph):

@@ -17,7 +17,9 @@ import plotly.graph_objects as go
 from bike_router.core.composition import MODE_COLORS, composition_rows
 from bike_router.core.constants import (
     ELEVATION_AXIS_LABEL,
+    NAME_KEY,
     PLOT_BG,
+    ROLE_KEY,
     Grade,
     Mode,
     SessionKey,
@@ -26,6 +28,7 @@ from bike_router.core.constants import (
 )
 from bike_router.core.geo import haversine_vec, nearest_index
 from bike_router.core.geocoding import as_bahnhof, latlon_box_value
+from bike_router.core.rail_ascent import RailAscent
 from bike_router.core.simplify import place_label, route_station_markers  # place_label re-exported for the app shell
 from bike_router.core.track import (
     RouteStats,
@@ -261,6 +264,26 @@ def route_ribbon_segments(
     return segments
 
 
+def rail_ascent_segments(*, ascents: list[RailAscent], float_above_m: float) -> list[RibbonSegment]:
+    """One purple RibbonSegment per "good ascent" leg — the real track polyline, z-lifted, with a tooltip.
+
+    Purple like the train ribbon (RAIL_COLOR); the tooltip reads as a train climb (low → high, gain,
+    direct-line distance and grade) — deliberately NOT "ski lift" (adhesion rail, not a cog/funicular).
+    """
+    color = list(WebMapConfig.RAIL_COLOR)
+    segments: list[RibbonSegment] = []
+    for ascent in ascents:
+        points = [[lon, lat, z + float_above_m] for lon, lat, z in ascent.points]
+        tooltip = (
+            f"Train climb: {ascent.low_name} → {ascent.high_name} · "
+            f"+{ascent.gain_m:.0f} m over {ascent.direct_km:.1f} km · {ascent.grade * 100:.0f}%"
+        )
+        segments.append(
+            RibbonSegment(color=color, width_m=WebMapConfig.RIBBON_REF_WIDTH_M, points=points, tooltip=tooltip)
+        )
+    return segments
+
+
 @dataclass(frozen=True)
 class ViewState:
     """A deck.gl camera pose."""
@@ -349,21 +372,24 @@ def _parse_deck_click(event: object) -> dict[str, object] | None:
     return event
 
 
-def picked_station(event: object) -> tuple[str, float, float] | None:
-    """A clicked top-station as (name, lat, lon) from an st_deckgl click event, else None.
+def picked_station(event: object) -> tuple[str, float, float, str] | None:
+    """A clicked extremum station as (name, lat, lon, role) from an st_deckgl click event, else None.
 
-    st_deckgl spreads the picked datum at top level with the datum's ``name`` and ``position``
-    [lon, lat, z]; only a deck click carrying both yields a value (marker click, not terrain).
+    st_deckgl spreads the picked datum at top level with the datum's ``name``, ``position`` [lon, lat, z]
+    and ``role`` (Start for a max marker, End for a min marker); only a marker click yields a value.
     """
     click = _parse_deck_click(event=event)
     if click is None:
         return None
-    name = click.get("name")
+    name = click.get(NAME_KEY)
     position = click.get("position")
+    role = click.get(ROLE_KEY)
     if not (isinstance(name, str) and name) or not (isinstance(position, list) and len(position) >= 2):
         return None
+    if role not in (SessionKey.START_BOX, SessionKey.END_BOX):
+        return None
     lon, lat = float(position[0]), float(position[1])
-    return name, lat, lon
+    return name, lat, lon, str(role)
 
 
 def picked_terrain(event: object) -> tuple[float, float] | None:
@@ -373,7 +399,7 @@ def picked_terrain(event: object) -> tuple[float, float] | None:
     so a marker click is excluded here — the mirror of picked_station over the same _parse_deck_click.
     """
     click = _parse_deck_click(event=event)
-    if click is None or click.get("name") is not None:
+    if click is None or click.get(NAME_KEY) is not None:
         return None
     coordinate = click.get("coordinate")
     if not (isinstance(coordinate, list) and len(coordinate) >= 2):
@@ -382,8 +408,8 @@ def picked_terrain(event: object) -> tuple[float, float] | None:
     return lat, lon
 
 
-def station_click_pending(*, event: object, last_applied: str | None) -> str | None:
-    """The Start-box value ``"lat, lon (Name Bahnhof)"`` for a top-station click, else None.
+def station_click_pending(*, event: object, last_applied: str | None) -> tuple[str, str] | None:
+    """(Start/End box value ``"lat, lon (Name Bahnhof)"``, role) for an extremum click, else None.
 
     Fills the marker's EXACT coordinates so it snaps to the platform without re-geocoding a name;
     st_deckgl re-returns the last event each rerun, so apply only when it differs from last_applied.
@@ -391,9 +417,9 @@ def station_click_pending(*, event: object, last_applied: str | None) -> str | N
     picked = picked_station(event)
     if picked is None:
         return None
-    name, lat, lon = picked
+    name, lat, lon, role = picked
     pending = latlon_box_value(lat=lat, lon=lon, name=as_bahnhof(name=name))
-    return pending if pending != last_applied else None
+    return (pending, role) if pending != last_applied else None
 
 
 def map_click_start_pending(*, event: object, armed: bool, last_applied: str | None) -> str | None:

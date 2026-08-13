@@ -6,16 +6,18 @@ types, ids, and per-row data (position lifted above terrain, colours, tooltips) 
 
 import pydeck as pdk
 
-from bike_router.core.constants import Palette, WebMapConfig
+from bike_router.core.constants import Palette, SessionKey, WebMapConfig
 from bike_router.ui.webmap import RibbonSegment, default_view_state
 from bike_router.ui.webmap_layers import (
     _marker_layer,
     _marker_row,
+    _path_layer,
     build_deck,
     create_endpoint_layer,
+    create_extremum_station_layer,
+    create_rail_ascent_layer,
     create_route_ribbon_layers,
     create_terrain_layer,
-    create_top_station_layer,
     create_waypoint_layer,
 )
 
@@ -37,9 +39,19 @@ def test_create_terrain_layer():
     assert terrain.type == "TerrainLayer" and terrain.id == "terrain_3d"
 
 
+def test_path_layer():
+    # The shared pickable PathLayer (route ribbon + ascents): every RibbonSegment becomes a data row.
+    segments = [
+        _seg(_rgb(Palette.BLUE), 20.0, [[8.0, 48.0, 1100.0], [8.01, 48.0, 1100.0]], tooltip="paved · quiet way"),
+        _seg(list(WebMapConfig.RAIL_COLOR), 8.0, [[8.01, 48.0, 1100.0], [8.02, 48.0, 1100.0]], tooltip="Train: A → B"),
+    ]
+    layer = _path_layer(segments=segments, layer_id="probe_path")
+    assert layer.type == "PathLayer" and layer.pickable and layer.id == "probe_path"
+    assert len(layer.data) == 2 and layer.data[0]["tooltip"] == "paved · quiet way"
+
+
 def test_create_route_ribbon_layers():
-    # ONE pickable PathLayer holding every run as a data row (uniform picking across the ribbon);
-    # per-row path/color/width/tooltip carried through.
+    # ONE pickable PathLayer holding every run as a data row (uniform picking across the ribbon).
     segments = [
         _seg(_rgb(Palette.BLUE), 20.0, [[8.0, 48.0, 1100.0], [8.01, 48.0, 1100.0]], tooltip="paved · quiet way"),
         _seg(list(WebMapConfig.RAIL_COLOR), 8.0, [[8.01, 48.0, 1100.0], [8.02, 48.0, 1100.0]], tooltip="Train: A → B"),
@@ -49,7 +61,6 @@ def test_create_route_ribbon_layers():
     layer = ribbons[0]
     assert layer.type == "PathLayer" and layer.pickable and layer.id == "route_ribbon"
     assert len(layer.data) == 2  # both runs are rows in the single layer
-    assert layer.data[0]["tooltip"] == "paved · quiet way"
     assert layer.data[1]["tooltip"] == "Train: A → B"
 
 
@@ -95,13 +106,27 @@ def test_create_waypoint_layer():
     assert layer.data[0]["tooltip"] == "Freudenstadt Stadt (700 m)"
 
 
-def test_create_top_station_layer():
-    # Rail-purple clickable markers; each datum carries a ``name`` (for click-to-fill) + hover tooltip.
-    layer = create_top_station_layer(top_stations=[(48.47, 8.41, 739.0, "Freudenstadt Stadt")])
-    assert layer.type == "ScatterplotLayer" and layer.id == "top_stations" and layer.pickable
-    assert layer.data[0]["color"] == list(WebMapConfig.RAIL_COLOR)  # rail purple
-    assert layer.data[0]["name"] == "Freudenstadt Stadt"  # picked datum → fills Start box
+def test_create_extremum_station_layer():
+    # Green maxima (Start role) or red minima (End role); each datum carries name + role + hover tooltip.
+    green = list(WebMapConfig.MAXIMA_COLOR)
+    layer = create_extremum_station_layer(
+        stations=[(48.47, 8.41, 739.0, "Freudenstadt Stadt")], color=green, role=SessionKey.START_BOX, layer_id="maxima"
+    )
+    assert layer.type == "ScatterplotLayer" and layer.id == "maxima" and layer.pickable
+    assert layer.data[0]["color"] == green  # green for a top
+    assert layer.data[0]["name"] == "Freudenstadt Stadt"  # picked datum → fills a box
+    assert layer.data[0]["role"] == SessionKey.START_BOX  # a top fills Start
     assert layer.data[0]["tooltip"] == "Freudenstadt Stadt (739 m)"
+
+
+def test_create_rail_ascent_layer():
+    # A pickable purple PathLayer of ascent legs, id "rail_ascents".
+    seg = _seg(
+        list(WebMapConfig.RAIL_COLOR), 40.0, [[8.4, 48.5, 595.0], [8.41, 48.47, 839.0]], tooltip="Train climb: …"
+    )
+    layer = create_rail_ascent_layer(segments=[seg])
+    assert layer.type == "PathLayer" and layer.id == "rail_ascents" and layer.pickable
+    assert layer.data[0]["tooltip"] == "Train climb: …"
 
 
 def test_build_deck():
@@ -109,7 +134,14 @@ def test_build_deck():
     # in that draw order, carrying the camera pose from the ViewState.
     view = default_view_state()
     terrain_only = build_deck(
-        view=view, ribbon_segments=None, endpoints=None, endpoint_labels=None, waypoints=None, top_stations=None
+        view=view,
+        ribbon_segments=None,
+        endpoints=None,
+        endpoint_labels=None,
+        waypoints=None,
+        maxima=None,
+        minima=None,
+        rail_ascents=None,
     )
     assert len(terrain_only.layers) == 1
     assert terrain_only.initial_view_state.latitude == WebMapConfig.DEFAULT_LAT
@@ -120,7 +152,9 @@ def test_build_deck():
         endpoints=((48.0, 8.0, 300.0), (48.4, 8.6, 500.0)),
         endpoint_labels=("Start (300 m)", "End (500 m)"),
         waypoints=None,
-        top_stations=None,
+        maxima=None,
+        minima=None,
+        rail_ascents=None,
     )
     assert len(with_endpoints.layers) == 2
 
@@ -134,19 +168,24 @@ def test_build_deck():
         endpoints=((48.0, 8.0, 300.0), (48.4, 8.6, 500.0)),
         endpoint_labels=("Start (300 m)", "End (500 m)"),
         waypoints=[(48.01, 8.01, 500.0, "S (500 m)")],
-        top_stations=None,
+        maxima=None,
+        minima=None,
+        rail_ascents=None,
     )
     assert [layer.id for layer in full.layers] == ["terrain_3d", "route_waypoints", "route_endpoints", "route_ribbon"]
 
 
 def test_build_deck_with_top_stations():
-    # Top-station markers layer is inserted right above the terrain when supplied.
+    # Ascent legs + min/max marker layers stack above terrain, drawn ascents → minima → maxima.
+    ascent = _seg(list(WebMapConfig.RAIL_COLOR), 40.0, [[8.4, 48.5, 595.0], [8.41, 48.47, 839.0]])
     deck = build_deck(
         view=default_view_state(),
         ribbon_segments=None,
         endpoints=None,
         endpoint_labels=None,
         waypoints=None,
-        top_stations=[(48.47, 8.41, 739.0, "Freudenstadt Stadt")],
+        maxima=[(48.47, 8.41, 739.0, "Freudenstadt Stadt")],
+        minima=[(48.55, 8.40, 495.0, "Röt")],
+        rail_ascents=[ascent],
     )
-    assert [layer.id for layer in deck.layers] == ["terrain_3d", "top_stations"]
+    assert [layer.id for layer in deck.layers] == ["terrain_3d", "rail_ascents", "minima", "maxima"]

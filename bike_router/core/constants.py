@@ -78,6 +78,8 @@ class Schema:
     GEOMETRY = "geometry"
     LENGTH = "length"
     HEIGHT_DIFF = "height_diff"
+    # pyarrow pushdown-filter membership operator, shared by every read_tiles filter (graph_store + rail_ascent).
+    FILTER_IN = "in"
 
 
 class Condition:
@@ -133,6 +135,9 @@ LOG_FORMAT = "%(levelname)s %(name)s: %(message)s"
 # The "name" field/tag — the OSM name column (builder), Photon feature name (geocoding), and the
 # deck.gl picked-datum / marker key (ui). One string across the app's several "name" touch-points.
 NAME_KEY = "name"
+# The deck.gl marker-datum key carrying which box (Start/End) a clicked extremum station fills —
+# one string across the layer builder (writes it) and the click reader (reads it).
+ROLE_KEY = "role"
 # Endpoint human labels — the origin/destination, shown as the geocode-error field name (pipeline)
 # and the Start input box label (web app). Destination has no cross-file dup but pairs here for clarity.
 START_LABEL = "Start"
@@ -168,6 +173,8 @@ class RailConfig:
     # Schartenhöhe (prominence): it must rise this far above the LOWEST station in that radius.
     TOP_STATION_DOMINANCE_KM = 10.0
     TOP_STATION_PROMINENCE_M = 100.0
+    # Min DIRECT-LINE (haversine) rise/run for a min→max rail leg to be a "good ascent" (not track grade).
+    MIN_ASCENT_GRADE = 0.03
 
 
 class GraphConfig:
@@ -626,6 +633,10 @@ class WebMapConfig:
     START_COLOR = Palette.hex_to_rgb(hex_color=Palette.START)  # blue (start marker)
     END_COLOR = Palette.hex_to_rgb(hex_color=Palette.END)  # cyan (destination marker)
     RAIL_COLOR = Palette.hex_to_rgb(hex_color=Palette.RAIL)  # purple — the train ribbon + donut only
+    # Station-extrema markers: local-max (top) stations green, local-min (bottom) stations red — a
+    # clicked top fills Start, a clicked bottom fills End. The ascent line reuses RAIL_COLOR (purple).
+    MAXIMA_COLOR = Palette.hex_to_rgb(hex_color=Palette.GREEN)  # green — local-maximum ("top") stations
+    MINIMA_COLOR = Palette.hex_to_rgb(hex_color=Palette.RED)  # red — local-minimum ("bottom") stations
     # Composition "by mode" display labels: two buckets only — pedalled vs train (station access-hops
     # fold into "bike route"). The label→colour map lives in core/composition (MODE_COLORS, one source).
     MODE_DONUT_LABELS = {Mode.BIKE: "bike route", Mode.RAIL: "train path"}

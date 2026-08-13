@@ -21,6 +21,7 @@ from bike_router.core.constants import (
     START_LABEL,
     GraphConfig,
     PhotonConfig,
+    RailConfig,
     RoutingDefaults,
     RoutingParams,
     SessionKey,
@@ -34,8 +35,9 @@ from bike_router.core.geocoding import (
     latlon_box_value,
     nearest_place_name,
 )
-from bike_router.core.graph_store import download_graph_from_hf, load_meta, top_stations
+from bike_router.core.graph_store import download_graph_from_hf, load_meta
 from bike_router.core.pipeline import RouteResult, plan_route, resolve_endpoints
+from bike_router.core.rail_ascent import StationExtrema, station_extrema
 from bike_router.core.simplify import format_bike_legs, format_rail_legs, rail_leg_tooltips
 from bike_router.ui.webmap import (
     COMPUTE_LABEL,
@@ -54,6 +56,7 @@ from bike_router.ui.webmap import (
     output_donuts,
     output_stat_rows,
     profile_markers,
+    rail_ascent_segments,
     route_ribbon_segments,
     route_view_state,
     scale_label,
@@ -112,7 +115,8 @@ def render_route_output(result: RouteResult) -> None:
             for col, (label, value) in zip(st.columns(len(pairs)), pairs, strict=True):
                 col.metric(label, value)
 
-        for col, (title, by_km, colors) in zip(st.columns(3), output_donuts(result), strict=True):
+        donuts = output_donuts(result)
+        for col, (title, by_km, colors) in zip(st.columns(len(donuts)), donuts, strict=True):
             col.altair_chart(composition_donut(title=title, by_km=by_km, colors=colors), width="stretch")
 
         # Below the donuts: the elevation profile with the SAME named markers the map shows.
@@ -202,13 +206,13 @@ def _recenter_on_endpoints(start: tuple[float, float, float], end: tuple[float, 
     )
 
 
-def apply_pending_start(box_value: str) -> None:
-    """Stash a Start-box value for the next render, then rerun — the ONE pending-start path.
+def apply_pending_box(*, field: str, box_value: str) -> None:
+    """Stash a place-box value for the next render, then rerun — the ONE pending-box path.
 
-    A widget key can't be written after its widget renders, so GPS, top-station clicks and map
+    A widget key can't be written after its widget renders, so GPS, extremum-station clicks and map
     clicks all funnel their "lat, lon [(Name)]" box value through here (stash + rerun), no copies.
     """
-    st.session_state._pending_start = box_value
+    st.session_state[f"_pending_{field}"] = box_value
     st.rerun()
 
 
@@ -235,11 +239,11 @@ def set_endpoints() -> None:
     _recenter_on_endpoints(start=start, end=end)
 
 
-def toggle_top_stations() -> None:
-    """Toggle the rail-purple top-station inspiration markers on the map."""
-    shown = not st.session_state.get("show_top_stations", False)
-    st.session_state.show_top_stations = shown
-    logger.info(f"Top stations {'shown (map flattened for clicks)' if shown else 'hidden'}")
+def toggle_station_extrema() -> None:
+    """Toggle the station-extrema markers (green tops → Start, red bottoms → End) + ascent lines."""
+    shown = not st.session_state.get("show_station_extrema", False)
+    st.session_state.show_station_extrema = shown
+    logger.info(f"Station extrema {'shown (map flattened for clicks)' if shown else 'hidden'}")
 
 
 def request_gps() -> None:
@@ -272,18 +276,18 @@ def capture_gps() -> None:
     box_value = latlon_box_value(lat=lat, lon=lon, name=None)  # same box-coord format as picks
     st.toast(f"📍 Location set as Start (±{accuracy:.0f} m accuracy).", icon="📍")
     logger.info(f"GPS fix → Start box {box_value!r} (±{accuracy:.0f} m)")
-    apply_pending_start(box_value=box_value)
+    apply_pending_box(field=SessionKey.START_BOX, box_value=box_value)
 
 
 @st.cache_data(ttl=3600)  # type: ignore[misc]  # untyped external decorator; one whole-graph scan, cached
-def top_station_markers() -> list[tuple[float, float, float, str]]:
-    """Local-maximum rail stations across the coverage area (cached — a one-off whole-graph scan)."""
-    tops = top_stations(graph_dir=GraphConfig.GRAPH_DIR)
-    if not tops:
-        logger.warning("Top-station scan found no local-maximum rail stations — the map will show none")
-    else:
-        logger.info(f"Top-station scan: {len(tops)} local-maximum rail stations")
-    return tops
+def station_extrema_markers() -> StationExtrema:
+    """Green maxima + red minima markers + purple ascent legs from ONE cached whole-graph scan."""
+    extrema = station_extrema(graph_dir=GraphConfig.GRAPH_DIR, grade_threshold=RailConfig.MIN_ASCENT_GRADE)
+    logger.info(
+        f"Station-extrema scan: {len(extrema.maxima)} maxima, {len(extrema.minima)} minima, "
+        f"{len(extrema.ascents)} ascent leg(s)"
+    )
+    return extrema
 
 
 def swap_endpoints() -> None:
@@ -308,10 +312,10 @@ def configure_logging() -> None:
 
 
 def seed_state() -> None:
-    """Seed session_state defaults ONCE, then apply any pending Start-box fill (top-station/GPS click).
+    """Seed session_state defaults ONCE, then apply any pending place-box fill (station/GPS/map click).
 
-    A widget key can't be written after its widget renders, so a click stashes into _pending_start;
-    we apply it to start_box HERE, before the box is instantiated this run.
+    A widget key can't be written after its widget renders, so a click stashes into _pending_<box>;
+    we apply it to that box HERE, before the box is instantiated this run.
     """
     for key, initial in {
         SessionKey.START_LATLON: None,
@@ -321,15 +325,16 @@ def seed_state() -> None:
         SessionKey.END_BOX_RESOLVED: None,
         "view": default_view_state(),
         "camera_epoch": 0,
-        "show_top_stations": False,  # rail-purple top-station inspiration markers toggle
+        "show_station_extrema": False,  # green-max / red-min station markers + purple ascent lines toggle
         "gps_requested": False,  # armed by "My location", read on the next render
         "arm_map_click_start": False,  # armed by the 🎯 button, consumed by the next empty-map click
     }.items():
         st.session_state.setdefault(key, initial)
-    if st.session_state.get("_pending_start") is not None:
-        pending = st.session_state.pop("_pending_start")
-        st.session_state.start_box = pending
-        logger.debug(f"Applied pending Start-box fill: {pending!r}")
+    for field in (SessionKey.START_BOX, SessionKey.END_BOX):
+        if st.session_state.get(f"_pending_{field}") is not None:
+            pending = st.session_state.pop(f"_pending_{field}")
+            st.session_state[field] = pending
+            logger.debug(f"Applied pending fill to {field}: {pending!r}")
 
 
 def render_controls() -> tuple[str, str]:
@@ -352,7 +357,7 @@ def render_controls() -> tuple[str, str]:
     # horizontal group that never stacks — beside Set on desktop, dropping below as a unit on mobile.
     # 📍 GPS fills directly; 🎯 and 🚞 are ARM toggles (red while armed) whose next map click sets Start.
     map_armed = st.session_state.get("arm_map_click_start", False)
-    tops_armed = st.session_state.get("show_top_stations", False)
+    extrema_armed = st.session_state.get("show_station_extrema", False)
     with st.container(horizontal=True, gap="small"):
         st.button(SET_LABEL, width="stretch", help="Geocode the Start/End places", on_click=set_endpoints)
         with st.container(horizontal=True, gap="small", width="content"):
@@ -369,9 +374,9 @@ def render_controls() -> tuple[str, str]:
             )
             st.button(
                 "🚞",
-                type=ST_PRIMARY if tops_armed else ST_SECONDARY,
-                help="Arm rail-station markers, then click one to start a downhill trip; click again to hide",
-                on_click=toggle_top_stations,
+                type=ST_PRIMARY if extrema_armed else ST_SECONDARY,
+                help="Show station highs (green→Start) & lows (red→End) + train climbs; click again to hide",
+                on_click=toggle_station_extrema,
             )
     capture_gps()  # if armed by the button, read the browser fix → stash into the Start box (reruns)
     return origin, destination
@@ -454,10 +459,17 @@ def render_map(origin: str, destination: str) -> None:
         else None
     )
     waypoints = map_waypoint_markers(result=result, village_of=village_lookup(result)) if result is not None else None
-    tops = top_station_markers() if st.session_state.get("show_top_stations", False) else None
-    # deck.gl picking is unreliable under pitch, so WHENEVER a click must be caught (top-station markers
+    extrema = station_extrema_markers() if st.session_state.get("show_station_extrema", False) else None
+    maxima = extrema.maxima if extrema is not None else None
+    minima = extrema.minima if extrema is not None else None
+    ascents = (
+        rail_ascent_segments(ascents=extrema.ascents, float_above_m=WebMapConfig.RIBBON_FLOAT_ABOVE_M)
+        if extrema is not None
+        else None
+    )
+    # deck.gl picking is unreliable under pitch, so WHENEVER a click must be caught (extrema markers
     # shown OR map-click armed) flatten the camera to top-down — the one gate both arm-buttons share.
-    top_down = tops is not None or st.session_state.get("arm_map_click_start", False)
+    top_down = extrema is not None or st.session_state.get("arm_map_click_start", False)
     view = flattened_view(st.session_state.view) if top_down else st.session_state.view
     deck = build_deck(
         view=view,
@@ -465,35 +477,37 @@ def render_map(origin: str, destination: str) -> None:
         endpoints=endpoints,
         endpoint_labels=labels,
         waypoints=waypoints,
-        top_stations=tops,
+        maxima=maxima,
+        minima=minima,
+        rail_ascents=ascents,
     )
     map_key = map_remount_key(
         camera_epoch=st.session_state.camera_epoch, top_down=top_down, has_ribbon=ribbon is not None
     )
     event = st_deckgl(deck, key=map_key, height=WebMapConfig.MAP_HEIGHT_PX, events=["click"])
-    handle_top_station_click(event=event)
+    handle_station_click(event=event)
     handle_map_click_start(event=event)
 
 
-def handle_top_station_click(event: object) -> None:
-    """Stash a clicked top-station's name for the Start box, then rerun (else no-op).
+def handle_station_click(event: object) -> None:
+    """Stash a clicked extremum-station's value into Start (green max) or End (red min), then rerun.
 
-    We must NOT write start_box here (its widget already rendered); it goes through the shared
-    apply_pending_start (stash + rerun); the last-applied marker dedups the re-returned event.
+    We must NOT write the box here (its widget already rendered); it goes through the shared
+    apply_pending_box (stash + rerun); markers stay shown so both ends can be picked in one arming.
     """
-    name = station_click_pending(event=event, last_applied=st.session_state.get("_last_station_click"))
-    if name is not None:
-        logger.info(f"Top-station clicked → filling Start box with {name!r}")
-        st.session_state._last_station_click = name
-        st.session_state.show_top_stations = False  # auto-disarm: markers hide, button returns to white
-        apply_pending_start(box_value=name)
+    pending = station_click_pending(event=event, last_applied=st.session_state.get("_last_station_click"))
+    if pending is not None:
+        box_value, field = pending
+        logger.info(f"Station clicked → filling {field} with {box_value!r}")
+        st.session_state._last_station_click = box_value
+        apply_pending_box(field=field, box_value=box_value)
 
 
 def handle_map_click_start(event: object) -> None:
     """When the map-click button armed it, stash an empty-map click's coords as Start, then rerun.
 
-    Disarms on a hit so only ONE click sets Start; shares the apply_pending_start stash+rerun path,
-    and dedups the re-returned event against the last-applied marker (like the top-station handler).
+    Disarms on a hit so only ONE click sets Start; shares the apply_pending_box stash+rerun path,
+    and dedups the re-returned event against the last-applied marker (like the station handler).
     """
     box_value = map_click_start_pending(
         event=event,
@@ -504,4 +518,4 @@ def handle_map_click_start(event: object) -> None:
         logger.info(f"Map clicked → filling Start box with {box_value!r}")
         st.session_state._last_map_click = box_value
         st.session_state.arm_map_click_start = False
-        apply_pending_start(box_value=box_value)
+        apply_pending_box(field=SessionKey.START_BOX, box_value=box_value)

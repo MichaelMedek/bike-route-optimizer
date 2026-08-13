@@ -14,7 +14,7 @@ import pytest
 from shapely.geometry import box
 
 from bike_router.core import graph_store
-from bike_router.core.constants import GraphConfig, Mode, NodeType, RailConfig
+from bike_router.core.constants import GraphConfig, Mode, NodeType
 from bike_router.core.errors import OutOfCoverageError
 from bike_router.core.graph_store import (
     _covering_tiles,
@@ -26,12 +26,12 @@ from bike_router.core.graph_store import (
     load_meta,
     load_path_edges,
     load_route_tables,
+    oriented_polyline,
     read_tiles,
     snap_to_node,
     str_or_none,
     tile_index,
     tile_name,
-    top_stations,
 )
 from bike_router.core.progress import null_progress
 from bike_router.core.route_path import RouteNode
@@ -224,6 +224,16 @@ def test_oriented_geometry():
     assert _oriented_geometry(wkt=None, node_a=node_a) == (None, None)  # a straight hop has no polyline
 
 
+def test_oriented_polyline():
+    # The public lon/lat-keyed core: orient to START near (start_lon, start_lat), flipping z in lockstep;
+    # (None, None) if the WKT is absent. _oriented_geometry is the RouteNode wrapper over this.
+    coords, zs = oriented_polyline(wkt="LINESTRING Z (8.0 48.0 100, 8.01 48.0 130)", start_lon=8.0, start_lat=48.0)
+    assert coords[0] == (8.0, 48.0) and zs == [100.0, 130.0]
+    r_coords, r_zs = oriented_polyline(wkt="LINESTRING Z (8.01 48.0 130, 8.0 48.0 100)", start_lon=8.0, start_lat=48.0)
+    assert r_coords[0] == (8.0, 48.0) and r_zs == [100.0, 130.0]
+    assert oriented_polyline(wkt=None, start_lon=8.0, start_lat=48.0) == (None, None)
+
+
 # --- snapping ----------------------------------------------------------------
 
 
@@ -235,18 +245,6 @@ def test_snap_to_node():
     assert elev > 0  # baked elevation, no DEM involved
     with pytest.raises(OutOfCoverageError, match="outside the covered region"):
         snap_to_node(lat=52.52, lon=13.40, graph_dir=FIXTURE_GRAPH_DIR)
-
-
-def test_top_stations():
-    # Prominent local-high stations: full Dominanz (highest within the radius) AND Schartenhöhe ≥
-    # threshold (rises that far above the lowest nearby stop). Freudenstadt Stadt (739 m) — highest and
-    # 244 m above the lowest station near it (495 m) — is the sole fixture top.
-    tops = top_stations(graph_dir=FIXTURE_GRAPH_DIR)
-    assert tops, "fixture should expose at least one top station"
-    lat, lon, elev, name = tops[0]
-    assert name == "Freudenstadt Stadt" and elev == 739.0  # the highest fixture station
-    assert elev >= RailConfig.TOP_STATION_PROMINENCE_M  # comfortably clears the prominence gate
-    assert tops == sorted(tops, key=lambda t: t[2], reverse=True)  # highest first
 
 
 # --- download / coercion -----------------------------------------------------
