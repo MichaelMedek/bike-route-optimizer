@@ -16,6 +16,7 @@ from bike_router.core.rail_extrema import (
     is_confirmed_extremum,
     load_stations,
     station_extrema,
+    station_line_degrees,
     station_markers,
     station_rail_neighbors,
 )
@@ -136,12 +137,11 @@ def test_station_extrema():
 
 # --- FULL e2e against the real DACH dataset (skipped when only the fixture is present) ---------
 
-# Real stations whose known topology fixes their class: valley hubs/termini (min) vs summits (max).
-_REAL_MINIMA = ["Horb", "Scuol-Tarasp"]
-_REAL_MAXIMA = ["Freudenstadt Stadt", "Bad Wildbad Bahnhof"]
-# Stations that must NOT be extrema: gentle slope-stops and flat north-German-plain stops.
-_REAL_NOT_MAXIMA = ["Bondorf", "Dallau"]
-_REAL_NOT_MINIMA = ["Delmenhorst", "Hodenhagen"]
+# Real stations whose known topology fixes their class:
+_REAL_MINIMA = ["Horb", "Scuol-Tarasp", "Calw"]
+_REAL_MAXIMA = ["Freudenstadt Stadt", "Bad Wildbad Bahnhof", "Hochdorf", "St. Georgen(Schwarzw)"]
+# Stations that must NOT be extrema:
+_REAL_NOT_EXTREMA = ["Bondorf", "Dallau", "Delmenhorst", "Hodenhagen", "Bad Bergzabern", "Mühlen", "Nagold Stadtmitte"]
 
 
 @pytest.mark.skipif(
@@ -149,11 +149,57 @@ _REAL_NOT_MINIMA = ["Delmenhorst", "Hodenhagen"]
     reason="real dataset not present in data/ (only the committed fixture is available)",
 )
 def test_station_extrema_real_classification() -> None:
-    """FULL e2e: known summits/valleys classify right, and gentle/flat stops are NOT extrema."""
+    """FULL e2e: known summits/valleys classify right, and in-between/flat stops are NOT extrema."""
     payload = station_extrema(graph_dir=GraphConfig.GRAPH_DIR)
     minima = {m[3] for m in payload.minima}
     maxima = {m[3] for m in payload.maxima}
+    extrema = minima | maxima
     assert all(name in minima for name in _REAL_MINIMA)
     assert all(name in maxima for name in _REAL_MAXIMA)
-    assert not any(name in maxima for name in _REAL_NOT_MAXIMA)
-    assert not any(name in minima for name in _REAL_NOT_MINIMA)
+    assert not any(name in extrema for name in _REAL_NOT_EXTREMA)
+
+
+@pytest.mark.skipif(
+    not (GraphConfig.GRAPH_DIR / GraphConfig.META_FILENAME).exists(),
+    reason="real dataset not present in data/ (only the committed fixture is available)",
+)
+def test_station_extrema_real_proportions() -> None:
+    """FULL e2e: extrema stay SELECTIVE — ≤5% of all stations, tops and bottoms balanced within ±20%."""
+    n_stations = len(load_stations(graph_dir=GraphConfig.GRAPH_DIR))
+    payload = station_extrema(graph_dir=GraphConfig.GRAPH_DIR)
+    n_tops, n_bottoms = len(payload.maxima), len(payload.minima)
+    assert n_tops + n_bottoms <= 0.05 * n_stations, "extrema must be at most 5% of all stations"
+    assert n_tops and n_bottoms, "both classes must be non-empty to compare"
+    assert 1 / 1.2 <= n_bottoms / n_tops <= 1.2, "bottoms must be within ±20% of tops"
+
+
+# NON-NEGOTIABLE ground-truth station line-degree
+_REAL_LINE_DEGREE = {
+    "Horb": 4,
+    "Eutingen": 3,
+    "Eutingen Nord": 3,
+    "Mühlen": 2,
+    "Eyach": 3,
+    "Bad Wildbad Bahnhof": 1,
+    "Hochdorf": 3,
+    "Nagold Stadtmitte": 2,
+    "Calw": 3,
+    "St. Georgen(Schwarzw)": 2,
+    "Bondorf": 2,
+    "Scuol-Tarasp": 1,
+    "Aulendorf": 4,
+    "Friedrichshafen Stadt": 4,
+    "Lindau-Insel": 2,
+}
+
+
+@pytest.mark.skipif(
+    not (GraphConfig.GRAPH_DIR / GraphConfig.META_FILENAME).exists(),
+    reason="real dataset not present in data/ (only the committed fixture is available)",
+)
+def test_station_line_degree_real() -> None:
+    """FULL e2e: the resolved line-degree matches the hand-read ground truth for every known station."""
+    degrees = station_line_degrees(graph_dir=GraphConfig.GRAPH_DIR)
+    for name, want in _REAL_LINE_DEGREE.items():
+        got = degrees[name]
+        assert got == want, f"{name}: line-degree {got} != ground-truth {want}"
