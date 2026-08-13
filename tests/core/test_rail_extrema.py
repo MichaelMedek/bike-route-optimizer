@@ -139,6 +139,9 @@ def test_station_extrema():
 # Real stations whose known topology fixes their class: valley hubs/termini (min) vs summits (max).
 _REAL_MINIMA = ["Horb", "Scuol-Tarasp"]
 _REAL_MAXIMA = ["Freudenstadt Stadt", "Bad Wildbad Bahnhof"]
+# Stations that must NOT be extrema: gentle slope-stops and flat north-German-plain stops.
+_REAL_NOT_MAXIMA = ["Bondorf", "Dallau"]
+_REAL_NOT_MINIMA = ["Delmenhorst", "Hodenhagen"]
 
 
 @pytest.mark.skipif(
@@ -146,9 +149,11 @@ _REAL_MAXIMA = ["Freudenstadt Stadt", "Bad Wildbad Bahnhof"]
     reason="real dataset not present in data/ (only the committed fixture is available)",
 )
 def test_station_extrema_real_classification() -> None:
-    """FULL e2e: on the real dataset, known valley stations classify as minima, known summits as maxima."""
+    """FULL e2e: known summits/valleys classify right, and gentle/flat stops are NOT extrema."""
     payload = station_extrema(graph_dir=GraphConfig.GRAPH_DIR)
     minima = {m[3] for m in payload.minima}
     maxima = {m[3] for m in payload.maxima}
     assert all(name in minima for name in _REAL_MINIMA)
     assert all(name in maxima for name in _REAL_MAXIMA)
+    assert not any(name in maxima for name in _REAL_NOT_MAXIMA)
+    assert not any(name in minima for name in _REAL_NOT_MINIMA)
