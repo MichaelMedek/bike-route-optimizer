@@ -135,20 +135,17 @@ def read_tiles(
     """Concatenate per-tile Parquet files in ``directory`` into one DataFrame.
 
     ``tiles`` selects specific (row, col) tiles (missing skipped); ``tiles=None`` reads EVERY
-    ``tile_*.parquet``. ``filters`` = optional pyarrow pushdown so a tile yields only matching rows.
+    ``tile_*.parquet`` in ONE threaded pyarrow scan. ``filters`` = pyarrow pushdown.
     """
     if tiles is None:
-        paths = sorted(directory.glob(f"tile_*{GraphConfig.TILE_SUFFIX}"))
-    else:
-        paths = [
-            p
-            for row, col in tiles
-            if (p := directory / f"{tile_name(row=row, col=col)}{GraphConfig.TILE_SUFFIX}").exists()
-        ]
-    frames = [pd.read_parquet(path, filters=filters) for path in paths]
-    if not frames:
+        # Whole-directory read: pandas hands the dir to pyarrow.dataset, which scans every file.
+        return pd.read_parquet(directory, columns=columns, filters=filters)
+    paths = [
+        p for row, col in tiles if (p := directory / f"{tile_name(row=row, col=col)}{GraphConfig.TILE_SUFFIX}").exists()
+    ]
+    if not paths:
         return pd.DataFrame(columns=columns)
-    return pd.concat(frames, ignore_index=True)
+    return pd.read_parquet(paths, columns=columns, filters=filters)
 
 
 def _load_layer(
@@ -331,13 +328,13 @@ def _select_path_edges(*, nodes: list[RouteNode], edges_df: pd.DataFrame, params
     return edges
 
 
-def oriented_polyline(
-    *, wkt: object, start_lon: float, start_lat: float
+def _oriented_geometry(
+    *, wkt: object, node_a: RouteNode
 ) -> tuple[list[tuple[float, float]] | None, list[float] | None]:
-    """WKT LINESTRING → (2D ``[(lon, lat), ...]``, baked z per vertex) oriented to start near (start_lon, start_lat).
+    """WKT LINESTRING → (2D ``[(lon, lat), ...]``, baked z per vertex) oriented to start at node_a.
 
-    Returns (None, None) when absent. The z list (real baked elevation) lets callers warn when a linear
-    node-to-node interpolation deviates far from the true terrain, or fall back to a straight segment.
+    Returns (None, None) when absent. The z list (real baked elevation) lets the display warn when
+    the linear node-to-node interpolation deviates far from the true terrain on a long edge.
     """
     if not isinstance(wkt, str):
         return None, None
@@ -345,17 +342,10 @@ def oriented_polyline(
     coords = [(float(c[0]), float(c[1])) for c in raw]
     zs = [float(c[2]) if len(c) >= 3 else float("nan") for c in raw]
     first, last = coords[0], coords[-1]
-    if abs(first[0] - start_lon) + abs(first[1] - start_lat) > abs(last[0] - start_lon) + abs(last[1] - start_lat):
+    if abs(first[0] - node_a.lon) + abs(first[1] - node_a.lat) > abs(last[0] - node_a.lon) + abs(last[1] - node_a.lat):
         coords.reverse()
         zs.reverse()
     return coords, zs
-
-
-def _oriented_geometry(
-    *, wkt: object, node_a: RouteNode
-) -> tuple[list[tuple[float, float]] | None, list[float] | None]:
-    """WKT geometry oriented to start at node_a — the RouteNode-keyed wrapper over oriented_polyline."""
-    return oriented_polyline(wkt=wkt, start_lon=node_a.lon, start_lat=node_a.lat)
 
 
 def snap_to_node(lat: float, lon: float, graph_dir: Path) -> tuple[float, float, float]:

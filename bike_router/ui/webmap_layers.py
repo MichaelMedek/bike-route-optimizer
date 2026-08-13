@@ -26,30 +26,31 @@ def create_terrain_layer(mesh_max_error: float) -> pdk.Layer:
     )
 
 
-def _path_layer(*, segments: list[RibbonSegment], layer_id: str) -> pdk.Layer:
-    """ONE pickable PathLayer holding each RibbonSegment as a row (path/color/width/tooltip).
+def create_route_ribbon_layers(segments: list[RibbonSegment]) -> list[pdk.Layer]:
+    """ONE pickable PathLayer holding every contiguous run as a data row (path/color/width/tooltip).
 
-    A single layer (not one-per-run) so deck.gl picking is uniform across the whole path — stacking
-    single-datum PathLayers left only the first few runs hoverable. Shared by the route ribbon + ascents.
+    A single layer (not one-per-run) so deck.gl picking is uniform across the WHOLE ribbon — stacking
+    single-datum PathLayers left only the first few runs hoverable. Accessors read each row's fields.
+
+    Args:
+        segments: RibbonSegment runs from webmap.route_ribbon_segments (color RGB, width_m,
+            points ``[[lon, lat, z], ...]`` z-lifted, tooltip text).
     """
     data = [{"path": seg.points, "color": seg.color, "width": seg.width_m, "tooltip": seg.tooltip} for seg in segments]
-    return pdk.Layer(
-        "PathLayer",
-        data,
-        get_path="path",
-        get_color="color",
-        get_width="width",
-        width_min_pixels=WebMapConfig.RIBBON_MIN_PIXELS,
-        cap_rounded=True,
-        joint_rounded=True,
-        id=layer_id,
-        pickable=True,
-    )
-
-
-def create_route_ribbon_layers(segments: list[RibbonSegment]) -> list[pdk.Layer]:
-    """The route ribbon as a single pickable PathLayer (see _path_layer)."""
-    return [_path_layer(segments=segments, layer_id="route_ribbon")]
+    return [
+        pdk.Layer(
+            "PathLayer",
+            data,
+            get_path="path",
+            get_color="color",
+            get_width="width",
+            width_min_pixels=WebMapConfig.RIBBON_MIN_PIXELS,
+            cap_rounded=True,
+            joint_rounded=True,
+            id="route_ribbon",
+            pickable=True,
+        )
+    ]
 
 
 def _marker_layer(*, layer_id: str, markers: list[dict[str, object]], radius_m: float, min_pixels: int) -> pdk.Layer:
@@ -153,11 +154,6 @@ def create_extremum_station_layer(
     )
 
 
-def create_rail_ascent_layer(*, segments: list[RibbonSegment]) -> pdk.Layer:
-    """A pickable purple PathLayer of "good ascent" rail legs (see _path_layer)."""
-    return _path_layer(segments=segments, layer_id="rail_ascents")
-
-
 def build_deck(
     view: ViewState,
     ribbon_segments: list[RibbonSegment] | None,
@@ -167,16 +163,13 @@ def build_deck(
     waypoints: list[tuple[float, float, float, str]] | None,
     maxima: list[tuple[float, float, float, str]] | None,
     minima: list[tuple[float, float, float, str]] | None,
-    rail_ascents: list[RibbonSegment] | None,
 ) -> pdk.Deck:
-    """Assemble the Deck bottom→top: terrain, ascent legs, min/max stations, waypoints, endpoints, ribbon.
+    """Assemble the Deck bottom→top: terrain, min/max stations, waypoints, endpoints, then the route ribbon.
 
-    One deck-level tooltip (``{tooltip}``) serves every pickable layer — each ribbon segment, ascent leg,
-    station, endpoint, and waypoint datum carries its own ``tooltip`` string (the proven pydeck idiom).
+    One deck-level tooltip (``{tooltip}``) serves every pickable layer — each ribbon segment, station,
+    endpoint, and waypoint datum carries its own ``tooltip`` string (the proven pydeck idiom).
     """
     layers = [create_terrain_layer(mesh_max_error=1.0)]
-    if rail_ascents:
-        layers.append(create_rail_ascent_layer(segments=rail_ascents))
     if minima:
         layers.append(
             create_extremum_station_layer(

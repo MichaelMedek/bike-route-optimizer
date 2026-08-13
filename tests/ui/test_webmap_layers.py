@@ -11,11 +11,9 @@ from bike_router.ui.webmap import RibbonSegment, default_view_state
 from bike_router.ui.webmap_layers import (
     _marker_layer,
     _marker_row,
-    _path_layer,
     build_deck,
     create_endpoint_layer,
     create_extremum_station_layer,
-    create_rail_ascent_layer,
     create_route_ribbon_layers,
     create_terrain_layer,
     create_waypoint_layer,
@@ -37,17 +35,6 @@ def test_create_terrain_layer():
     terrain = create_terrain_layer(mesh_max_error=1.0)
     assert isinstance(terrain, pdk.Layer)
     assert terrain.type == "TerrainLayer" and terrain.id == "terrain_3d"
-
-
-def test_path_layer():
-    # The shared pickable PathLayer (route ribbon + ascents): every RibbonSegment becomes a data row.
-    segments = [
-        _seg(_rgb(Palette.BLUE), 20.0, [[8.0, 48.0, 1100.0], [8.01, 48.0, 1100.0]], tooltip="paved · quiet way"),
-        _seg(list(WebMapConfig.RAIL_COLOR), 8.0, [[8.01, 48.0, 1100.0], [8.02, 48.0, 1100.0]], tooltip="Train: A → B"),
-    ]
-    layer = _path_layer(segments=segments, layer_id="probe_path")
-    assert layer.type == "PathLayer" and layer.pickable and layer.id == "probe_path"
-    assert len(layer.data) == 2 and layer.data[0]["tooltip"] == "paved · quiet way"
 
 
 def test_create_route_ribbon_layers():
@@ -119,16 +106,6 @@ def test_create_extremum_station_layer():
     assert layer.data[0]["tooltip"] == "Freudenstadt Stadt (739 m)"
 
 
-def test_create_rail_ascent_layer():
-    # A pickable purple PathLayer of ascent legs, id "rail_ascents".
-    seg = _seg(
-        list(WebMapConfig.RAIL_COLOR), 40.0, [[8.4, 48.5, 595.0], [8.41, 48.47, 839.0]], tooltip="Train climb: …"
-    )
-    layer = create_rail_ascent_layer(segments=[seg])
-    assert layer.type == "PathLayer" and layer.id == "rail_ascents" and layer.pickable
-    assert layer.data[0]["tooltip"] == "Train climb: …"
-
-
 def test_build_deck():
     # Assembles the Deck bottom→top: terrain only; +endpoints; then terrain/waypoints/endpoints/ribbon
     # in that draw order, carrying the camera pose from the ViewState.
@@ -141,7 +118,6 @@ def test_build_deck():
         waypoints=None,
         maxima=None,
         minima=None,
-        rail_ascents=None,
     )
     assert len(terrain_only.layers) == 1
     assert terrain_only.initial_view_state.latitude == WebMapConfig.DEFAULT_LAT
@@ -154,7 +130,6 @@ def test_build_deck():
         waypoints=None,
         maxima=None,
         minima=None,
-        rail_ascents=None,
     )
     assert len(with_endpoints.layers) == 2
 
@@ -170,14 +145,12 @@ def test_build_deck():
         waypoints=[(48.01, 8.01, 500.0, "S (500 m)")],
         maxima=None,
         minima=None,
-        rail_ascents=None,
     )
     assert [layer.id for layer in full.layers] == ["terrain_3d", "route_waypoints", "route_endpoints", "route_ribbon"]
 
 
 def test_build_deck_with_top_stations():
-    # Ascent legs + min/max marker layers stack above terrain, drawn ascents → minima → maxima.
-    ascent = _seg(list(WebMapConfig.RAIL_COLOR), 40.0, [[8.4, 48.5, 595.0], [8.41, 48.47, 839.0]])
+    # Min/max marker layers stack above terrain, drawn minima → maxima (both separately clickable).
     deck = build_deck(
         view=default_view_state(),
         ribbon_segments=None,
@@ -186,6 +159,5 @@ def test_build_deck_with_top_stations():
         waypoints=None,
         maxima=[(48.47, 8.41, 739.0, "Freudenstadt Stadt")],
         minima=[(48.55, 8.40, 495.0, "Röt")],
-        rail_ascents=[ascent],
     )
-    assert [layer.id for layer in deck.layers] == ["terrain_3d", "rail_ascents", "minima", "maxima"]
+    assert [layer.id for layer in deck.layers] == ["terrain_3d", "minima", "maxima"]

@@ -13,7 +13,6 @@ import pytest
 from bike_router.core.composition import MODE_COLORS
 from bike_router.core.constants import Mode, Palette, SessionKey, WebMapConfig
 from bike_router.core.geo import haversine_distance_m
-from bike_router.core.rail_ascent import RailAscent
 from bike_router.core.track import build_track
 from bike_router.ui.webmap import (
     GRADE_SCALE,
@@ -40,7 +39,6 @@ from bike_router.ui.webmap import (
     picked_station,
     picked_terrain,
     profile_markers,
-    rail_ascent_segments,
     ribbon_width_m,
     route_ribbon_segments,
     route_view_state,
@@ -439,25 +437,6 @@ def test_station_click_pending():
     assert station_click_pending(event=event, last_applied=pending[0]) is None  # re-returned → dedup
     assert station_click_pending(event=event, last_applied="other") == pending  # a NEW/changed click
     assert station_click_pending(event=None, last_applied=None) is None  # no click at all
-
-
-def test_rail_ascent_segments():
-    # One purple RibbonSegment per ascent: z-lifted track polyline + a "Train climb: … %" tooltip.
-    ascent = RailAscent(
-        low_name="Röt",
-        high_name="Freudenstadt Stadt",
-        gain_m=244.0,
-        direct_km=9.85,
-        grade=0.0248,
-        points=[[8.4, 48.5, 495.0], [8.41, 48.47, 739.0]],
-    )
-    segments = rail_ascent_segments(ascents=[ascent], float_above_m=100.0)
-    assert len(segments) == 1
-    seg = segments[0]
-    assert seg.color == list(WebMapConfig.RAIL_COLOR)  # purple, the train colour
-    assert seg.points[0][2] == 595.0 and seg.points[-1][2] == 839.0  # z lifted by float_above_m
-    assert "Train climb: Röt → Freudenstadt Stadt" in seg.tooltip and "+244 m" in seg.tooltip and "2%" in seg.tooltip
-    assert rail_ascent_segments(ascents=[], float_above_m=100.0) == []
 
 
 def test_parse_deck_click():

@@ -78,7 +78,7 @@ class Schema:
     GEOMETRY = "geometry"
     LENGTH = "length"
     HEIGHT_DIFF = "height_diff"
-    # pyarrow pushdown-filter membership operator, shared by every read_tiles filter (graph_store + rail_ascent).
+    # pyarrow pushdown-filter membership operator, shared by every read_tiles filter (graph_store + rail_extrema).
     FILTER_IN = "in"
 
 
@@ -168,13 +168,12 @@ class RailConfig:
     STATION_MAX_ENTRANCES = 5  # declare up to this many nearest bike nodes as entrances
     RAIL_TAGS = ("rail", "light_rail", "narrow_gauge")  # OSM railway= values kept as routable track
     STATION_TAGS = ("station", "halt")  # OSM railway= values treated as boardable stops
-    # A "top" station is a local high point graded by the TWO standard mountaineering measures
-    # Dominanz (topographic isolation): it must be the highest station within this radius.
-    # Schartenhöhe (prominence): it must rise this far above the LOWEST station in that radius.
-    TOP_STATION_DOMINANCE_KM = 10.0
-    TOP_STATION_PROMINENCE_M = 100.0
-    # Min DIRECT-LINE (haversine) rise/run for a min→max rail leg to be a "good ascent" (not track grade).
-    MIN_ASCENT_GRADE = 0.03
+    # "Top": ≥MIN_NEIGHBORS rail branches climb ≥PROMINENCE_M below it (mirrored for "bottom"); each branch
+    # walks on-side terrain until it rises/falls that far. A line-end counts on its one branch. A station can
+    # be BOTH top and bottom; markers nudge ±OFFSET_M (top north, bottom south) so both stay clickable.
+    EXTREMUM_MIN_NEIGHBORS = 2
+    EXTREMA_STATION_PROMINENCE_M = 100.0
+    EXTREMUM_MARKER_OFFSET_M = 10.0
 
 
 class GraphConfig:
@@ -634,7 +633,7 @@ class WebMapConfig:
     END_COLOR = Palette.hex_to_rgb(hex_color=Palette.END)  # cyan (destination marker)
     RAIL_COLOR = Palette.hex_to_rgb(hex_color=Palette.RAIL)  # purple — the train ribbon + donut only
     # Station-extrema markers: local-max (top) stations green, local-min (bottom) stations red — a
-    # clicked top fills Start, a clicked bottom fills End. The ascent line reuses RAIL_COLOR (purple).
+    # clicked top fills Start, a clicked bottom fills End.
     MAXIMA_COLOR = Palette.hex_to_rgb(hex_color=Palette.GREEN)  # green — local-maximum ("top") stations
     MINIMA_COLOR = Palette.hex_to_rgb(hex_color=Palette.RED)  # red — local-minimum ("bottom") stations
     # Composition "by mode" display labels: two buckets only — pedalled vs train (station access-hops

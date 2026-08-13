@@ -332,7 +332,7 @@ def test_handle_map_click_start():
 
 
 def test_station_extrema_markers(fixture_graph):
-    # A cached whole-graph scan → green maxima + red minima marker tuples + purple ascent legs.
+    # A cached whole-graph scan → green local-max + red local-min station marker tuples.
     _clear_caches()
     extrema = app.station_extrema_markers()
     assert all(len(m) == 4 and isinstance(m[3], str) for m in extrema.maxima + extrema.minima)

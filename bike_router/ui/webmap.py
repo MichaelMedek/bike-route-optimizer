@@ -28,7 +28,6 @@ from bike_router.core.constants import (
 )
 from bike_router.core.geo import haversine_vec, nearest_index
 from bike_router.core.geocoding import as_bahnhof, latlon_box_value
-from bike_router.core.rail_ascent import RailAscent
 from bike_router.core.simplify import place_label, route_station_markers  # place_label re-exported for the app shell
 from bike_router.core.track import (
     RouteStats,
@@ -261,26 +260,6 @@ def route_ribbon_segments(
         segments[-1].points.append(xyz)
         if segments[-1].color != color or segments[-1].width_m != width or segments[-1].tooltip != tooltip:
             segments.append(RibbonSegment(color=color, width_m=width, points=[xyz], tooltip=tooltip))
-    return segments
-
-
-def rail_ascent_segments(*, ascents: list[RailAscent], float_above_m: float) -> list[RibbonSegment]:
-    """One purple RibbonSegment per "good ascent" leg — the real track polyline, z-lifted, with a tooltip.
-
-    Purple like the train ribbon (RAIL_COLOR); the tooltip reads as a train climb (low → high, gain,
-    direct-line distance and grade) — deliberately NOT "ski lift" (adhesion rail, not a cog/funicular).
-    """
-    color = list(WebMapConfig.RAIL_COLOR)
-    segments: list[RibbonSegment] = []
-    for ascent in ascents:
-        points = [[lon, lat, z + float_above_m] for lon, lat, z in ascent.points]
-        tooltip = (
-            f"Train climb: {ascent.low_name} → {ascent.high_name} · "
-            f"+{ascent.gain_m:.0f} m over {ascent.direct_km:.1f} km · {ascent.grade * 100:.0f}%"
-        )
-        segments.append(
-            RibbonSegment(color=color, width_m=WebMapConfig.RIBBON_REF_WIDTH_M, points=points, tooltip=tooltip)
-        )
     return segments
 
 

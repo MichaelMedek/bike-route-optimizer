@@ -21,7 +21,6 @@ from bike_router.core.constants import (
     START_LABEL,
     GraphConfig,
     PhotonConfig,
-    RailConfig,
     RoutingDefaults,
     RoutingParams,
     SessionKey,
@@ -37,7 +36,7 @@ from bike_router.core.geocoding import (
 )
 from bike_router.core.graph_store import download_graph_from_hf, load_meta
 from bike_router.core.pipeline import RouteResult, plan_route, resolve_endpoints
-from bike_router.core.rail_ascent import StationExtrema, station_extrema
+from bike_router.core.rail_extrema import StationExtrema, station_extrema
 from bike_router.core.simplify import format_bike_legs, format_rail_legs, rail_leg_tooltips
 from bike_router.ui.webmap import (
     COMPUTE_LABEL,
@@ -56,7 +55,6 @@ from bike_router.ui.webmap import (
     output_donuts,
     output_stat_rows,
     profile_markers,
-    rail_ascent_segments,
     route_ribbon_segments,
     route_view_state,
     scale_label,
@@ -240,7 +238,7 @@ def set_endpoints() -> None:
 
 
 def toggle_station_extrema() -> None:
-    """Toggle the station-extrema markers (green tops → Start, red bottoms → End) + ascent lines."""
+    """Toggle the station-extrema markers (green tops → Start, red bottoms → End) on the map."""
     shown = not st.session_state.get("show_station_extrema", False)
     st.session_state.show_station_extrema = shown
     logger.info(f"Station extrema {'shown (map flattened for clicks)' if shown else 'hidden'}")
@@ -281,13 +279,8 @@ def capture_gps() -> None:
 
 @st.cache_data(ttl=3600)  # type: ignore[misc]  # untyped external decorator; one whole-graph scan, cached
 def station_extrema_markers() -> StationExtrema:
-    """Green maxima + red minima markers + purple ascent legs from ONE cached whole-graph scan."""
-    extrema = station_extrema(graph_dir=GraphConfig.GRAPH_DIR, grade_threshold=RailConfig.MIN_ASCENT_GRADE)
-    logger.info(
-        f"Station-extrema scan: {len(extrema.maxima)} maxima, {len(extrema.minima)} minima, "
-        f"{len(extrema.ascents)} ascent leg(s)"
-    )
-    return extrema
+    """Green local-max + red local-min station markers from ONE cached whole-graph scan."""
+    return station_extrema(graph_dir=GraphConfig.GRAPH_DIR)
 
 
 def swap_endpoints() -> None:
@@ -325,7 +318,7 @@ def seed_state() -> None:
         SessionKey.END_BOX_RESOLVED: None,
         "view": default_view_state(),
         "camera_epoch": 0,
-        "show_station_extrema": False,  # green-max / red-min station markers + purple ascent lines toggle
+        "show_station_extrema": False,  # green-max (top→Start) / red-min (bottom→End) station markers toggle
         "gps_requested": False,  # armed by "My location", read on the next render
         "arm_map_click_start": False,  # armed by the 🎯 button, consumed by the next empty-map click
     }.items():
@@ -375,7 +368,7 @@ def render_controls() -> tuple[str, str]:
             st.button(
                 "🚞",
                 type=ST_PRIMARY if extrema_armed else ST_SECONDARY,
-                help="Show station highs (green→Start) & lows (red→End) + train climbs; click again to hide",
+                help="Show station highs (green→Start) & lows (red→End); click again to hide",
                 on_click=toggle_station_extrema,
             )
     capture_gps()  # if armed by the button, read the browser fix → stash into the Start box (reruns)
@@ -462,11 +455,6 @@ def render_map(origin: str, destination: str) -> None:
     extrema = station_extrema_markers() if st.session_state.get("show_station_extrema", False) else None
     maxima = extrema.maxima if extrema is not None else None
     minima = extrema.minima if extrema is not None else None
-    ascents = (
-        rail_ascent_segments(ascents=extrema.ascents, float_above_m=WebMapConfig.RIBBON_FLOAT_ABOVE_M)
-        if extrema is not None
-        else None
-    )
     # deck.gl picking is unreliable under pitch, so WHENEVER a click must be caught (extrema markers
     # shown OR map-click armed) flatten the camera to top-down — the one gate both arm-buttons share.
     top_down = extrema is not None or st.session_state.get("arm_map_click_start", False)
@@ -479,7 +467,6 @@ def render_map(origin: str, destination: str) -> None:
         waypoints=waypoints,
         maxima=maxima,
         minima=minima,
-        rail_ascents=ascents,
     )
     map_key = map_remount_key(
         camera_epoch=st.session_state.camera_epoch, top_down=top_down, has_ribbon=ribbon is not None
