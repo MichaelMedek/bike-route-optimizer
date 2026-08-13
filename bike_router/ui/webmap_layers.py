@@ -81,22 +81,26 @@ def _marker_row(*, lat: float, lon: float, elev: float, color: list[int], toolti
     return {"position": [lon, lat, elev + WebMapConfig.RIBBON_FLOAT_ABOVE_M], "color": color, "tooltip": tooltip}
 
 
-def create_endpoint_layer(
-    start: tuple[float, float, float], end: tuple[float, float, float], start_label: str, end_label: str
+def _blue_marker_layer(
+    *, markers: list[tuple[float, float, float, str]], layer_id: str, radius_m: float, min_pixels: int
 ) -> pdk.Layer:
-    """ScatterplotLayer with the start + end markers — the ONE blue, slightly bigger than waypoints.
+    """A blue ScatterplotLayer from (lat, lon, elev, label) rows — the shared endpoint/waypoint builder.
 
-    Each endpoint is ``(lat, lon, elevation_m)`` (snapped to its graph node), hovering above it. All
-    markers share MARKER_COLOR (blue); role is told apart by SIZE (endpoints biggest), not colour.
+    All markers share MARKER_COLOR (blue); endpoints vs waypoints differ only by id + radius, not colour.
     """
     blue = list(WebMapConfig.MARKER_COLOR)
-    markers = [
-        _marker_row(lat=start[0], lon=start[1], elev=start[2], color=blue, tooltip=start_label),
-        _marker_row(lat=end[0], lon=end[1], elev=end[2], color=blue, tooltip=end_label),
-    ]
-    return _marker_layer(
+    rows = [_marker_row(lat=lat, lon=lon, elev=elev, color=blue, tooltip=label) for lat, lon, elev, label in markers]
+    return _marker_layer(layer_id=layer_id, markers=rows, radius_m=radius_m, min_pixels=min_pixels)
+
+
+def create_endpoint_layer(endpoints: list[tuple[float, float, float, str]]) -> pdk.Layer:
+    """ScatterplotLayer of the SET endpoints (start, end, or a lone phase-1 pick) — blue, bigger than waypoints.
+
+    Each row is ``(lat, lon, elevation_m, label)`` (snapped to its graph node), hovering above the terrain.
+    """
+    return _blue_marker_layer(
+        markers=endpoints,
         layer_id="route_endpoints",
-        markers=markers,
         radius_m=WebMapConfig.ENDPOINT_RADIUS_M,
         min_pixels=WebMapConfig.ENDPOINT_MIN_PIXELS,
     )
@@ -112,13 +116,9 @@ def create_waypoint_layer(waypoints: list[tuple[float, float, float, str]]) -> p
         waypoints: ``(lat, lon, elevation_m, label)`` per intermediate marker; the label is the
             shared "Name (elev m)" text shown on hover.
     """
-    blue = list(WebMapConfig.MARKER_COLOR)
-    markers = [
-        _marker_row(lat=lat, lon=lon, elev=elev, color=blue, tooltip=label) for lat, lon, elev, label in waypoints
-    ]
-    return _marker_layer(
+    return _blue_marker_layer(
+        markers=waypoints,
         layer_id="route_waypoints",
-        markers=markers,
         radius_m=WebMapConfig.WAYPOINT_RADIUS_M,
         min_pixels=WebMapConfig.WAYPOINT_MIN_PIXELS,
     )
@@ -158,8 +158,7 @@ def build_deck(
     view: ViewState,
     ribbon_segments: list[RibbonSegment] | None,
     *,
-    endpoints: tuple[tuple[float, float, float], tuple[float, float, float]] | None,
-    endpoint_labels: tuple[str, str] | None,
+    endpoints: list[tuple[float, float, float, str]] | None,
     waypoints: list[tuple[float, float, float, str]] | None,
     maxima: list[tuple[float, float, float, str]] | None,
     minima: list[tuple[float, float, float, str]] | None,
@@ -184,15 +183,8 @@ def build_deck(
         )
     if waypoints:
         layers.append(create_waypoint_layer(waypoints=waypoints))
-    if endpoints is not None:
-        # endpoints and endpoint_labels are coupled at the caller (both gate on start_latlon set);
-        # a present-endpoints / absent-labels state is drift, so fail loud rather than paint generics.
-        assert endpoint_labels is not None, "endpoints set but endpoint_labels missing — coupled-state drift"
-        layers.append(
-            create_endpoint_layer(
-                start=endpoints[0], end=endpoints[1], start_label=endpoint_labels[0], end_label=endpoint_labels[1]
-            )
-        )
+    if endpoints:
+        layers.append(create_endpoint_layer(endpoints=endpoints))
     if ribbon_segments is not None:
         layers.extend(create_route_ribbon_layers(segments=ribbon_segments))
     return pdk.Deck(

@@ -27,7 +27,7 @@ from bike_router.core.constants import (
     WebMapConfig,
 )
 from bike_router.core.geo import haversine_vec, nearest_index
-from bike_router.core.geocoding import as_bahnhof, latlon_box_value
+from bike_router.core.geocoding import as_bahnhof, box_display_label, latlon_box_value
 from bike_router.core.simplify import place_label, route_station_markers  # place_label re-exported for the app shell
 from bike_router.core.track import (
     RouteStats,
@@ -319,8 +319,7 @@ def route_view_state(start_latlon: tuple[float, float], end_latlon: tuple[float,
 
 # --- pure shell-decision logic (unit-tested here so app_webmap stays thin st.* wiring) --------
 
-# Fixed button labels, defined ONCE — referenced by the buttons AND the help/caption text.
-SET_LABEL = "🔎 Set start & end"
+# The Compute button label, defined ONCE — referenced by the button AND its help text.
 COMPUTE_LABEL = "🧭 Compute route"
 
 
@@ -344,7 +343,7 @@ def _parse_deck_click(event: object) -> dict[str, object] | None:
     """The st_deckgl click payload as a dict, or None if it isn't a deck click event.
 
     The ONE guard both the marker reader (picked_station) and the terrain reader
-    (map_click_start_pending) share, so the event-shape check lives in a single place.
+    (map_click_pending) share, so the event-shape check lives in a single place.
     """
     if not isinstance(event, dict) or event.get("eventType") != WebMapConfig.DECK_CLICK_EVENT:
         return None
@@ -401,13 +400,13 @@ def station_click_pending(*, event: object, last_applied: str | None) -> tuple[s
     return (pending, role) if pending != last_applied else None
 
 
-def map_click_start_pending(*, event: object, armed: bool, last_applied: str | None) -> str | None:
-    """The Start-box value ``"lat, lon"`` for an armed terrain click, else None.
+def map_click_pending(*, event: object, target: str | None, last_applied: str | None) -> str | None:
+    """The box value ``"lat, lon"`` for a terrain click when a map-click button is armed, else None.
 
-    Only when the map-click button armed it AND an empty-space (non-marker) click carries a coordinate;
+    Only when a 🚩/🏁 button armed a target box AND an empty-space (non-marker) click carries a coordinate;
     same dedup-against-last_applied as station_click_pending so a replayed event doesn't re-fire.
     """
-    if not armed:
+    if target is None:
         return None
     picked = picked_terrain(event)
     if picked is None:
@@ -434,38 +433,24 @@ def swapped_endpoint_state(state: dict[str, object]) -> dict[str, object]:
     }
 
 
-def compute_gate(
-    *, start_latlon: object, origin: str, destination: str, start_resolved: object, end_resolved: object
-) -> tuple[bool, str]:
-    """(compute_enabled, help_text) for the two-button Set→Compute workflow.
-
-    Compute enables ONLY when endpoints are set AND both boxes still hold the text Set resolved;
-    editing either box disables it. The three states map to distinct help strings, Streamlit-free.
-    """
-    endpoints_set = start_latlon is not None
-    endpoints_match = endpoints_set and origin == start_resolved and destination == end_resolved
-    if not endpoints_set:
-        return False, "Set a start and end first"
-    elif not endpoints_match:
-        return False, f"Start/End changed — press {SET_LABEL} again first"
-    else:
-        return True, "Plan the route for the current slider settings"
-
-
-def endpoint_labels(
+def endpoint_markers(
     *,
     start_latlon: tuple[float, float, float] | None,
     end_latlon: tuple[float, float, float] | None,
     origin: str,
     destination: str,
-) -> tuple[str, str] | None:
-    """(start, end) marker labels "Name (elev m)", or None when no endpoints are set yet."""
-    if start_latlon is None or end_latlon is None:
-        return None
-    return (
-        place_label(name=origin, elevation_m=start_latlon[2]),
-        place_label(name=destination, elevation_m=end_latlon[2]),
-    )
+) -> list[tuple[float, float, float, str]]:
+    """(lat, lon, elevation_m, "Name (elev m)") for each SET endpoint — start, end, or both, or none.
+
+    Decoupled per side so a lone phase-1 pick draws its marker immediately; the name is the box's
+    readable label (box_display_label strips a coords literal's "(Name)"), never the raw "lat, lon".
+    """
+    markers: list[tuple[float, float, float, str]] = []
+    for latlon, box in ((start_latlon, origin), (end_latlon, destination)):
+        if latlon is not None:
+            label = place_label(name=box_display_label(value=box), elevation_m=latlon[2])
+            markers.append((latlon[0], latlon[1], latlon[2], label))
+    return markers
 
 
 def flattened_view(view: ViewState) -> ViewState:
@@ -477,12 +462,13 @@ def flattened_view(view: ViewState) -> ViewState:
     return replace(view, pitch=0.0)
 
 
-def map_remount_key(*, camera_epoch: int, top_down: bool, has_ribbon: bool) -> str:
-    """The st_deckgl remount key — changes when the camera moves (Set), the pitch flips, OR a route
-    ribbon appears/disappears. Folding ``has_ribbon`` in makes a freshly-computed route remount the
-    deck so it draws IMMEDIATELY, not only after a later scale-toggle rerun.
+def map_remount_key(*, camera_epoch: int, top_down: bool, has_ribbon: bool, endpoint_count: int) -> str:
+    """The st_deckgl remount key — changes when the camera moves (Compute), the pitch flips, a route
+    ribbon appears/disappears, OR the endpoint-marker count changes. Folding ``endpoint_count`` in makes a
+    phase-1 pick's marker draw IMMEDIATELY without moving the camera (``view`` is untouched, so no recenter).
     """
-    return f"bike_map_{camera_epoch}_{'topdown' if top_down else 'tilted'}_{'ribbon' if has_ribbon else 'none'}"
+    ribbon = "ribbon" if has_ribbon else "none"
+    return f"bike_map_{camera_epoch}_{'topdown' if top_down else 'tilted'}_{ribbon}_{endpoint_count}"
 
 
 def scale_label(scale: str) -> str:
@@ -527,10 +513,13 @@ def profile_markers(
 ) -> list[tuple[float, float, str]]:
     """(distance_km, elevation_m, label) for every named marker on the elevation profile.
 
-    Endpoints use the typed names, stations their names; interior gmaps waypoints appear ONLY when
-    they reverse-geocode to a real name (unnamed ones are dropped — see _named_waypoints).
+    Endpoints use the typed names (a coords literal shows its readable "(Name)" via box_display_label);
+    stations their names; interior gmaps waypoints appear ONLY when they reverse-geocode to a real name.
     """
-    markers = [(start_latlon[0], start_latlon[1], start_name), (end_latlon[0], end_latlon[1], end_name)]
+    markers = [
+        (start_latlon[0], start_latlon[1], box_display_label(value=start_name)),
+        (end_latlon[0], end_latlon[1], box_display_label(value=end_name)),
+    ]
     markers += [(lat, lon, label) for lat, lon, _elev, label in _station_marker_points(result=result)]
     markers += [
         (lat, lon, name) for lat, lon, name in _named_waypoints(waypoints=result.waypoints, village_of=village_of)

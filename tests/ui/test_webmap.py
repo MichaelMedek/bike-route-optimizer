@@ -26,12 +26,11 @@ from bike_router.ui.webmap import (
     _segment_tooltip,
     _station_marker_points,
     composition_donut,
-    compute_gate,
     default_view_state,
     elevation_profile_chart,
-    endpoint_labels,
+    endpoint_markers,
     flattened_view,
-    map_click_start_pending,
+    map_click_pending,
     map_remount_key,
     map_waypoint_markers,
     output_donuts,
@@ -254,46 +253,51 @@ def test_route_view_state():
 # --- shell-decision logic ----------------------------------------------------
 
 
-def test_compute_gate():
-    # Compute enabled ONLY when endpoints are set AND both boxes still hold the resolved text;
-    # the three states map to distinct help strings.
-    unset, msg = compute_gate(start_latlon=None, origin="A", destination="B", start_resolved="A", end_resolved="B")
-    assert unset is False and "Set a start" in msg
-    changed, msg = compute_gate(
-        start_latlon=(48.0, 8.0), origin="A2", destination="B", start_resolved="A", end_resolved="B"
-    )
-    assert changed is False and "again" in msg
-    ready, msg = compute_gate(
-        start_latlon=(48.0, 8.0), origin="A", destination="B", start_resolved="A", end_resolved="B"
-    )
-    assert ready is True and "Plan the route" in msg
-
-
-def test_endpoint_labels():
-    # (start, end) "Name (elev m)" labels; None when either endpoint is unset.
-    labels = endpoint_labels(
+def test_endpoint_markers():
+    # (lat, lon, elev, "Name (elev m)") per SET endpoint — decoupled: start-only, end-only, both, or none.
+    # A coords-literal box shows its readable "(Name)" (box_display_label), never the raw "lat, lon".
+    both = endpoint_markers(
         start_latlon=(48.0, 8.0, 300.0), end_latlon=(48.4, 8.6, 500.0), origin="Freudenstadt", destination="Pforzheim"
     )
-    assert labels == ("Freudenstadt (300 m)", "Pforzheim (500 m)")
-    assert endpoint_labels(start_latlon=None, end_latlon=(48.4, 8.6, 500.0), origin="A", destination="B") is None
+    assert both == [(48.0, 8.0, 300.0, "Freudenstadt (300 m)"), (48.4, 8.6, 500.0, "Pforzheim (500 m)")]
+
+    start_only = endpoint_markers(
+        start_latlon=(47.9, 9.0, 600.0),
+        end_latlon=None,
+        origin="47.90000, 9.00000 (Sauldorf Bahnhof)",
+        destination="",
+    )
+    assert start_only == [(47.9, 9.0, 600.0, "Sauldorf Bahnhof (600 m)")]  # lone marker, clean name
+
+    assert endpoint_markers(start_latlon=None, end_latlon=None, origin="", destination="") == []
 
 
 def test_map_remount_key():
-    # Keyed on camera_epoch (bumped by Set), the top-down flag (top-stations toggle), AND ribbon
-    # presence — so the map remounts to move the camera, flip pitch, OR show a freshly-computed route
-    # immediately (a colour-scale toggle still repaints in place).
-    assert map_remount_key(camera_epoch=3, top_down=False, has_ribbon=False) == "bike_map_3_tilted_none"
-    assert map_remount_key(camera_epoch=0, top_down=True, has_ribbon=True) == "bike_map_0_topdown_ribbon"
-    assert map_remount_key(camera_epoch=1, top_down=False, has_ribbon=False) != map_remount_key(
-        camera_epoch=2, top_down=False, has_ribbon=False
+    # Keyed on camera_epoch (bumped by Compute), the top-down flag, ribbon presence, AND the endpoint
+    # count — so the map remounts to move the camera, flip pitch, show a fresh route, OR draw a phase-1
+    # marker immediately (the last WITHOUT moving the camera — view is untouched).
+    assert (
+        map_remount_key(camera_epoch=3, top_down=False, has_ribbon=False, endpoint_count=0)
+        == "bike_map_3_tilted_none_0"
+    )
+    assert (
+        map_remount_key(camera_epoch=0, top_down=True, has_ribbon=True, endpoint_count=2)
+        == "bike_map_0_topdown_ribbon_2"
+    )
+    assert map_remount_key(camera_epoch=1, top_down=False, has_ribbon=False, endpoint_count=0) != map_remount_key(
+        camera_epoch=2, top_down=False, has_ribbon=False, endpoint_count=0
     )
     # flipping top-down (pitch change) must remount so st_deckgl applies the new pose
-    assert map_remount_key(camera_epoch=1, top_down=False, has_ribbon=False) != map_remount_key(
-        camera_epoch=1, top_down=True, has_ribbon=False
+    assert map_remount_key(camera_epoch=1, top_down=False, has_ribbon=False, endpoint_count=0) != map_remount_key(
+        camera_epoch=1, top_down=True, has_ribbon=False, endpoint_count=0
     )
     # a fresh route ribbon must remount so it draws immediately, not only after a later toggle
-    assert map_remount_key(camera_epoch=1, top_down=False, has_ribbon=False) != map_remount_key(
-        camera_epoch=1, top_down=False, has_ribbon=True
+    assert map_remount_key(camera_epoch=1, top_down=False, has_ribbon=False, endpoint_count=0) != map_remount_key(
+        camera_epoch=1, top_down=False, has_ribbon=True, endpoint_count=0
+    )
+    # a phase-1 pick (endpoint count 0→1) must remount to draw the marker, same camera_epoch (no recenter)
+    assert map_remount_key(camera_epoch=1, top_down=False, has_ribbon=False, endpoint_count=0) != map_remount_key(
+        camera_epoch=1, top_down=False, has_ribbon=False, endpoint_count=1
     )
 
 
@@ -339,17 +343,18 @@ def test_output_donuts():
 
 
 def test_profile_markers():
-    # Labels endpoints from the typed names + stations; interior waypoints appear ONLY when named.
+    # Labels endpoints from the box names (a coords literal shows its clean "(Name)" via box_display_label)
+    # + stations; interior waypoints appear ONLY when named.
     result = SimpleNamespace(track=_line_track(), rail_legs=[], waypoints=[(48.0, 8.01)])
     named = profile_markers(
         result=result,
         start_latlon=(48.0, 8.0, 100.0),
         end_latlon=(48.0, 8.02, 100.0),
-        start_name="Freudenstadt",
+        start_name="48.00000, 8.00000 (Freudenstadt Bahnhof)",  # coords literal → clean name on the profile
         end_name="Pforzheim",
         village_of=lambda lat, lon: "Baiersbronn",
     )
-    assert [lab for _d, _e, lab in named] == ["Freudenstadt", "Pforzheim", "Baiersbronn"]
+    assert [lab for _d, _e, lab in named] == ["Freudenstadt Bahnhof", "Pforzheim", "Baiersbronn"]
 
     dropped = profile_markers(
         result=result,
@@ -464,17 +469,19 @@ def test_picked_terrain():
     assert picked_terrain(None) is None  # no event at all
 
 
-def test_map_click_start_pending():
-    # Only when ARMED and an empty-map click carries a coordinate; a "lat, lon" (no name) value results;
-    # unarmed → None, a marker click → None, and the re-returned event dedups against last_applied.
+def test_map_click_pending():
+    # Only when a target box is armed and an empty-map click carries a coordinate; a "lat, lon" (no name)
+    # value results; no target → None, a marker click → None, and the re-returned event dedups.
     click = WebMapConfig.DECK_CLICK_EVENT
     event = {"coordinate": [9.0, 47.9], "eventType": click}
-    assert map_click_start_pending(event=event, armed=False, last_applied=None) is None  # not armed → ignore
-    pending = map_click_start_pending(event=event, armed=True, last_applied=None)
+    assert map_click_pending(event=event, target=None, last_applied=None) is None  # not armed → ignore
+    pending = map_click_pending(event=event, target=SessionKey.END_BOX, last_applied=None)
     assert pending == "47.90000, 9.00000"  # bare coords, no name (unlike a station pick)
-    assert map_click_start_pending(event=event, armed=True, last_applied=pending) is None  # re-returned → dedup
+    assert map_click_pending(event=event, target=SessionKey.END_BOX, last_applied=pending) is None  # dedup
     marker = {"name": "Freudenstadt", "position": [9.0, 47.9], "coordinate": [9.0, 47.9], "eventType": click}
-    assert map_click_start_pending(event=marker, armed=True, last_applied=None) is None  # marker click, not terrain
+    assert (
+        map_click_pending(event=marker, target=SessionKey.START_BOX, last_applied=None) is None
+    )  # marker, not terrain
 
 
 def test_swapped_endpoint_state():

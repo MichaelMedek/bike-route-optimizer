@@ -50,7 +50,7 @@ def make_geocode_fn() -> GeocodeFn:
     return fn
 
 
-def _parse_latlon(place: str) -> tuple[float, float] | None:
+def parse_latlon(place: str) -> tuple[float, float] | None:
     """A ``"lat, lon"`` (optionally ``"lat, lon (Name)"``) literal → (lat, lon), else None.
 
     Lets the GPS button, top-station markers, and the Bahnhof pick feed EXACT coordinates through the
@@ -69,7 +69,7 @@ def _parse_latlon(place: str) -> tuple[float, float] | None:
 
 def latlon_box_value(*, lat: float, lon: float, name: str | None) -> str:
     """A place-box value carrying EXACT coordinates + an optional readable ``(Name)`` — the ONE
-    format ``_parse_latlon`` reads back. Coordinates always win on geocode, so a marker/station pick
+    format ``parse_latlon`` reads back. Coordinates always win on geocode, so a marker/station pick
     resolves to its true point and never depends on re-geocoding a fuzzy name (Zürich, Schalkstetten).
     """
     coords = f"{lat:.5f}, {lon:.5f}"
@@ -82,7 +82,7 @@ def box_display_label(value: str) -> str:
     So a coords-carrying pick reads as "Zürich Bahnhof" in the UI while the box still holds the exact
     "lat, lon (Name)" that geocodes to the true point.
     """
-    if _parse_latlon(place=value) is not None and "(" in value and value.rstrip().endswith(")"):
+    if parse_latlon(place=value) is not None and "(" in value and value.rstrip().endswith(")"):
         return value[value.index("(") + 1 : value.rstrip().rindex(")")].strip()
     return value
 
@@ -103,7 +103,7 @@ def geocode(place: str, geocode_fn: GeocodeFn) -> tuple[float, float]:
     """
     if place in _GEOCODE_CACHE:  # policy-mandated: never re-query an identical string
         return _GEOCODE_CACHE[place]
-    coords = _parse_latlon(place=place)
+    coords = parse_latlon(place=place)
     if coords is not None:  # raw GPS coordinates — no lookup needed
         _GEOCODE_CACHE[place] = coords
         return coords
@@ -189,7 +189,7 @@ def _photon_features(
 ) -> list[dict[str, object]]:
     """Raw Photon GeoJSON features for a typed term, biased to ``bbox`` (empty on blank/any error).
 
-    ``photon_autocomplete`` maps these to labels; the station pick reads their geometry for exact coords.
+    ``photon_autocomplete`` maps these to box-value strings; the station pick reads their geometry for coords.
 
     Args:
         term: The partial text the user has typed.
@@ -221,9 +221,20 @@ def photon_autocomplete(
     osm_tag: str,
     http_get: HttpGetter,
 ) -> list[str]:
-    """Search-as-you-type place labels ("Name, City, State") biased to ``bbox`` (blank/error → [])."""
+    """Search-as-you-type box-value strings ``"lat, lon (Name)"`` biased to ``bbox`` (blank/error → []).
+
+    Each suggestion encodes its coordinates in the SAME box-value string the station pick uses, so a
+    click fills exact coords (immediate marker, no re-geocode); features without a Point geometry drop.
+    """
     features = _photon_features(term=term, bbox=bbox, limit=limit, osm_tag=osm_tag, http_get=http_get)
-    return [photon_label(properties=_feature_properties(feature)) for feature in features]
+    return [
+        box_value
+        for feature in features
+        if (
+            box_value := _feature_box_value(feature=feature, name=photon_label(properties=_feature_properties(feature)))
+        )
+        is not None
+    ]
 
 
 def _feature_lonlat(feature: dict[str, object]) -> tuple[float, float] | None:
@@ -246,6 +257,19 @@ def _feature_properties(feature: dict[str, object]) -> dict[str, object]:
 def _feature_name(feature: dict[str, object]) -> str:
     """The stripped ``name`` from a Photon feature's properties, or "" if absent/malformed."""
     return str(_feature_properties(feature).get("name") or "").strip()
+
+
+def _feature_box_value(*, feature: dict[str, object], name: str) -> str | None:
+    """A ``"lat, lon (Name)"`` box value from a feature's geometry + display ``name``, else None.
+
+    The ONE place a Photon feature becomes a coords-encoding box string — shared by the settlement
+    autocomplete and the station pick, so both drop no-geometry/blank-name features identically.
+    """
+    lonlat = _feature_lonlat(feature)
+    if lonlat is None or not name.strip():
+        return None
+    lon, lat = lonlat
+    return latlon_box_value(lat=lat, lon=lon, name=name)
 
 
 def as_bahnhof(*, name: str) -> str:
@@ -277,12 +301,10 @@ def bahnhof_suggestion(
     features = _photon_features(term=term, bbox=bbox, limit=1, osm_tag=PhotonConfig.STATION_OSM_TAG, http_get=http_get)
     if not features:
         return None
-    lonlat = _feature_lonlat(features[0])
     name = _feature_name(features[0])
-    if lonlat is None or not name:
+    if not name:  # a nameless station can't render "<name> Bahnhof" — drop it (like a no-geometry feature)
         return None
-    lon, lat = lonlat
-    return latlon_box_value(lat=lat, lon=lon, name=as_bahnhof(name=name))
+    return _feature_box_value(feature=features[0], name=as_bahnhof(name=name))
 
 
 def autocomplete_with_stations(
@@ -292,8 +314,8 @@ def autocomplete_with_stations(
     limit: int,
     http_get: HttpGetter,
 ) -> tuple[str | None, list[str]]:
-    """(bahnhof_box_value, place_labels): a red-button station pick ``"lat, lon (Name Bahnhof)"`` (if a
-    station matches) plus ordinary settlement suggestions, so the UI renders the Bahnhof pick FIRST + red.
+    """(bahnhof_box_value, place_box_values): a red-button station pick ``"lat, lon (Name Bahnhof)"`` (if a
+    station matches) plus ordinary ``"lat, lon (Name)"`` settlement box strings, so the UI renders the pick FIRST.
 
     Args:
         term: The partial text the user has typed.
