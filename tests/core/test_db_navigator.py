@@ -5,7 +5,6 @@ network; the degrade paths use a stub that raises a urllib error.
 """
 
 import datetime
-import os
 import urllib.error
 
 import pytest
@@ -205,18 +204,14 @@ def test_build_bahn_leg_degrades_on_no_connection():
     )
 
 
-# --- live end-to-end (opt-in; hits the real bahn.de API) ---------------------
+# --- live end-to-end (hits the real bahn.de API) ----------------------------
 
 _LIVE_ROUTES = [("Freudenstadt Hbf", "Horb"), ("Berlin Hbf", "Potsdam Hbf"), ("Karlsruhe Hbf", "Pforzheim Hbf")]
 
 
-@pytest.mark.skipif(
-    os.environ.get("BIKE_ROUTER_LIVE_DB") != "1",
-    reason="live bahn.de API test — set BIKE_ROUTER_LIVE_DB=1 to run (network)",
-)
 @pytest.mark.parametrize(("board", "alight"), _LIVE_ROUTES, ids=[f"{b}->{a}" for b, a in _LIVE_ROUTES])
 def test_build_bahn_leg_live(board: str, alight: str):
-    # Against the REAL API each route MUST resolve first try to a working deep link + a real "dep…→arr…"
+    # Against the REAL API each route MUST resolve first try to a working deep link + a real time·train
     # label, NEVER the bare fallback — the getter spaces its calls so Akamai doesn't 403 the burst.
     now = datetime.datetime.now().replace(second=0, microsecond=0)
     url, label = build_bahn_leg(board_name=board, alight_name=alight, when=now, http_get=default_db_get)
