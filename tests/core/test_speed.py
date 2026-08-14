@@ -39,14 +39,18 @@ def test_continuous_surface_speed_is_strictly_monotone():
 def test_effective_speed_kmh():
     # Flat/downhill hold the surface base (continuous in weight); the grade penalty ramps linearly to
     # WALK_KMH at WALK_GRADE and stays there beyond; monotonic non-increasing; negative weight fails loud.
-    assert effective_speed_kmh(surface_weight=0.0, grade=0.0) == pytest.approx(25.0)  # paved
-    assert effective_speed_kmh(surface_weight=SpeedConfig.SURFACE_WEIGHT_MAX, grade=0.0) == pytest.approx(15.0)  # rough
-    assert effective_speed_kmh(surface_weight=0.0, grade=-0.10) == pytest.approx(25.0)  # downhill holds base
+    assert effective_speed_kmh(surface_weight=0.0, grade=0.0) == pytest.approx(SpeedConfig.BASE_KMH_AT_WEIGHT0)  # paved
+    assert effective_speed_kmh(surface_weight=SpeedConfig.SURFACE_WEIGHT_MAX, grade=0.0) == pytest.approx(
+        SpeedConfig.BASE_KMH_AT_WEIGHT_MAX
+    )  # rough
+    assert effective_speed_kmh(surface_weight=0.0, grade=-0.10) == pytest.approx(
+        SpeedConfig.BASE_KMH_AT_WEIGHT0
+    )  # downhill holds base
     assert effective_speed_kmh(surface_weight=0.0, grade=SpeedConfig.WALK_GRADE) == pytest.approx(SpeedConfig.WALK_KMH)
     assert effective_speed_kmh(surface_weight=0.0, grade=0.30) == pytest.approx(SpeedConfig.WALK_KMH)  # steeper → walk
-    # linear midpoint between base (25) and walk at half WALK_GRADE
+    # linear midpoint between base and walk at half WALK_GRADE
     assert effective_speed_kmh(surface_weight=0.0, grade=SpeedConfig.WALK_GRADE / 2) == pytest.approx(
-        (25.0 + SpeedConfig.WALK_KMH) / 2
+        (SpeedConfig.BASE_KMH_AT_WEIGHT0 + SpeedConfig.WALK_KMH) / 2
     )
     speeds = [effective_speed_kmh(surface_weight=0.0, grade=g) for g in (0.0, 0.02, 0.05, 0.08, 0.12)]
     assert all(speeds[i] >= speeds[i + 1] for i in range(len(speeds) - 1))  # monotonic ↓ with grade

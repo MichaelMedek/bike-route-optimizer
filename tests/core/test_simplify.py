@@ -56,7 +56,7 @@ def _rail_leg(board: str | None, alight: str | None) -> RailLeg:
         alight=Station(name=alight, lat=48.0, lon=8.1, elevation_m=0.0),
         url="https://maps.google/transit",
         bahn_url="https://www.bahn.de/buchung/fahrplan/suche#x",
-        bahn_label="dep 08:00 → arr 08:30 · RB1",
+        bahn_label="~0:30 h",
     )
 
 
@@ -156,7 +156,7 @@ class TestRailLeg:
     def test_holds_maps_and_bahn_links(self):
         leg = _rail_leg(board="A", alight="B")
         assert leg.url.startswith("https://maps") and "bahn.de" in leg.bahn_url
-        assert leg.bahn_label == "dep 08:00 → arr 08:30 · RB1"
+        assert leg.bahn_label == "~0:30 h"
 
     def test_is_frozen(self):
         with pytest.raises(AttributeError):
@@ -165,12 +165,12 @@ class TestRailLeg:
 
 class TestBikeLeg:
     def test_holds_url_endpoint_names_and_time(self):
-        leg = BikeLeg(url="https://maps", from_place="Horb", to_place="Freudenstadt", time_label="≈ 08:00–09:00")
+        leg = BikeLeg(url="https://maps", from_place="Horb", to_place="Freudenstadt", time_label="~1:00 h")
         assert (leg.url, leg.from_place, leg.to_place, leg.time_label) == (
             "https://maps",
             "Horb",
             "Freudenstadt",
-            "≈ 08:00–09:00",
+            "~1:00 h",
         )
 
     def test_is_frozen(self):
@@ -213,8 +213,8 @@ def test_format_rail_bahn_legs():
     # "Train N (bahn): <bahn_label>" per ride — the bahn.de-side label line.
     legs = [_rail_leg(board="Freudenstadt", alight="Pforzheim"), _rail_leg(board="Horb", alight="Karlsruhe")]
     assert format_rail_bahn_legs(rail_legs=legs) == [
-        "Train 1: dep 08:00 → arr 08:30 · RB1",
-        "Train 2: dep 08:00 → arr 08:30 · RB1",
+        "Train 1: ~0:30 h",
+        "Train 2: ~0:30 h",
     ]
 
 
@@ -262,8 +262,8 @@ def test_neighbour_station_name():
 def test_format_bike_legs():
     # One "Bike Route N: from → to" label per pedalled leg, numbered from 1.
     legs = [
-        BikeLeg(url="u0", from_place="Horb am Neckar", to_place="Horb-Heiligenfeld", time_label="≈ 08:00–08:30"),
-        BikeLeg(url="u1", from_place="Freudenstadt Stadt", to_place="Freudenstadt", time_label="≈ 09:00–09:30"),
+        BikeLeg(url="u0", from_place="Horb am Neckar", to_place="Horb-Heiligenfeld", time_label="~0:30 h"),
+        BikeLeg(url="u1", from_place="Freudenstadt Stadt", to_place="Freudenstadt", time_label="~0:30 h"),
     ]
     assert format_bike_legs(bike_legs=legs) == [
         "Bike Route 1: Horb am Neckar → Horb-Heiligenfeld",

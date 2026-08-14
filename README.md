@@ -17,7 +17,7 @@ source .venv/bin/activate
 streamlit run app_webmap.py
 ```
 
-Open the Local URL it prints (default http://localhost:8501). Type a start and end place, press **📍 Set start & end** to mark them on the 3D map, tune the five preference sliders, then press **🧭 Compute route**. The route is drawn as a coloured ribbon floating above the terrain (blue bike legs, purple train legs); below the map you get the route stats, three composition donuts (surface / road / mode), a copyable Google Maps link, and Download GPX / Download PNG buttons.
+Open the Local URL it prints (default http://localhost:8501). Type a start and end place (or use **📍 My location** / the **🚩 Pick start** & **🏁 Pick end** map buttons), tune the five preference sliders, then press **🧭 Compute route**. The route is drawn as a coloured ribbon floating above the terrain (blue bike legs, purple train legs); below the map you get the route stats, three composition donuts (surface / road / mode), per-leg links (each bike leg → Google Maps; each train leg → Google Maps transit **and** a bahn.de timetable link), and **🛰️ Download GPX** (for live bike navigation, e.g. Organic Maps) / **🖼️ Download PNG** (to inspect or print the route) buttons.
 
 ## Run the CLI
 
@@ -74,7 +74,7 @@ $$
 
 The boarding cost lives on the **station edges** instead (see the graph-model section below): each station edge charges half of $p_{\text{boarding}}$, so getting on plus getting off sums to exactly one boarding.
 
-Once the path is chosen, its **ride time** comes from a speed that falls with the slope: roughly 25 km/h on flat good tarmac, and slower on gravel. Speed is dropping linearly toward walking pace on a steep 12 % climb. Downhill and flat hold the top speed. A train leg instead moves at a fixed 80 km/h, and each station edge adds half of a flat 30-minute wait, so getting on plus getting off sums to one full 30-minute wait per train trip. Distance and climb come straight from the real road geometry, so the reported kilometres, minutes, and metres-of-ascent all agree with the drawn track.
+Once the path is chosen, its **ride time** comes from a speed that falls with the slope: roughly 20 km/h on flat good tarmac, and slower on gravel. Speed is dropping linearly toward walking pace on a steep 12 % climb. Downhill and flat hold the top speed. A train leg instead moves at a fixed 60 km/h, and each station edge adds half of a flat 30-minute wait, so getting on plus getting off sums to one full 30-minute wait per train trip. Distance and climb come straight from the real road geometry, so the reported kilometres, minutes, and metres-of-ascent all agree with the drawn track.
 
 ## The graph model: bike, station, and rail edges
 

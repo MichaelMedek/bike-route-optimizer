@@ -260,13 +260,11 @@ class TestGmapsConfig:
 
 
 class TestDbNavigatorConfig:
-    def test_urls_products_and_link_params(self):
-        assert DbNavigatorConfig.ORTE_URL.startswith("https://") and DbNavigatorConfig.JOURNEY_URL.startswith(
-            "https://"
-        )
-        assert DbNavigatorConfig.SUCHE_URL.startswith("https://") and DbNavigatorConfig.TIMEOUT_S > 0
-        assert len(DbNavigatorConfig.ALLOWED_PRODUCTS) == len(DbNavigatorConfig.VM_CODES.split(","))
+    def test_link_params(self):
+        assert DbNavigatorConfig.SUCHE_URL.startswith("https://")
+        assert DbNavigatorConfig.VM_CODES == "03,04,07,08"  # ("REGIONAL", "SBAHN", "UBAHN", "TRAM")
         assert DbNavigatorConfig.KLASSE == "2"
+        assert DbNavigatorConfig.TRAVELLER.endswith(":1")
 
 
 class TestPlotConfig:

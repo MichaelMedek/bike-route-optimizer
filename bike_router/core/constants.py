@@ -165,7 +165,7 @@ class RailConfig:
     them. Boarding wait hits TIME only, not cost.
     """
 
-    RAIL_SPEED_KMH = 80.0  # average train speed for the ride-time estimate
+    RAIL_SPEED_KMH = 60.0  # average train speed for the ride-time estimate (pessimistic incl. stops)
     BOARDING_WAIT_S = 1800.0  # 30 min wait added once per boarding (time only)
     STATION_RADIUS_M = 200.0  # bike node ↔ station-node access-link distance
     STATION_MAX_ENTRANCES = 5  # declare up to this many nearest bike nodes as entrances
@@ -542,12 +542,12 @@ class SpeedConfig:
     then a second linear ramp drops it to WALK_KMH at WALK_GRADE. Flat/downhill hold the surface base.
     """
 
-    BASE_KMH_AT_WEIGHT0 = 25.0  # paved (weight 0.0) base speed
-    BASE_KMH_AT_WEIGHT_MAX = 15.0  # roughest rideable surface base speed
+    BASE_KMH_AT_WEIGHT0 = 20.0  # paved (weight 0.0) base speed
+    BASE_KMH_AT_WEIGHT_MAX = 12.0  # roughest rideable surface base speed
     # Weight at which the base speed bottoms out: 1.0 ≈ dirt/rough natural (Crr ~0.017); smoother
     # surfaces interpolate up to paved, rougher (sett, grass, woodchips) clamp to BASE_KMH_AT_WEIGHT_MAX.
     SURFACE_WEIGHT_MAX = 1.0
-    WALK_KMH = 5.0  # speed at WALK_GRADE and steeper (pushing the bike)
+    WALK_KMH = 4.0  # speed at WALK_GRADE and steeper (pushing the bike)
     WALK_GRADE = 0.12  # rise/run at which the rider drops to walking pace
 
 
@@ -566,22 +566,13 @@ class GmapsConfig:
 
 
 class DbNavigatorConfig:
-    """Deutsche Bahn (bahn.de) timetable deep-link output + the APIs that resolve it."""
+    """Deutsche Bahn (bahn.de) timetable deep-link output (built fully offline from coordinates)."""
 
-    ORTE_URL = "https://www.bahn.de/web/api/reiseloesung/orte"  # station name → opaque station id (+ EVA)
-    JOURNEY_URL = "https://int.bahn.de/web/api/angebote/fahrplan"  # verify a connection exists (POST)
     SUCHE_URL = "https://www.bahn.de/buchung/fahrplan/suche"  # user-facing link (hash-fragment params)
-    FALLBACK_LABEL = "DB Navigator"  # button label when the DB lookup fails (bare-search link)
-    TIMEOUT_S = 5.0
-    REQUEST_SPACING_S = 0.1  # wait before each call: bahn.de's Akamai layer 403s bursty back-to-back requests
-    ORTE_LIMIT = 1  # top hit only
-    # produktGattung values counted as regional/local — the strict allow-set for a valid leg.
-    ALLOWED_PRODUCTS = ("REGIONAL", "SBAHN", "UBAHN", "TRAM")
-    # bahn.de link "vm" codes for the SAME set: 03=Regional 04=S-Bahn 07=U-Bahn 08=Tram (no ICE/IC/IR/Bus).
+    # bahn.de link "vm" codes: 03=Regional 04=S-Bahn 07=U-Bahn 08=Tram (no ICE/IC/IR/Bus).
     VM_CODES = "03,04,07,08"
     TRAVELLER = "13:16:KLASSENLOS:1"  # one adult, 2nd class, no discount ("r" param)
     KLASSE = "2"
-    USER_AGENT = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"  # browser UA (script-verified)
 
 
 class PlotConfig:

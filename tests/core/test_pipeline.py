@@ -5,7 +5,6 @@ tiny in-memory fixtures so the whole flow runs offline. No DEM is involved — e
 baked into the fixture. Asserts a single route is produced with real artifacts.
 """
 
-import datetime
 from pathlib import Path
 
 import pandas as pd
@@ -91,8 +90,8 @@ def _wire_offline(monkeypatch, tmp_path, *, nodes_df, edges_df, route: RoutePath
     # No network for the bahn deep link: stub the DB lookup to a fixed (url, label) per rail leg.
     monkeypatch.setattr(
         pipeline,
-        "build_bahn_leg",
-        lambda board_name, alight_name, when, http_get: ("https://www.bahn.de/x", "dep 13:16 → arr 13:29 · RB33"),
+        "build_bahn_url",
+        lambda board_name, board_lat, board_lon, alight_name, alight_lat, alight_lon, depart: "https://www.bahn.de/x",
     )
 
 
@@ -105,7 +104,7 @@ def test_plan_route(tmp_path: Path, monkeypatch):
     leg = result.bike_legs[0]
     assert leg.url.startswith("https://www.google.com/maps/dir/?api=1")
     assert (leg.from_place, leg.to_place) == ("Start", "End")  # outer ends = origin/destination
-    assert leg.time_label.count(":") >= 2 and "→" in leg.time_label  # "HH:MM → HH:MM (H:MM h)" span present
+    assert leg.time_label.startswith("~") and leg.time_label.endswith(" h")  # "~H:MM h" estimate present
     assert result.rail_legs == []  # pure-bike line graph → no train ride
     assert result.gpx_path.exists() and result.gpx_path.stat().st_size > 0
     assert result.png_path.exists() and result.png_path.stat().st_size > 0
@@ -240,7 +239,7 @@ def test_format_cli_report(tmp_path: Path, monkeypatch):
     assert "Mode:" in report  # the composition summary is embedded
     assert str(result.gpx_path) in report and str(result.png_path) in report
     assert "Bike legs in Google Maps" in report and result.bike_legs[0].url in report
-    assert "(1:" in report or " h)" in report  # each bike link carries its estimated clock span
+    assert " h)" in report  # each bike link carries its estimated ride time "(~H:MM h)"
     assert "Train legs (" not in report  # pure-bike line route → no train section
     assert "bahn.de" not in report  # ...and no bahn link either
 
@@ -321,10 +320,10 @@ def test_geocode_both(monkeypatch):
         pipeline._geocode_both(origin="X", destination="Y")
 
 
-def test_bike_time_label():
-    # "HH:MM → HH:MM (H:MM h)" from now + each end's elapsed seconds (start 0 s, end 3600 s → +0 / +1 h).
-    now = datetime.datetime(2026, 8, 20, 9, 0, 0)
-    assert pipeline._bike_time_label(start_s=0.0, end_s=3600.0, now=now) == "09:00 → 10:00 (1:00 h)"
+def test_estimate_label():
+    # "~H:MM h" from the elapsed-second span (start 0 s, end 3600 s → 1 h); a clear estimate, no clock times.
+    assert pipeline._estimate_label(start_s=0.0, end_s=3600.0) == "~1:00 h"
+    assert pipeline._estimate_label(start_s=600.0, end_s=2100.0) == "~0:25 h"
 
 
 def test_assert_within_coverage(monkeypatch):
@@ -477,8 +476,8 @@ def _plan_fixture(monkeypatch, tmp_path, start, end, **overrides):
     # No network for the bahn deep link: stub the DB lookup to a fixed (url, label) per rail leg.
     monkeypatch.setattr(
         pipeline,
-        "build_bahn_leg",
-        lambda board_name, alight_name, when, http_get: ("https://www.bahn.de/x", "dep 13:16 → arr 13:29 · RB33"),
+        "build_bahn_url",
+        lambda board_name, board_lat, board_lon, alight_name, alight_lat, alight_lon, depart: "https://www.bahn.de/x",
     )
     return pipeline.plan_route(
         origin="Start", destination="End", params=params(**overrides), graph_dir=FIXTURE_GRAPH_DIR
@@ -546,7 +545,7 @@ def test_plan_route_e2e_one_train_two_bike_legs(tmp_path: Path, monkeypatch):
     # The rail leg carries all three link kinds: gmaps transit URL, the bahn deep link + its label.
     rail = result.rail_legs[0]
     assert "travelmode=transit" in rail.url
-    assert rail.bahn_url == "https://www.bahn.de/x" and rail.bahn_label == "dep 13:16 → arr 13:29 · RB33"
+    assert rail.bahn_url == "https://www.bahn.de/x" and rail.bahn_label.startswith("~")
     assert result.composition.by_mode_km["bike route"] > 0
     assert "station" not in result.composition.by_mode_km
 

@@ -23,7 +23,7 @@ from bike_router.core.constants import (
 )
 from bike_router.core.corridor import build_corridor
 from bike_router.core.cost import edge_cost_array
-from bike_router.core.db_navigator import build_bahn_leg, default_db_get
+from bike_router.core.db_navigator import build_bahn_url
 from bike_router.core.errors import (
     OutOfCoverageError,
     RouteTooLargeError,
@@ -90,12 +90,14 @@ class RouteResult:
     waypoints: list[tuple[float, float]]  # (lat, lon) interior gmaps waypoints — named for the map/profile
 
 
-def _bike_time_label(*, start_s: float, end_s: float, now: datetime.datetime) -> str:
-    """A pedalled leg's estimated clock span "HH:MM → HH:MM (H:MM h)" from its start/end elapsed seconds."""
-    start = now + datetime.timedelta(seconds=start_s)
-    end = now + datetime.timedelta(seconds=end_s)
+def _estimate_label(*, start_s: float, end_s: float) -> str:
+    """A leg's ESTIMATED travel time as "~H:MM h" from its start/end elapsed seconds (no clock times).
+
+    Deliberately a duration, not start→end times: these are our speed-model + boarding-wait estimates, NOT
+    real timetable times, so the label must read as an estimate.
+    """
     minutes = round((end_s - start_s) / 60.0)
-    return f"{start:%H:%M} → {end:%H:%M} ({minutes // 60}:{minutes % 60:02d} h)"
+    return f"~{minutes // 60}:{minutes % 60:02d} h"
 
 
 def _geocode_both(*, origin: str, destination: str) -> tuple[tuple[float, float], tuple[float, float]]:
@@ -278,16 +280,20 @@ def plan_route(
     logger.info(f"Wrote {gpx_path} ({len(track.points)} trackpoints)")
 
     # Train rides first (boarding + alighting station per ride) — each becomes a RailLeg with a Google
-    # Maps transit URL AND a bahn.de deep link (labelled by its regional trains). They label the bike
-    # legs too. Departure = now + the route's own elapsed time to the boarding node; empty for pure bike.
+    # Maps transit URL AND an OFFLINE bahn.de deep link (coordinate ids resolve in the browser, so no
+    # blocked API call). Depart = now + the route's own elapsed time to the boarding node; empty for pure bike.
     rail_legs = []
     for board, alight in split_rail_legs(route=route):
-        depart_at = now + datetime.timedelta(seconds=elapsed_by_latlon[(board.lat, board.lon)])
-        bahn_url, bahn_label = build_bahn_leg(
+        board_s = elapsed_by_latlon[(board.lat, board.lon)]
+        alight_s = elapsed_by_latlon[(alight.lat, alight.lon)]
+        bahn_url = build_bahn_url(
             board_name=board.name_or_placeholder,
+            board_lat=board.lat,
+            board_lon=board.lon,
             alight_name=alight.name_or_placeholder,
-            when=depart_at,
-            http_get=default_db_get,
+            alight_lat=alight.lat,
+            alight_lon=alight.lon,
+            depart=now + datetime.timedelta(seconds=board_s),
         )
         rail_legs.append(
             RailLeg(
@@ -295,7 +301,7 @@ def plan_route(
                 alight=alight,
                 url=build_transit_url(origin=(board.lat, board.lon), destination=(alight.lat, alight.lon)),
                 bahn_url=bahn_url,
-                bahn_label=bahn_label,
+                bahn_label=_estimate_label(start_s=board_s, end_s=alight_s),
             )
         )
 
@@ -319,7 +325,7 @@ def plan_route(
             url=build_bicycling_url(waypoints_latlon=wps),
             from_place=from_place,
             to_place=to_place,
-            time_label=_bike_time_label(start_s=elapsed_by_osmid[leg[0]], end_s=elapsed_by_osmid[leg[-1]], now=now),
+            time_label=_estimate_label(start_s=elapsed_by_osmid[leg[0]], end_s=elapsed_by_osmid[leg[-1]]),
         )
         for wps, (from_place, to_place), leg in zip(leg_waypoints, endpoints, leg_paths, strict=True)
     ]

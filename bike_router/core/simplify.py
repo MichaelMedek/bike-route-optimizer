@@ -80,7 +80,7 @@ class RailLeg:
     """One train ride the rider takes: the boarded/alighted station plus its Maps + bahn.de links.
 
     ``url`` is the Google Maps transit link (board → alight); ``bahn_url``/``bahn_label`` are the
-    bahn.de deep link and its "dep … → arr … · trains" label. One structure for lists/markers/links.
+    bahn.de deep link and its estimated-ride-time label ("~H:MM h"). One structure for lists/markers/links.
     """
 
     board: Station
@@ -134,7 +134,7 @@ def format_rail_legs(rail_legs: list[RailLeg]) -> list[str]:
 
 
 def format_rail_bahn_legs(rail_legs: list[RailLeg]) -> list[str]:
-    """One "Train N (bahn): dep … → arr … · trains" line per ride — the bahn.de-side label."""
+    """One "Train N: ~H:MM h" line per ride — the bahn.de-side label (estimated ride time)."""
     return [f"Train {index}: {leg.bahn_label}" for index, leg in enumerate(rail_legs, start=1)]
 
 
@@ -143,7 +143,7 @@ class BikeLeg:
     """One pedalled leg's Google Maps URL, its two endpoint place names, and its estimated time span.
 
     ``from_place``/``to_place`` are the trip origin/destination at the outer ends, else the abutting rail
-    station name; ``time_label`` is the leg's estimated clock span ("≈ HH:MM–HH:MM") from the route timing.
+    station name; ``time_label`` is the leg's estimated ride time ("~H:MM h") from the route timing.
     """
 
     url: str

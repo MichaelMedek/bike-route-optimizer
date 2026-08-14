@@ -367,7 +367,7 @@ def build_track(route: RoutePath) -> Track:
     assert total_m > 0, "route distance must be positive"
     assert total_s > 0, "route duration must be positive"
     # sanity: average BIKE speed must sit between the walking floor and the best (paved) base
-    # speed (rail legs are excluded — 80 km/h would trip it).
+    # speed (rail legs are excluded — 60 km/h would trip it).
     if bike_s > 0:
         avg_kmh = (bike_m / GpxConfig.METERS_PER_KM) / (bike_s / GpxConfig.SECONDS_PER_HOUR)
         assert SpeedConfig.WALK_KMH - 1e-9 <= avg_kmh <= SpeedConfig.BASE_KMH_AT_WEIGHT0 + 1e-9, (

@@ -308,7 +308,6 @@ _COINCIDENTAL_REASONS = {
     "position": "deck.gl marker datum key",
     "geometry": "GeoJSON field vs OSMnx attr",
     "limit": "result-cap query param (Photon + DB orte APIs)",
-    "User-Agent": "HTTP header key (Photon + DB calls, distinct UA values)",
     "r": "plotly margin key + DB traveller param",
 }
 _COINCIDENTAL = frozenset(_COINCIDENTAL_REASONS)

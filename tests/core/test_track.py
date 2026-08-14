@@ -382,7 +382,7 @@ def test_build_track():
     # condition/speed baked per point: good quiet leg vs main-road leg
     cond = build_track(route=make_condition_route())
     assert cond.points[1].surface_bad is False and cond.points[1].road_bad is False
-    assert cond.points[1].speed_kmh == 25.0
+    assert cond.points[1].speed_kmh == SpeedConfig.BASE_KMH_AT_WEIGHT0
     assert cond.points[2].road_bad is True and cond.points[2].surface_bad is False  # primary, asphalt
 
 

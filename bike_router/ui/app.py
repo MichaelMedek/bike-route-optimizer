@@ -103,7 +103,7 @@ def rail_link_buttons(result: RouteResult) -> None:
     """Two half-width link buttons per train ride: left Google Maps transit, right bahn.de deep link.
 
     The two share one ``st.columns(2)`` row so they stay side-by-side on mobile; the left label is the
-    "Train N: board → alight" text, the right the bahn "dep … → arr … · trains" (or "bahn.de" fallback).
+    "Train N: board → alight" text, the right the estimated ride time "Train N: ~H:MM h".
     """
     gmaps_labels = format_rail_legs(rail_legs=result.rail_legs)
     bahn_labels = format_rail_bahn_legs(rail_legs=result.rail_legs)
@@ -116,11 +116,11 @@ def rail_link_buttons(result: RouteResult) -> None:
 def bike_link_buttons(result: RouteResult) -> None:
     """One Google Maps bicycling link button per pedalled leg (mirrors rail_link_buttons).
 
-    The full-width label carries the leg name AND its estimated clock span, e.g.
-    "Bike Route 1: A → B: 13:16 → 13:29 (0:13 h)"; a click opens the leg's route in Maps.
+    The full-width label carries the leg name AND its estimated ride time, e.g.
+    "Bike Route 1: A → B (~1:06 h)"; a click opens the leg's route in Maps.
     """
     for label, leg in zip(format_bike_legs(bike_legs=result.bike_legs), result.bike_legs, strict=True):
-        st.link_button(f"🗺️ {label}: {leg.time_label}", leg.url, width="stretch", help="Open in Google Maps bike")
+        st.link_button(f"🗺️ {label} ({leg.time_label})", leg.url, width="stretch", help="Open in Google Maps bike")
 
 
 def render_route_output(result: RouteResult) -> None:
@@ -160,15 +160,30 @@ def render_route_output(result: RouteResult) -> None:
         st.caption("🗺️ Bike legs in Google Maps (one link per leg):")
         bike_link_buttons(result=result)
 
-    downloads = ((result.gpx_path, "application/gpx+xml"), (result.png_path, "image/png"))
+    # Each download: (path, mime, button label, hover hint explaining what the file is for).
+    downloads = (
+        (
+            result.gpx_path,
+            "application/gpx+xml",
+            "🛰️ Download GPX",
+            "GPS track for live bike navigation (e.g. import into the Organic Maps app)",
+        ),
+        (
+            result.png_path,
+            "image/png",
+            "🖼️ Download PNG",
+            "Route + elevation/stats image to inspect the trip or print it out",
+        ),
+    )
     st.caption("💾 Export the route:")
-    for col, (path, mime) in zip(st.columns(len(downloads)), downloads, strict=True):
+    for col, (path, mime, label, hint) in zip(st.columns(len(downloads)), downloads, strict=True):
         col.download_button(
-            f"Download {path.suffix.lstrip('.').upper()}",
+            label,
             data=path.read_bytes(),
             file_name=path.name,
             mime=mime,
             width="stretch",
+            help=hint,
         )
 
 
