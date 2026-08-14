@@ -14,7 +14,7 @@ import pytest
 from shapely.geometry import box
 
 from bike_router.core import graph_store
-from bike_router.core.constants import GraphConfig, Mode, NodeType, RailConfig
+from bike_router.core.constants import GraphConfig, Mode, NodeType
 from bike_router.core.errors import OutOfCoverageError
 from bike_router.core.graph_store import (
     _covering_tiles,
@@ -31,7 +31,6 @@ from bike_router.core.graph_store import (
     str_or_none,
     tile_index,
     tile_name,
-    top_stations,
 )
 from bike_router.core.progress import null_progress
 from bike_router.core.route_path import RouteNode
@@ -235,18 +234,6 @@ def test_snap_to_node():
     assert elev > 0  # baked elevation, no DEM involved
     with pytest.raises(OutOfCoverageError, match="outside the covered region"):
         snap_to_node(lat=52.52, lon=13.40, graph_dir=FIXTURE_GRAPH_DIR)
-
-
-def test_top_stations():
-    # Prominent local-high stations: full Dominanz (highest within the radius) AND Schartenhöhe ≥
-    # threshold (rises that far above the lowest nearby stop). Freudenstadt Stadt (739 m) — highest and
-    # 244 m above the lowest station near it (495 m) — is the sole fixture top.
-    tops = top_stations(graph_dir=FIXTURE_GRAPH_DIR)
-    assert tops, "fixture should expose at least one top station"
-    lat, lon, elev, name = tops[0]
-    assert name == "Freudenstadt Stadt" and elev == 739.0  # the highest fixture station
-    assert elev >= RailConfig.TOP_STATION_PROMINENCE_M  # comfortably clears the prominence gate
-    assert tops == sorted(tops, key=lambda t: t[2], reverse=True)  # highest first
 
 
 # --- download / coercion -----------------------------------------------------

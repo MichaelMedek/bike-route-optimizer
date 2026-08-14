@@ -17,10 +17,10 @@ from huggingface_hub import list_repo_files, snapshot_download
 from shapely import covers, from_wkt, points
 from shapely.geometry import Polygon, box
 
-from bike_router.core.constants import GraphConfig, Mode, NodeType, RailConfig, RoutingParams, Schema
+from bike_router.core.constants import GraphConfig, Mode, NodeType, RoutingParams, Schema
 from bike_router.core.cost import edge_cost_array
 from bike_router.core.errors import OutOfCoverageError
-from bike_router.core.geo import haversine_vec, nearest_index
+from bike_router.core.geo import nearest_index
 from bike_router.core.progress import ProgressFn
 from bike_router.core.route_path import RouteEdge, RouteNode, RoutePath
 
@@ -135,20 +135,17 @@ def read_tiles(
     """Concatenate per-tile Parquet files in ``directory`` into one DataFrame.
 
     ``tiles`` selects specific (row, col) tiles (missing skipped); ``tiles=None`` reads EVERY
-    ``tile_*.parquet``. ``filters`` = optional pyarrow pushdown so a tile yields only matching rows.
+    ``tile_*.parquet`` in ONE threaded pyarrow scan. ``filters`` = pyarrow pushdown.
     """
     if tiles is None:
-        paths = sorted(directory.glob(f"tile_*{GraphConfig.TILE_SUFFIX}"))
-    else:
-        paths = [
-            p
-            for row, col in tiles
-            if (p := directory / f"{tile_name(row=row, col=col)}{GraphConfig.TILE_SUFFIX}").exists()
-        ]
-    frames = [pd.read_parquet(path, filters=filters) for path in paths]
-    if not frames:
+        # Whole-directory read: pandas hands the dir to pyarrow.dataset, which scans every file.
+        return pd.read_parquet(directory, columns=columns, filters=filters)
+    paths = [
+        p for row, col in tiles if (p := directory / f"{tile_name(row=row, col=col)}{GraphConfig.TILE_SUFFIX}").exists()
+    ]
+    if not paths:
         return pd.DataFrame(columns=columns)
-    return pd.concat(frames, ignore_index=True)
+    return pd.read_parquet(paths, columns=columns, filters=filters)
 
 
 def _load_layer(
@@ -181,7 +178,10 @@ def _load_layer(
         directory=graph_dir / GraphConfig.EDGES_SUBDIR,
         columns=edge_columns,
         tiles=tiles,
-        filters=[(Schema.MODE, "in", edge_modes), (Schema.FROM_NODE, "in", list(inside_ids | extra_from_ids))],
+        filters=[
+            (Schema.MODE, Schema.FILTER_IN, edge_modes),
+            (Schema.FROM_NODE, Schema.FILTER_IN, list(inside_ids | extra_from_ids)),
+        ],
     )
     return nodes_df, edges_df, inside_ids
 
@@ -265,7 +265,7 @@ def load_path_edges(*, path_nodes: list[tuple[int, float, float]], params: Routi
             directory=graph_dir / GraphConfig.NODES_SUBDIR,
             columns=NODE_COLS,
             tiles=tiles,
-            filters=[(Schema.OSMID, "in", list(set(path_osmids)))],
+            filters=[(Schema.OSMID, Schema.FILTER_IN, list(set(path_osmids)))],
         )
         .set_index(Schema.OSMID)
         .reindex(path_osmids)
@@ -285,7 +285,7 @@ def load_path_edges(*, path_nodes: list[tuple[int, float, float]], params: Routi
         directory=graph_dir / GraphConfig.EDGES_SUBDIR,
         columns=EDGE_COLS,
         tiles=tiles,
-        filters=[(Schema.FROM_NODE, "in", list(set(path_osmids)))],
+        filters=[(Schema.FROM_NODE, Schema.FILTER_IN, list(set(path_osmids)))],
     )
     return RoutePath(nodes=nodes, edges=_select_path_edges(nodes=nodes, edges_df=edges_df, params=params))
 
@@ -363,33 +363,6 @@ def snap_to_node(lat: float, lon: float, graph_dir: Path) -> tuple[float, float,
     lons = nodes_df["lon"].to_numpy()
     row = nodes_df.iloc[nearest_index(lat=lat, lon=lon, lats=lats, lons=lons)]  # shared nearest-point snap
     return float(row["lat"]), float(row["lon"]), float(row["elevation_m"])
-
-
-def top_stations(
-    graph_dir: Path,
-) -> list[tuple[float, float, float, str]]:
-    """Prominent local-high rail stations across the coverage area — trip-inspiration "top" stops.
-
-    A station is a top iff it has full Dominanz within TOP_STATION_DOMINANCE_KM AND clears
-    TOP_STATION_PROMINENCE_M of Schartenhöhe. Returns (lat, lon, elevation_m, name), highest first.
-    """
-    nodes_df = read_tiles(directory=graph_dir / GraphConfig.NODES_SUBDIR, columns=NODE_COLS, tiles=None, filters=None)
-    stations = nodes_df[(nodes_df["node_type"] == NodeType.RAIL) & nodes_df["station_name"].notna()].reset_index(
-        drop=True
-    )
-    assert not stations.empty, "no station found"
-    lats = stations["lat"].to_numpy(dtype=float)
-    lons = stations["lon"].to_numpy(dtype=float)
-    elevs = stations["elevation_m"].to_numpy(dtype=float)
-    tops: list[tuple[float, float, float, str]] = []
-    for i in range(len(stations)):
-        dists_km = haversine_vec(lat_a=lats[i], lon_a=lons[i], lat_b=lats, lon_b=lons) / 1000.0
-        near = elevs[dists_km <= RailConfig.TOP_STATION_DOMINANCE_KM]
-        dominant = elevs[i] >= near.max()  # Dominanz: highest station within the radius
-        prominent = elevs[i] - near.min() >= RailConfig.TOP_STATION_PROMINENCE_M  # Schartenhöhe: local relief
-        if dominant and prominent:
-            tops.append((float(lats[i]), float(lons[i]), float(elevs[i]), str(stations["station_name"].iloc[i])))
-    return sorted(tops, key=lambda s: s[2], reverse=True)
 
 
 def str_or_none(value: object) -> str | None:

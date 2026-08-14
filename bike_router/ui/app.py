@@ -33,23 +33,22 @@ from bike_router.core.geocoding import (
     default_http_get,
     latlon_box_value,
     nearest_place_name,
+    parse_latlon,
 )
-from bike_router.core.graph_store import download_graph_from_hf, load_meta, top_stations
+from bike_router.core.graph_store import download_graph_from_hf, load_meta, snap_to_node
 from bike_router.core.pipeline import RouteResult, plan_route, resolve_endpoints
+from bike_router.core.rail_extrema import StationExtrema, station_extrema
 from bike_router.core.simplify import format_bike_legs, format_rail_legs, rail_leg_tooltips
 from bike_router.ui.webmap import (
     COMPUTE_LABEL,
     GRADE_SCALE,
     QUALITY_SCALE,
-    SET_LABEL,
     composition_donut,
-    compute_gate,
     default_view_state,
     elevation_profile_chart,
-    endpoint_labels,
-    flattened_view,
-    map_click_start_pending,
-    map_remount_key,
+    endpoint_markers,
+    map_click_pending,
+    map_key,
     map_waypoint_markers,
     output_donuts,
     output_stat_rows,
@@ -78,7 +77,7 @@ def download_graph_with_bar() -> None:
 
 @st.cache_data(ttl=300)  # type: ignore[misc]  # untyped external decorator (streamlit unstubbed in the mypy env)
 def suggest(term: str, bbox: tuple[float, float, float, float]) -> tuple[str | None, list[str]]:
-    """Cached Photon suggestions for a typed term: (red-button "<place> Bahnhof" pick, places)."""
+    """Cached Photon suggestions for a typed term: (red-button "<place> Bahnhof" pick, place box values)."""
     return autocomplete_with_stations(term=term, bbox=bbox, limit=PhotonConfig.LIMIT, http_get=default_http_get)
 
 
@@ -100,6 +99,25 @@ def village_lookup(result: RouteResult) -> Callable[[float, float], str | None]:
     return lambda lat, lon: names.get((lat, lon))
 
 
+def rail_link_buttons(result: RouteResult) -> None:
+    """One Google Maps PUBLIC-TRANSPORT link button per train ride (mirrors bike_link_buttons).
+
+    Each click opens the ride's board→alight transit directions in a new tab; the label is the shared
+    "Train N: board → alight" text.
+    """
+    for label, leg in zip(format_rail_legs(rail_legs=result.rail_legs), result.rail_legs, strict=True):
+        st.link_button(f"🚆 {label}", leg.url, width="stretch")
+
+
+def bike_link_buttons(result: RouteResult) -> None:
+    """One Google Maps bicycling link button per pedalled leg (mirrors rail_link_buttons).
+
+    Each click opens the leg's route in Maps in a new tab; the label is the shared "Bike Route N: from → to".
+    """
+    for label, leg in zip(format_bike_legs(bike_legs=result.bike_legs), result.bike_legs, strict=True):
+        st.link_button(f"🗺️ {label}", leg.url, width="stretch")
+
+
 def render_route_output(result: RouteResult) -> None:
     """Route output: stats + donuts in a collapsible box; trains, links, downloads always shown."""
     track = result.track
@@ -112,7 +130,8 @@ def render_route_output(result: RouteResult) -> None:
             for col, (label, value) in zip(st.columns(len(pairs)), pairs, strict=True):
                 col.metric(label, value)
 
-        for col, (title, by_km, colors) in zip(st.columns(3), output_donuts(result), strict=True):
+        donuts = output_donuts(result)
+        for col, (title, by_km, colors) in zip(st.columns(len(donuts)), donuts, strict=True):
             col.altair_chart(composition_donut(title=title, by_km=by_km, colors=colors), width="stretch")
 
         # Below the donuts: the elevation profile with the SAME named markers the map shows.
@@ -126,18 +145,15 @@ def render_route_output(result: RouteResult) -> None:
         )
         st.plotly_chart(elevation_profile_chart(track=track, markers=markers), width="stretch")
 
-    # Always visible: which trains to catch, the bike-leg Maps links, and the downloads.
+    # Per-leg link buttons — train legs open Google Maps public-transport directions, bike legs
+    # open Maps bicycling; each caption shows only when that mode has legs.
     if result.rail_legs:
-        st.caption("🚆 Trains to catch (look these up in your railway app):")
-        for line in format_rail_legs(rail_legs=result.rail_legs):
-            st.markdown(f"- {line}")
+        st.caption("🚆 Train legs in Google Maps (one link per leg):")
+        rail_link_buttons(result=result)
 
-    # One Google Maps bicycling link per pedalled leg; the code block holds ONLY the URL so its
-    # copy icon copies just the link.
-    st.caption("🗺️ Bike legs in Google Maps (one link per leg):")
-    for label, leg in zip(format_bike_legs(bike_legs=result.bike_legs), result.bike_legs, strict=True):
-        st.caption(f"**{label}**")
-        st.code(leg.url, language=None)
+    if result.bike_legs:
+        st.caption("🗺️ Bike legs in Google Maps (one link per leg):")
+        bike_link_buttons(result=result)
 
     downloads = ((result.gpx_path, "application/gpx+xml"), (result.png_path, "image/png"))
     for col, (path, mime) in zip(st.columns(len(downloads)), downloads, strict=True):
@@ -158,8 +174,8 @@ def fill_box(field: str, value: str) -> None:
 def place_input(field: str, label: str, placeholder: str, bbox: tuple[float, float, float, float]) -> str:
     """An editable place box (type/paste freely) with click-to-fill suggestions below it.
 
-    Returns the box text STRIPPED (the single source of truth, geocoded verbatim); the red station
-    pick fills a "lat, lon (Name)" value (exact coords) but shows its readable name, then settlements.
+    Returns the box text STRIPPED; every suggestion (station pick + settlements) is a ``"lat, lon (Name)"``
+    box string, so a click fills EXACT coords (immediate marker, no re-geocode) while showing the readable name.
     """
     typed: str = st.text_input(label, key=field, placeholder=placeholder).strip()
     if typed == st.session_state[f"{field}_resolved"]:
@@ -169,77 +185,90 @@ def place_input(field: str, label: str, placeholder: str, bbox: tuple[float, flo
     if bahnhof is not None and bahnhof != typed:
         seen.add(bahnhof)
         st.button(
-            f"🚉 {box_display_label(bahnhof)}",  # readable name; the button FILLS the exact-coords value
+            f"🚉 {box_display_label(value=bahnhof)}",  # readable name; the button FILLS the exact-coords value
             key=f"{field}_sug_bahnhof",
             type=ST_PRIMARY,  # red button, first position
             on_click=fill_box,
             kwargs={"field": field, "value": bahnhof},
             width="stretch",
         )
-    for index, suggestion in enumerate(places):
-        if suggestion == typed or suggestion in seen:
+    for index, box_value in enumerate(places):
+        if box_value == typed or box_value in seen:
             continue
-        seen.add(suggestion)
+        seen.add(box_value)
         st.button(
-            f"↳ {suggestion}",
+            f"↳ {box_display_label(value=box_value)}",  # readable name; FILLS the exact-coords box value
             key=f"{field}_sug_{index}",
             on_click=fill_box,
-            kwargs={"field": field, "value": suggestion},
+            kwargs={"field": field, "value": box_value},
             width="stretch",
         )
     return typed
 
 
 def _recenter_on_endpoints(start: tuple[float, float, float], end: tuple[float, float, float]) -> None:
-    """Reframe the map straight-down on the start→end span and bump the camera epoch (one remount).
+    """Reframe the map straight-down on the start→end span (the ONE camera move).
 
-    The SINGLE recenter path: both Set (new endpoints) and Compute (fresh route) call this so the
-    map always reframes to a fresh top-down view; camera_epoch drives the only camera move.
+    Compute is the only caller: storing a fresh ``view`` changes the deck initialViewState so it snaps
+    to the route. Every other action leaves ``view`` untouched, so the camera stays put until Compute.
     """
-    st.session_state.update(
-        view=route_view_state(start_latlon=start[:2], end_latlon=end[:2]),
-        camera_epoch=st.session_state.camera_epoch + 1,
-    )
+    st.session_state.update(view=route_view_state(start_latlon=start[:2], end_latlon=end[:2]))
 
 
-def apply_pending_start(box_value: str) -> None:
-    """Stash a Start-box value for the next render, then rerun — the ONE pending-start path.
+def apply_pending_box(*, field: str, box_value: str) -> None:
+    """Stash a place-box value for the next render, then rerun — the ONE pending-box path.
 
-    A widget key can't be written after its widget renders, so GPS, top-station clicks and map
+    A widget key can't be written after its widget renders, so GPS, extremum-station clicks and map
     clicks all funnel their "lat, lon [(Name)]" box value through here (stash + rerun), no copies.
     """
-    st.session_state._pending_start = box_value
+    st.session_state[f"_pending_{field}"] = box_value
     st.rerun()
 
 
-def set_endpoints() -> None:
-    """Set-button callback: geocode the box texts, mark them resolved, recenter the map.
+@st.cache_data(ttl=3600)  # type: ignore[misc]  # untyped external decorator; one cached snap per coords string
+def snap_box(coords: str) -> tuple[float, float, float]:
+    """Local (no-network) nearest-node snap for a coords box value → (lat, lon, elevation_m), cached.
 
-    Runs as an on_click callback (BEFORE the rerun), so marking the boxes resolved clears their
-    suggestions instantly. Recentering is the shared _recenter_on_endpoints helper (also used by Compute).
+    Args:
+        coords: A "lat, lon [(Name)]" box literal (the exact string, so the cache key is stable).
     """
-    origin, destination = st.session_state.start_box, st.session_state.end_box
-    st.session_state.update(start_box_resolved=origin, end_box_resolved=destination)
-    try:
-        start, end = resolve_endpoints(origin=origin, destination=destination, graph_dir=GraphConfig.GRAPH_DIR)
-    except BikeRouterError as error:
-        logger.warning(f"Set endpoints failed to geocode {origin!r} → {destination!r}: {error}")
-        st.toast(str(error), icon="⚠️")
-        return
-    logger.info(f"Set endpoints: {origin!r}={start[:2]} → {destination!r}={end[:2]} (recenter epoch bump)")
-    st.session_state.update(
-        start_latlon=start,  # (lat, lon, elevation_m)
-        end_latlon=end,
-        result=None,  # stale route from the previous endpoints
-    )
-    _recenter_on_endpoints(start=start, end=end)
+    latlon = parse_latlon(place=coords)
+    assert latlon is not None, f"snap_box needs a coords literal, got {coords!r}"
+    return snap_to_node(lat=latlon[0], lon=latlon[1], graph_dir=GraphConfig.GRAPH_DIR)
 
 
-def toggle_top_stations() -> None:
-    """Toggle the rail-purple top-station inspiration markers on the map."""
-    shown = not st.session_state.get("show_top_stations", False)
-    st.session_state.show_top_stations = shown
-    logger.info(f"Top stations {'shown (map flattened for clicks)' if shown else 'hidden'}")
+def reconcile_endpoints() -> None:
+    """Phase 1: keep each endpoint's marker in sync with its box, WITHOUT moving the camera.
+
+    A box holding a coords literal (GPS/map/station/suggestion pick) snaps locally to a marker; free
+    text clears it (no marker). An off-graph pick toasts and clears. Never touches ``view`` — no recenter.
+    """
+    for box_key, resolved_key, latlon_key in (
+        (SessionKey.START_BOX, SessionKey.START_BOX_RESOLVED, SessionKey.START_LATLON),
+        (SessionKey.END_BOX, SessionKey.END_BOX_RESOLVED, SessionKey.END_LATLON),
+    ):
+        box = st.session_state[box_key]
+        if box == st.session_state[resolved_key]:
+            continue  # unchanged since last reconcile → marker already correct
+        coords = parse_latlon(place=box)
+        if coords is None:  # free text (or empty) → no immediate marker; Compute resolves it later
+            st.session_state.update({latlon_key: None, resolved_key: None, SessionKey.RESULT: None})
+            continue
+        try:
+            snapped = snap_box(coords=box)
+        except BikeRouterError as error:  # a pick far from any graph node — fail loud to the user
+            logger.warning(f"Reconcile snap failed for {box!r}: {error}")
+            st.toast(str(error), icon="⚠️")
+            st.session_state.update({latlon_key: None, resolved_key: None})
+            continue
+        st.session_state.update({latlon_key: snapped, resolved_key: box, SessionKey.RESULT: None})
+
+
+def toggle_station_extrema() -> None:
+    """Toggle the station-extrema markers (green tops → Start, red bottoms → End) on the map."""
+    shown = not st.session_state.get("show_station_extrema", False)
+    st.session_state.show_station_extrema = shown
+    logger.info(f"Station extrema {'shown (map flattened for clicks)' if shown else 'hidden'}")
 
 
 def request_gps() -> None:
@@ -247,9 +276,10 @@ def request_gps() -> None:
     st.session_state.gps_requested = True
 
 
-def arm_map_click_start() -> None:
-    """Map-click button callback: TOGGLE 'the next empty-map click sets Start' (red while armed)."""
-    st.session_state.arm_map_click_start = not st.session_state.get("arm_map_click_start", False)
+def arm_map_click(target: str) -> None:
+    """Map-click button callback: arm the next empty-map click to fill ``target`` (toggles off if re-clicked)."""
+    current = st.session_state.get("map_click_target")
+    st.session_state.map_click_target = None if current == target else target
 
 
 def capture_gps() -> None:
@@ -272,18 +302,13 @@ def capture_gps() -> None:
     box_value = latlon_box_value(lat=lat, lon=lon, name=None)  # same box-coord format as picks
     st.toast(f"📍 Location set as Start (±{accuracy:.0f} m accuracy).", icon="📍")
     logger.info(f"GPS fix → Start box {box_value!r} (±{accuracy:.0f} m)")
-    apply_pending_start(box_value=box_value)
+    apply_pending_box(field=SessionKey.START_BOX, box_value=box_value)
 
 
 @st.cache_data(ttl=3600)  # type: ignore[misc]  # untyped external decorator; one whole-graph scan, cached
-def top_station_markers() -> list[tuple[float, float, float, str]]:
-    """Local-maximum rail stations across the coverage area (cached — a one-off whole-graph scan)."""
-    tops = top_stations(graph_dir=GraphConfig.GRAPH_DIR)
-    if not tops:
-        logger.warning("Top-station scan found no local-maximum rail stations — the map will show none")
-    else:
-        logger.info(f"Top-station scan: {len(tops)} local-maximum rail stations")
-    return tops
+def station_extrema_markers() -> StationExtrema:
+    """Green local-max + red local-min station markers from ONE cached whole-graph scan."""
+    return station_extrema(graph_dir=GraphConfig.GRAPH_DIR)
 
 
 def swap_endpoints() -> None:
@@ -308,36 +333,39 @@ def configure_logging() -> None:
 
 
 def seed_state() -> None:
-    """Seed session_state defaults ONCE, then apply any pending Start-box fill (top-station/GPS click).
+    """Seed session_state defaults ONCE, then apply any pending place-box fill (station/GPS/map click).
 
-    A widget key can't be written after its widget renders, so a click stashes into _pending_start;
-    we apply it to start_box HERE, before the box is instantiated this run.
+    A widget key can't be written after its widget renders, so a click stashes into _pending_<box>;
+    we apply it to that box HERE, before the box is instantiated this run.
     """
     for key, initial in {
+        SessionKey.START_BOX: "",  # widget keys, pre-seeded so reconcile_endpoints can read them strictly
+        SessionKey.END_BOX: "",
         SessionKey.START_LATLON: None,
         SessionKey.END_LATLON: None,
         SessionKey.RESULT: None,
-        SessionKey.START_BOX_RESOLVED: None,  # exact box text Set resolved (gates Compute + hides suggestions)
+        SessionKey.START_BOX_RESOLVED: None,  # exact box text last resolved (hides suggestions + gates re-snap)
         SessionKey.END_BOX_RESOLVED: None,
-        "view": default_view_state(),
-        "camera_epoch": 0,
-        "show_top_stations": False,  # rail-purple top-station inspiration markers toggle
+        "view": default_view_state(),  # deck initialViewState; only Compute rewrites it → the one camera move
+        "show_station_extrema": False,  # green-max (top→Start) / red-min (bottom→End) station markers toggle
         "gps_requested": False,  # armed by "My location", read on the next render
-        "arm_map_click_start": False,  # armed by the 🎯 button, consumed by the next empty-map click
+        "map_click_target": None,  # START_BOX / END_BOX armed by 🚩/🏁, consumed by the next empty-map click
     }.items():
         st.session_state.setdefault(key, initial)
-    if st.session_state.get("_pending_start") is not None:
-        pending = st.session_state.pop("_pending_start")
-        st.session_state.start_box = pending
-        logger.debug(f"Applied pending Start-box fill: {pending!r}")
+    for field in (SessionKey.START_BOX, SessionKey.END_BOX):
+        if st.session_state.get(f"_pending_{field}") is not None:
+            pending = st.session_state.pop(f"_pending_{field}")
+            st.session_state[field] = pending
+            logger.debug(f"Applied pending fill to {field}: {pending!r}")
 
 
 def render_controls() -> tuple[str, str]:
-    """Draw the Start/End boxes (+ swap) and the Set + GPS/map-click/top-stations row; return (origin, dest).
+    """Draw the Start/End boxes (+ swap) and the four action buttons; return (origin, destination).
 
-    The three Start-setters are ICON-ONLY and live in one horizontal container so they stay side-by-side
-    as a group at any width (never one-per-row on mobile), dropping below Set together when space runs out.
+    Reconciles endpoints first so a picked box shows its marker immediately; the four setters share the
+    full width in one row — 📍 GPS→Start, 🚩 pick Start / 🏁 pick End on the map, 🚞 station highs/lows.
     """
+    reconcile_endpoints()  # phase 1: sync markers to any coords-carrying box, no camera move
     bbox = tuple(load_meta(graph_dir=GraphConfig.GRAPH_DIR)["bbox"])  # coverage box biases + limits suggestions
     col_start, col_swap, col_end = st.columns([1, 0.18, 1])
     with col_start:
@@ -348,37 +376,50 @@ def render_controls() -> tuple[str, str]:
     with col_end:
         destination = place_input(field=SessionKey.END_BOX, label="End", placeholder="End location", bbox=bbox)
 
-    # Set is the wide primary; the three Start-setters (GPS / map-click / top-stations) sit in ONE
-    # horizontal group that never stacks — beside Set on desktop, dropping below as a unit on mobile.
-    # 📍 GPS fills directly; 🎯 and 🚞 are ARM toggles (red while armed) whose next map click sets Start.
-    map_armed = st.session_state.get("arm_map_click_start", False)
-    tops_armed = st.session_state.get("show_top_stations", False)
-    with st.container(horizontal=True, gap="small"):
-        st.button(SET_LABEL, width="stretch", help="Geocode the Start/End places", on_click=set_endpoints)
-        with st.container(horizontal=True, gap="small", width="content"):
-            st.button(
-                "📍",
-                help="Use my current GPS location as Start (asks the browser for permission)",
-                on_click=request_gps,
-            )
-            st.button(
-                "🎯",
-                type=ST_PRIMARY if map_armed else ST_SECONDARY,
-                help="Arm, then click empty map (top-down) to set Start there; click again to disarm",
-                on_click=arm_map_click_start,
-            )
-            st.button(
-                "🚞",
-                type=ST_PRIMARY if tops_armed else ST_SECONDARY,
-                help="Arm rail-station markers, then click one to start a downhill trip; click again to hide",
-                on_click=toggle_top_stations,
-            )
+    # The four setters share the full width in one equal-column row. 📍 fills Start from GPS directly;
+    # 🚩/🏁 are ARM toggles (red while armed) whose next empty-map click sets Start/End; 🚞 shows stations.
+    target = st.session_state.get("map_click_target")
+    extrema_armed = st.session_state.get("show_station_extrema", False)
+    col_gps, col_pick_start, col_pick_end, col_stations = st.columns(4)
+    col_gps.button(
+        "📍 My location",
+        width="stretch",
+        help="Use my current GPS location as Start (asks the browser for permission)",
+        on_click=request_gps,
+    )
+    col_pick_start.button(
+        "🚩 Pick start",
+        type=ST_PRIMARY if target == SessionKey.START_BOX else ST_SECONDARY,
+        width="stretch",
+        help="Arm, then click empty map (top-down) to set Start there; click again to disarm",
+        on_click=arm_map_click,
+        kwargs={"target": SessionKey.START_BOX},
+    )
+    col_pick_end.button(
+        "🏁 Pick end",
+        type=ST_PRIMARY if target == SessionKey.END_BOX else ST_SECONDARY,
+        width="stretch",
+        help="Arm, then click empty map (top-down) to set End there; click again to disarm",
+        on_click=arm_map_click,
+        kwargs={"target": SessionKey.END_BOX},
+    )
+    col_stations.button(
+        "🚞 Top/Bottom Stations",
+        type=ST_PRIMARY if extrema_armed else ST_SECONDARY,
+        width="stretch",
+        help="Show station highs (green→Start) & lows (red→End); click again to hide",
+        on_click=toggle_station_extrema,
+    )
     capture_gps()  # if armed by the button, read the browser fix → stash into the Start box (reruns)
     return origin, destination
 
 
 def compute_button(origin: str, destination: str) -> None:
-    """Routing sliders + the Compute button: plan the route on click and store it in session_state."""
+    """Routing sliders + the Compute button: resolve the boxes, plan the route, recenter (Set folded in).
+
+    Compute is the ONLY phase-2 action: it geocodes any still-free-text box (coords picks parse instantly),
+    stores the snapped endpoints, plans, then recenters — enabled whenever both boxes are non-empty.
+    """
     with st.expander("⚙️ Tuning", expanded=False):
         slider_values = {
             spec.field: st.slider(
@@ -387,47 +428,42 @@ def compute_button(origin: str, destination: str) -> None:
             for spec in PARAM_SPECS
         }
 
-    enabled, compute_help = compute_gate(
-        start_latlon=st.session_state.start_latlon,
-        origin=origin,
-        destination=destination,
-        start_resolved=st.session_state.start_box_resolved,
-        end_resolved=st.session_state.end_box_resolved,
-    )
-    if st.button(COMPUTE_LABEL, width="stretch", disabled=not enabled, help=compute_help):
+    enabled = bool(origin and destination)
+    if st.button(COMPUTE_LABEL, width="stretch", disabled=not enabled, help="Plan the route for the current settings"):
         try:
             params = RoutingParams(**slider_values)
             logger.info(f"Compute route {origin!r} → {destination!r} with {params}")
             with st.spinner("Planning route…"):
+                start, end = resolve_endpoints(origin=origin, destination=destination, graph_dir=GraphConfig.GRAPH_DIR)
                 result = plan_route(
                     origin=origin, destination=destination, params=params, graph_dir=GraphConfig.GRAPH_DIR
                 )
-            st.session_state.update(result=result)
+            st.session_state.update(
+                start_latlon=start,  # (lat, lon, elevation_m) — mark both boxes resolved so markers/suggestions agree
+                end_latlon=end,
+                start_box_resolved=origin,
+                end_box_resolved=destination,
+                result=result,
+            )
             logger.info(
                 f"Route computed: {len(result.track.points)} points, {result.track.total.distance_km:.1f} km, "
                 f"{len(result.rail_legs)} rail leg(s)"
             )
-            # Reframe fresh straight-down on the computed route — same recenter path as Set.
-            _recenter_on_endpoints(start=st.session_state.start_latlon, end=st.session_state.end_latlon)
-        except BikeRouterError as error:  # too short/long, out of coverage, or no route
+            _recenter_on_endpoints(start=start, end=end)  # the ONE camera move
+        except BikeRouterError as error:  # bad geocode, too short/long, out of coverage, or no route
             logger.warning(f"Compute route failed for {origin!r} → {destination!r}: {error}")
             st.toast(str(error), icon="⚠️")
     if not enabled:
-        st.caption(f"⬆️ Press **{SET_LABEL}** first to enable **{COMPUTE_LABEL}**.")
+        st.caption(f"⬆️ Enter a Start and End to enable **{COMPUTE_LABEL}**.")
 
 
 def render_map(origin: str, destination: str) -> None:
     """Render the 3D map: endpoints, the colour-scale radio, and the route ribbon.
 
-    camera_epoch (bumped by Set and Compute) drives the only camera move; the colour scale + ribbon presence
-    fold into the remount key so a fresh route or scale toggle shows without moving the view.
+    The component key is derived from ``view`` (map_key): unchanged view → in-place layer/marker update
+    (picks/arming/ribbon show immediately, no blank); Compute rewrites ``view`` → remount at the route.
     """
-    endpoints = (
-        (st.session_state.start_latlon, st.session_state.end_latlon)
-        if st.session_state.start_latlon is not None
-        else None
-    )
-    labels = endpoint_labels(
+    endpoints = endpoint_markers(
         start_latlon=st.session_state.start_latlon,
         end_latlon=st.session_state.end_latlon,
         origin=origin,
@@ -454,54 +490,55 @@ def render_map(origin: str, destination: str) -> None:
         else None
     )
     waypoints = map_waypoint_markers(result=result, village_of=village_lookup(result)) if result is not None else None
-    tops = top_station_markers() if st.session_state.get("show_top_stations", False) else None
-    # deck.gl picking is unreliable under pitch, so WHENEVER a click must be caught (top-station markers
-    # shown OR map-click armed) flatten the camera to top-down — the one gate both arm-buttons share.
-    top_down = tops is not None or st.session_state.get("arm_map_click_start", False)
-    view = flattened_view(st.session_state.view) if top_down else st.session_state.view
+    extrema = station_extrema_markers() if st.session_state.get("show_station_extrema", False) else None
+    maxima = extrema.maxima if extrema is not None else None
+    minima = extrema.minima if extrema is not None else None
+    # The stored view is always top-down (DEFAULT_PITCH=0, no pitch UI), so deck.gl terrain-click
+    # picking stays reliable; no per-render flattening needed.
+    view = st.session_state.view
     deck = build_deck(
         view=view,
         ribbon_segments=ribbon,
         endpoints=endpoints,
-        endpoint_labels=labels,
         waypoints=waypoints,
-        top_stations=tops,
+        maxima=maxima,
+        minima=minima,
     )
-    map_key = map_remount_key(
-        camera_epoch=st.session_state.camera_epoch, top_down=top_down, has_ribbon=ribbon is not None
-    )
-    event = st_deckgl(deck, key=map_key, height=WebMapConfig.MAP_HEIGHT_PX, events=["click"])
-    handle_top_station_click(event=event)
-    handle_map_click_start(event=event)
+    event = st_deckgl(deck, key=map_key(view=view), height=WebMapConfig.MAP_HEIGHT_PX, events=["click"])
+    handle_station_click(event=event)
+    handle_map_click(event=event)
 
 
-def handle_top_station_click(event: object) -> None:
-    """Stash a clicked top-station's name for the Start box, then rerun (else no-op).
+def handle_station_click(event: object) -> None:
+    """Stash a clicked extremum-station's value into Start (green max) or End (red min), then rerun.
 
-    We must NOT write start_box here (its widget already rendered); it goes through the shared
-    apply_pending_start (stash + rerun); the last-applied marker dedups the re-returned event.
+    We must NOT write the box here (its widget already rendered); it goes through the shared
+    apply_pending_box (stash + rerun); markers stay shown so both ends can be picked in one arming.
     """
-    name = station_click_pending(event=event, last_applied=st.session_state.get("_last_station_click"))
-    if name is not None:
-        logger.info(f"Top-station clicked → filling Start box with {name!r}")
-        st.session_state._last_station_click = name
-        st.session_state.show_top_stations = False  # auto-disarm: markers hide, button returns to white
-        apply_pending_start(box_value=name)
+    pending = station_click_pending(event=event, last_applied=st.session_state.get("_last_station_click"))
+    if pending is not None:
+        box_value, field = pending
+        logger.info(f"Station clicked → filling {field} with {box_value!r}")
+        st.session_state._last_station_click = box_value
+        apply_pending_box(field=field, box_value=box_value)
 
 
-def handle_map_click_start(event: object) -> None:
-    """When the map-click button armed it, stash an empty-map click's coords as Start, then rerun.
+def handle_map_click(event: object) -> None:
+    """When a map-click button armed a target box, stash an empty-map click's coords there, then rerun.
 
-    Disarms on a hit so only ONE click sets Start; shares the apply_pending_start stash+rerun path,
-    and dedups the re-returned event against the last-applied marker (like the top-station handler).
+    Disarms on a hit so only ONE click sets the box; shares the apply_pending_box stash+rerun path,
+    and dedups the re-returned event against the last-applied marker (like the station handler).
     """
-    box_value = map_click_start_pending(
+    target = st.session_state.get("map_click_target")
+    if target is None:
+        return  # no 🚩/🏁 armed — an empty-map click sets nothing
+    box_value = map_click_pending(
         event=event,
-        armed=st.session_state.get("arm_map_click_start", False),
+        target=target,
         last_applied=st.session_state.get("_last_map_click"),
     )
     if box_value is not None:
-        logger.info(f"Map clicked → filling Start box with {box_value!r}")
+        logger.info(f"Map clicked → filling {target} with {box_value!r}")
         st.session_state._last_map_click = box_value
-        st.session_state.arm_map_click_start = False
-        apply_pending_start(box_value=box_value)
+        st.session_state.map_click_target = None
+        apply_pending_box(field=target, box_value=box_value)

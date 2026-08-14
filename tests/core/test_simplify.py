@@ -43,16 +43,17 @@ def _zigzag_line(n_points: int = 200) -> LineString:
     return LineString(list(zip(lons.tolist(), lats.tolist(), strict=True)))
 
 
-def _names(legs) -> list[tuple[str | None, str | None]]:  # noqa: ANN001 — list[RailLeg]
-    """(board name, alight name) per leg — the Station→name projection the assertions want."""
-    return [(leg.board.name, leg.alight.name) for leg in legs]
+def _names(pairs) -> list[tuple[str | None, str | None]]:  # noqa: ANN001 — list[(Station, Station)]
+    """(board name, alight name) per (board, alight) pair — the Station→name projection assertions want."""
+    return [(board.name, alight.name) for board, alight in pairs]
 
 
 def _rail_leg(board: str | None, alight: str | None) -> RailLeg:
-    """A RailLeg from two station names (positions irrelevant for the format/endpoint tests)."""
+    """A RailLeg from two station names (positions/url irrelevant for the format/endpoint tests)."""
     return RailLeg(
         board=Station(name=board, lat=48.0, lon=8.0, elevation_m=0.0),
         alight=Station(name=alight, lat=48.0, lon=8.1, elevation_m=0.0),
+        url="https://maps.google/transit",
     )
 
 
@@ -215,6 +216,13 @@ def test_bike_leg_endpoints():
     assert bike_leg_endpoints(route=ends_on_train, leg_paths=[[1, 2]], origin="Start", destination="End") == [
         ("Start", "Station 3")
     ]
+    # A coords-literal box value (from a GPS/map/station pick) shows its readable "(Name)", never raw coords.
+    assert bike_leg_endpoints(
+        route=pure,
+        leg_paths=[[1, 2, 3]],
+        origin="48.47652, 7.94654 (Offenburg Bahnhof)",
+        destination="48.46459, 8.43517 (Freudenstadt Bahnhof)",
+    ) == [("Offenburg Bahnhof", "Freudenstadt Bahnhof")]
 
 
 def test_neighbour_station_name():

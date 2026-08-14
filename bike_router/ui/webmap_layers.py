@@ -8,7 +8,7 @@ from dataclasses import asdict
 
 import pydeck as pdk
 
-from bike_router.core.constants import WebMapConfig
+from bike_router.core.constants import NAME_KEY, ROLE_KEY, SessionKey, WebMapConfig
 from bike_router.core.simplify import place_label
 from bike_router.ui.webmap import RibbonSegment, ViewState
 
@@ -81,22 +81,26 @@ def _marker_row(*, lat: float, lon: float, elev: float, color: list[int], toolti
     return {"position": [lon, lat, elev + WebMapConfig.RIBBON_FLOAT_ABOVE_M], "color": color, "tooltip": tooltip}
 
 
-def create_endpoint_layer(
-    start: tuple[float, float, float], end: tuple[float, float, float], start_label: str, end_label: str
+def _blue_marker_layer(
+    *, markers: list[tuple[float, float, float, str]], layer_id: str, radius_m: float, min_pixels: int
 ) -> pdk.Layer:
-    """ScatterplotLayer with the start + end markers — the ONE blue, slightly bigger than waypoints.
+    """A blue ScatterplotLayer from (lat, lon, elev, label) rows — the shared endpoint/waypoint builder.
 
-    Each endpoint is ``(lat, lon, elevation_m)`` (snapped to its graph node), hovering above it. All
-    markers share MARKER_COLOR (blue); role is told apart by SIZE (endpoints biggest), not colour.
+    All markers share MARKER_COLOR (blue); endpoints vs waypoints differ only by id + radius, not colour.
     """
     blue = list(WebMapConfig.MARKER_COLOR)
-    markers = [
-        _marker_row(lat=start[0], lon=start[1], elev=start[2], color=blue, tooltip=start_label),
-        _marker_row(lat=end[0], lon=end[1], elev=end[2], color=blue, tooltip=end_label),
-    ]
-    return _marker_layer(
+    rows = [_marker_row(lat=lat, lon=lon, elev=elev, color=blue, tooltip=label) for lat, lon, elev, label in markers]
+    return _marker_layer(layer_id=layer_id, markers=rows, radius_m=radius_m, min_pixels=min_pixels)
+
+
+def create_endpoint_layer(endpoints: list[tuple[float, float, float, str]]) -> pdk.Layer:
+    """ScatterplotLayer of the SET endpoints (start, end, or a lone phase-1 pick) — blue, bigger than waypoints.
+
+    Each row is ``(lat, lon, elevation_m, label)`` (snapped to its graph node), hovering above the terrain.
+    """
+    return _blue_marker_layer(
+        markers=endpoints,
         layer_id="route_endpoints",
-        markers=markers,
         radius_m=WebMapConfig.ENDPOINT_RADIUS_M,
         min_pixels=WebMapConfig.ENDPOINT_MIN_PIXELS,
     )
@@ -112,37 +116,38 @@ def create_waypoint_layer(waypoints: list[tuple[float, float, float, str]]) -> p
         waypoints: ``(lat, lon, elevation_m, label)`` per intermediate marker; the label is the
             shared "Name (elev m)" text shown on hover.
     """
-    blue = list(WebMapConfig.MARKER_COLOR)
-    markers = [
-        _marker_row(lat=lat, lon=lon, elev=elev, color=blue, tooltip=label) for lat, lon, elev, label in waypoints
-    ]
-    return _marker_layer(
+    return _blue_marker_layer(
+        markers=waypoints,
         layer_id="route_waypoints",
-        markers=markers,
         radius_m=WebMapConfig.WAYPOINT_RADIUS_M,
         min_pixels=WebMapConfig.WAYPOINT_MIN_PIXELS,
     )
 
 
-def create_top_station_layer(top_stations: list[tuple[float, float, float, str]]) -> pdk.Layer:
-    """Rail-purple clickable markers at local-maximum ("top") rail stations — trip inspiration.
+def create_extremum_station_layer(
+    *, stations: list[tuple[float, float, float, str]], color: list[int], role: str, layer_id: str
+) -> pdk.Layer:
+    """Clickable extremum-station markers in one colour — green maxima (Start) or red minima (End).
 
-    Each row carries ``name`` (click-to-fill the Start box) + a "Name (elev m)" hover tooltip; clicks
-    are read via the deck ``events=['click']`` return.
+    Each row carries ``name`` (fills the box), ``role`` (Start/End box the click targets) + a
+    "Name (elev m)" hover tooltip; clicks are read via the deck ``events=['click']`` return.
 
     Args:
-        top_stations: ``(lat, lon, elevation_m, name)`` per local-maximum rail station.
+        stations: ``(lat, lon, elevation_m, name)`` per extremum station.
+        color: RGB fill (green for maxima, red for minima).
+        role: SessionKey.START_BOX (maxima) or SessionKey.END_BOX (minima) the click fills.
+        layer_id: unique deck layer id.
     """
-    purple = list(WebMapConfig.RAIL_COLOR)
     markers = [
         {
-            **_marker_row(lat=lat, lon=lon, elev=elev, color=purple, tooltip=place_label(name=name, elevation_m=elev)),
-            "name": name,
+            **_marker_row(lat=lat, lon=lon, elev=elev, color=color, tooltip=place_label(name=name, elevation_m=elev)),
+            NAME_KEY: name,
+            ROLE_KEY: role,
         }
-        for lat, lon, elev, name in top_stations
+        for lat, lon, elev, name in stations
     ]
     return _marker_layer(
-        layer_id="top_stations",
+        layer_id=layer_id,
         markers=markers,
         radius_m=WebMapConfig.ENDPOINT_RADIUS_M,
         min_pixels=WebMapConfig.ENDPOINT_MIN_PIXELS,
@@ -153,30 +158,33 @@ def build_deck(
     view: ViewState,
     ribbon_segments: list[RibbonSegment] | None,
     *,
-    endpoints: tuple[tuple[float, float, float], tuple[float, float, float]] | None,
-    endpoint_labels: tuple[str, str] | None,
+    endpoints: list[tuple[float, float, float, str]] | None,
     waypoints: list[tuple[float, float, float, str]] | None,
-    top_stations: list[tuple[float, float, float, str]] | None,
+    maxima: list[tuple[float, float, float, str]] | None,
+    minima: list[tuple[float, float, float, str]] | None,
 ) -> pdk.Deck:
-    """Assemble the Deck bottom→top: terrain, top stations, waypoints, endpoints, then the route ribbon.
+    """Assemble the Deck bottom→top: terrain, min/max stations, waypoints, endpoints, then the route ribbon.
 
-    One deck-level tooltip (``{tooltip}``) serves every pickable layer — each ribbon segment,
+    One deck-level tooltip (``{tooltip}``) serves every pickable layer — each ribbon segment, station,
     endpoint, and waypoint datum carries its own ``tooltip`` string (the proven pydeck idiom).
     """
     layers = [create_terrain_layer(mesh_max_error=1.0)]
-    if top_stations:
-        layers.append(create_top_station_layer(top_stations=top_stations))
-    if waypoints:
-        layers.append(create_waypoint_layer(waypoints=waypoints))
-    if endpoints is not None:
-        # endpoints and endpoint_labels are coupled at the caller (both gate on start_latlon set);
-        # a present-endpoints / absent-labels state is drift, so fail loud rather than paint generics.
-        assert endpoint_labels is not None, "endpoints set but endpoint_labels missing — coupled-state drift"
+    if minima:
         layers.append(
-            create_endpoint_layer(
-                start=endpoints[0], end=endpoints[1], start_label=endpoint_labels[0], end_label=endpoint_labels[1]
+            create_extremum_station_layer(
+                stations=minima, color=list(WebMapConfig.MINIMA_COLOR), role=SessionKey.END_BOX, layer_id="minima"
             )
         )
+    if maxima:
+        layers.append(
+            create_extremum_station_layer(
+                stations=maxima, color=list(WebMapConfig.MAXIMA_COLOR), role=SessionKey.START_BOX, layer_id="maxima"
+            )
+        )
+    if waypoints:
+        layers.append(create_waypoint_layer(waypoints=waypoints))
+    if endpoints:
+        layers.append(create_endpoint_layer(endpoints=endpoints))
     if ribbon_segments is not None:
         layers.extend(create_route_ribbon_layers(segments=ribbon_segments))
     return pdk.Deck(

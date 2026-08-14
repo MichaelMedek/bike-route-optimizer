@@ -16,10 +16,10 @@ from bike_router.core.errors import BikeRouterError, GeocodeConnectionError, Geo
 from bike_router.core.geocoding import (
     _GEOCODE_CACHE,
     HttpGetter,
+    _feature_box_value,
     _feature_lonlat,
     _feature_name,
     _feature_properties,
-    _parse_latlon,
     _photon_features,
     _photon_query,
     as_bahnhof,
@@ -32,6 +32,7 @@ from bike_router.core.geocoding import (
     latlon_box_value,
     make_geocode_fn,
     nearest_place_name,
+    parse_latlon,
     photon_autocomplete,
     photon_label,
 )
@@ -124,21 +125,21 @@ def test_geocode():
 
 def test_parse_latlon():
     # Two in-range comma floats → tuple (spaces optional); anything else → None (falls to Nominatim).
-    assert _parse_latlon(place="48.4633, 8.4116") == (48.4633, 8.4116)
-    assert _parse_latlon(place="48.46,8.41") == (48.46, 8.41)  # no space
-    assert _parse_latlon(place="47.5, 9.5 (Zürich Bahnhof)") == (47.5, 9.5)  # trailing (Name) ignored — coords win
-    assert _parse_latlon(place="Freudenstadt, Germany") is None  # a place, not coords
-    assert _parse_latlon(place="200, 8") is None  # lat out of range
-    assert _parse_latlon(place="48, 8, 9") is None  # wrong part count
-    assert _parse_latlon(place="Freudenstadt") is None  # no comma
+    assert parse_latlon(place="48.4633, 8.4116") == (48.4633, 8.4116)
+    assert parse_latlon(place="48.46,8.41") == (48.46, 8.41)  # no space
+    assert parse_latlon(place="47.5, 9.5 (Zürich Bahnhof)") == (47.5, 9.5)  # trailing (Name) ignored — coords win
+    assert parse_latlon(place="Freudenstadt, Germany") is None  # a place, not coords
+    assert parse_latlon(place="200, 8") is None  # lat out of range
+    assert parse_latlon(place="48, 8, 9") is None  # wrong part count
+    assert parse_latlon(place="Freudenstadt") is None  # no comma
 
 
 def test_latlon_box_value():
-    # The ONE "lat, lon (Name)" box format _parse_latlon reads back; name optional (explicit) + stripped.
+    # The ONE "lat, lon (Name)" box format parse_latlon reads back; name optional (explicit) + stripped.
     assert latlon_box_value(lat=47.5, lon=9.5, name="Zürich Bahnhof") == "47.50000, 9.50000 (Zürich Bahnhof)"
     assert latlon_box_value(lat=47.5, lon=9.5, name=None) == "47.50000, 9.50000"  # no name → bare coords
     assert latlon_box_value(lat=47.5, lon=9.5, name="  ") == "47.50000, 9.50000"  # blank name dropped
-    assert _parse_latlon(place=latlon_box_value(lat=47.5, lon=9.5, name="X")) == (47.5, 9.5)  # round-trips to coords
+    assert parse_latlon(place=latlon_box_value(lat=47.5, lon=9.5, name="X")) == (47.5, 9.5)  # round-trips to coords
 
 
 def test_marker_pick_geocodes_to_exact_coords_not_name():
@@ -198,8 +199,8 @@ def test_photon_label():
 
 
 def test_photon_autocomplete():
-    # Maps features → labels in order; a blank term returns [] without a request; no results / a
-    # network error → []; and the request carries the bbox + centre-bias params.
+    # Maps features → "lat, lon (label)" box strings in order; a feature without geometry is dropped; a
+    # blank term returns [] without a request; no results / a network error → []; request carries bbox + bias.
     payload = {
         "features": [
             _photon_feature(
@@ -215,9 +216,22 @@ def test_photon_autocomplete():
         osm_tag=PhotonConfig.PLACE_OSM_TAG,
         http_get=MagicMock(return_value=payload),
     ) == [
-        "Freudenstadt, Baden-Württemberg",
-        "Pforzheim, Baden-Württemberg",
+        "48.46330, 8.41160 (Freudenstadt, Baden-Württemberg)",
+        "48.89220, 8.69470 (Pforzheim, Baden-Württemberg)",
     ]
+
+    # A feature with no Point geometry can't place a marker → dropped (external data, fail-soft).
+    no_geom = {"features": [{"properties": {"name": "Ghost"}}]}
+    assert (
+        photon_autocomplete(
+            term="Ghost",
+            bbox=_BBOX,
+            limit=PhotonConfig.LIMIT,
+            osm_tag=PhotonConfig.PLACE_OSM_TAG,
+            http_get=MagicMock(return_value=no_geom),
+        )
+        == []
+    )
 
     blank_get = MagicMock()
     assert (
@@ -317,6 +331,15 @@ def test_feature_name():
     assert _feature_name({}) == ""  # no properties at all
 
 
+def test_feature_box_value():
+    # The ONE feature → "lat, lon (Name)" box string (shared by autocomplete + station pick); a feature
+    # without a Point geometry or with a blank display name → None (dropped).
+    feat = _photon_feature(name="X", lon=9.55, lat=47.6)
+    assert _feature_box_value(feature=feat, name="Langenargen Bahnhof") == "47.60000, 9.55000 (Langenargen Bahnhof)"
+    assert _feature_box_value(feature={"properties": {"name": "X"}}, name="X") is None  # no geometry
+    assert _feature_box_value(feature=feat, name="   ") is None  # blank display name
+
+
 def test_bahnhof_suggestion():
     # A station match → a "lat, lon (Name Bahnhof)" box value using the station's OWN coordinates
     # (station-first OSM query); no station → None; a name already ending in "Bahnhof" isn't doubled.
@@ -349,7 +372,7 @@ def test_autocomplete_with_stations():
 
     bahnhof, places = autocomplete_with_stations(term="Langenargen", bbox=_BBOX, limit=7, http_get=by_tag)
     assert bahnhof == "47.60000, 9.55000 (Langenargen Bahnhof)"  # coords-carrying red-button pick
-    assert places  # settlement suggestions still offered
+    assert places == ["47.60000, 9.55000 (Langenargen)"]  # settlement suggestions are coords-carrying box strings too
 
     # No station → no Bahnhof pick; just the place suggestions.
     place_only = MagicMock(
@@ -360,7 +383,7 @@ def test_autocomplete_with_stations():
         )
     )
     bahnhof, places = autocomplete_with_stations(term="Xdorf", bbox=_BBOX, limit=7, http_get=place_only)
-    assert bahnhof is None and places == ["Xdorf"]
+    assert bahnhof is None and places == ["48.00000, 9.00000 (Xdorf)"]
 
 
 def test_nearest_place_name():

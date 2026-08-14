@@ -11,12 +11,12 @@ from shapely.geometry import LineString
 
 from bike_router.preprocessing import graph_ops
 from bike_router.preprocessing.graph_ops import (
-    _densify_coords,
     _fill_nan_with_mean,
     _worst_band_vertex,
     bake_edge_geometry_elevations,
     consolidate_graph,
     densify_edge_geometry,
+    densify_polyline,
     drop_bike_self_loops,
     drop_disallowed_edges,
     enrich_elevations,
@@ -83,11 +83,11 @@ def test_consolidate_graph(monkeypatch):
     assert captured["dead_ends"] is True, "consolidation must KEEP dead-ends (valid destinations)"
 
 
-def test_densify_coords():
+def test_densify_polyline():
     # Inserts evenly-spaced points so no segment exceeds max_spacing; existing vertices kept, order preserved.
     # ~743 m single segment @ 100 m spacing → 8 sub-segments (7 inserts) → 9 points, all endpoints intact.
-    out = _densify_coords([(8.0, 48.0), (8.01, 48.0)], max_spacing_m=100.0)
-    assert out[0] == (8.0, 48.0) and out[-1] == (8.01, 48.0)  # endpoints preserved
+    out = densify_polyline(np.array([(8.0, 48.0), (8.01, 48.0)]), max_spacing_m=100.0)
+    assert tuple(out[0]) == (8.0, 48.0) and tuple(out[-1]) == (8.01, 48.0)  # endpoints preserved
     from bike_router.core.geo import haversine_distance_m
 
     gaps = [
@@ -96,15 +96,20 @@ def test_densify_coords():
     ]
     assert max(gaps) <= 100.0  # every sub-gap within spacing
     # an already-dense pair is left as-is (no inserts)
-    assert _densify_coords([(8.0, 48.0), (8.0005, 48.0)], max_spacing_m=100.0) == [(8.0, 48.0), (8.0005, 48.0)]
+    dense_pair = densify_polyline(np.array([(8.0, 48.0), (8.0005, 48.0)]), max_spacing_m=100.0)
+    assert len(dense_pair) == 2 and tuple(dense_pair[-1]) == (8.0005, 48.0)
     # REGRESSION: a LONG DIAGONAL segment (lon+lat both change) must stay STRICTLY under the cap despite
     # lon/lat-linear interpolation vs great-circle measurement — the 100.0m-boundary build failure.
-    diag = _densify_coords([(8.0, 48.0), (8.03, 48.9)], max_spacing_m=100.0)
+    diag = densify_polyline(np.array([(8.0, 48.0), (8.03, 48.9)]), max_spacing_m=100.0)
     dgaps = [
         haversine_distance_m(lat_a=diag[i][1], lon_a=diag[i][0], lat_b=diag[i + 1][1], lon_b=diag[i + 1][0])
         for i in range(len(diag) - 1)
     ]
     assert max(dgaps) < 100.0  # STRICT: no sub-gap lands exactly at (or above) the cap
+    # 3D (lon/lat/z): z is interpolated linearly along with the horizontal position (rail track elevation).
+    z3d = densify_polyline(np.array([(8.0, 48.0, 300.0), (8.01, 48.0, 400.0)]), max_spacing_m=100.0)
+    assert z3d.shape[1] == 3 and z3d[0, 2] == 300.0 and z3d[-1, 2] == 400.0
+    assert (np.diff(z3d[:, 2]) > 0).all()  # z rises monotonically across the inserted vertices
 
 
 def test_densify_edge_geometry():

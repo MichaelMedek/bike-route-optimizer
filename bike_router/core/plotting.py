@@ -9,7 +9,9 @@ import math
 
 import matplotlib
 
-matplotlib.use("Agg")  # headless — must precede pyplot import
+from bike_router.core.constants import MPL_BACKEND
+
+matplotlib.use(MPL_BACKEND)  # headless — must precede pyplot import
 import matplotlib.pyplot as plt  # noqa: E402
 import numpy as np  # noqa: E402
 from matplotlib import cm  # noqa: E402
@@ -18,8 +20,16 @@ from matplotlib.colors import Normalize  # noqa: E402
 from matplotlib.ticker import MaxNLocator  # noqa: E402
 
 from bike_router.core.composition import RouteComposition, format_composition  # noqa: E402
-from bike_router.core.constants import ELEVATION_AXIS_LABEL, PLOT_BG, Palette, PlotConfig, RoutingParams  # noqa: E402
+from bike_router.core.constants import (  # noqa: E402
+    ELEVATION_AXIS_LABEL,
+    MPL_BBOX_TIGHT,
+    PLOT_BG,
+    Palette,
+    PlotConfig,
+    RoutingParams,
+)
 from bike_router.core.geo import nearest_index  # noqa: E402
+from bike_router.core.geocoding import box_display_label  # noqa: E402
 from bike_router.core.route_path import RoutePath  # noqa: E402
 from bike_router.core.track import (  # noqa: E402
     Track,
@@ -102,6 +112,15 @@ def _marker_node_indices(*, route: RoutePath, marker_points: list[tuple[float, f
     return sorted(idxs)
 
 
+def route_title(*, origin: str, destination: str) -> str:
+    """The PNG title "Bike route: A → B", with any coords-literal box value stripped to its ``(Name)``.
+
+    Mirrors the leg display (simplify.bike_leg_endpoints): a picked "lat, lon (Name)" shows just the
+    readable name, never the raw coordinates; a plain geocoded string passes through unchanged.
+    """
+    return f"Bike route: {box_display_label(value=origin)} → {box_display_label(value=destination)}"
+
+
 def plot_route_debug(
     *,
     route: RoutePath,
@@ -172,7 +191,8 @@ def plot_route_debug(
     axes.scatter(
         lons[-1], lats[-1], s=200, c=[end_rgb], edgecolors="black", linewidths=1.2, zorder=7, marker="*", label="end"
     )
-    axes.set_title(f"Bike route: {origin} → {destination}", fontsize=13, weight="bold")
+    # Strip a coords-literal box value ("lat, lon (Name)") to its readable name, like the leg display.
+    axes.set_title(route_title(origin=origin, destination=destination), fontsize=13, weight="bold")
 
     mappable = cm.ScalarMappable(norm=norm, cmap=cmap)
     mappable.set_array([])
@@ -201,6 +221,6 @@ def plot_route_debug(
         handles, labels, loc="upper right", fontsize=9, framealpha=0.95, facecolor=PLOT_BG, edgecolor="#999999"
     )
 
-    figure.savefig(out_path, dpi=dpi, facecolor=PLOT_BG, bbox_inches="tight", pad_inches=0.3)
+    figure.savefig(out_path, dpi=dpi, facecolor=PLOT_BG, bbox_inches=MPL_BBOX_TIGHT, pad_inches=0.3)
     plt.close(figure)
     logger.info(f"Wrote debug route PNG to {out_path}")

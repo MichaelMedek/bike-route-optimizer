@@ -9,13 +9,30 @@ import logging
 from pathlib import Path
 from typing import Any
 
-import networkx as nx
+import matplotlib
+
+from bike_router.core.constants import (
+    MPL_BACKEND,
+    MPL_BBOX_TIGHT,
+    PLOT_BG,
+    WGS84_CRS,
+    GraphConfig,
+    Mode,
+    NodeType,
+    Palette,
+    Schema,
+)
+
+matplotlib.use(MPL_BACKEND)
+import matplotlib.pyplot as plt  # noqa: E402
+import networkx as nx  # noqa: E402
+import numpy as np
 import pandas as pd
-from shapely import from_wkt, to_wkt
+from matplotlib.collections import LineCollection
+from shapely import from_wkt, get_coordinates, to_wkt
 from shapely.geometry import LineString
 
-from bike_router.core.constants import WGS84_CRS, GraphConfig, Mode, NodeType, Schema
-from bike_router.core.graph_store import EDGE_COLS, NODE_COLS, read_tiles, str_or_none, tile_index, tile_name
+from bike_router.core.graph_store import EDGE_COLS, NODE_COLS, read_tiles, str_or_none, tile_name
 
 logger = logging.getLogger(__name__)
 
@@ -55,23 +72,24 @@ def write_graph_parquet(
     nodes_dir.mkdir(parents=True, exist_ok=True)
     edges_dir.mkdir(parents=True, exist_ok=True)
 
-    node_tiles = [
-        tile_index(lat=lat, lon=lon, tile_deg=tile_deg)
-        for lat, lon in zip(nodes_df["lat"], nodes_df["lon"], strict=True)
-    ]
-    nodes_df = nodes_df.assign(_tile=node_tiles)
-    coord = {
-        osmid: (lat, lon) for osmid, lat, lon in zip(nodes_df["osmid"], nodes_df["lat"], nodes_df["lon"], strict=True)
-    }
-    edge_tiles = [
-        tile_index(lat=coord[node][0], lon=coord[node][1], tile_deg=tile_deg) for node in edges_df["from_node"]
-    ]
-    edges_df = edges_df.assign(_tile=edge_tiles)
+    # Vectorized tiling (a per-row tile_index() call over 8M+24M rows silently stalls the build): floor the
+    # node coords to (row, col), then map each edge to its from_node's tile via searchsorted — no per-row Python.
+    logger.info(f"write: tiling {len(nodes_df)} nodes / {len(edges_df)} edges (deg={tile_deg}) …")
+    node_row = np.floor(nodes_df[Schema.LAT].to_numpy() / tile_deg).astype(np.int64)
+    node_col = np.floor(nodes_df[Schema.LON].to_numpy() / tile_deg).astype(np.int64)
+    node_ids = nodes_df[Schema.OSMID].to_numpy()
+    order = np.argsort(node_ids)
+    sorted_ids = node_ids[order]
+    edge_pos = order[np.searchsorted(sorted_ids, edges_df[Schema.FROM_NODE].to_numpy())]  # from_node's node row
+    nodes_df = nodes_df.assign(_tile=list(zip(node_row.tolist(), node_col.tolist(), strict=True)))
+    edges_df = edges_df.assign(_tile=list(zip(node_row[edge_pos].tolist(), node_col[edge_pos].tolist(), strict=True)))
 
+    logger.info(f"write: saving node tiles → {nodes_dir} …")
     for (row, col), group in nodes_df.groupby("_tile"):
         group[NODE_COLS].to_parquet(
             nodes_dir / f"{tile_name(row=row, col=col)}{GraphConfig.TILE_SUFFIX}", index=False, compression=compression
         )
+    logger.info(f"write: saving edge tiles → {edges_dir} …")
     for (row, col), group in edges_df.groupby("_tile"):
         group[EDGE_COLS].to_parquet(
             edges_dir / f"{tile_name(row=row, col=col)}{GraphConfig.TILE_SUFFIX}", index=False, compression=compression
@@ -230,3 +248,48 @@ def _scalar(value: object) -> object:
     if isinstance(value, list | tuple):
         return value[0] if value else None
     return str_or_none(value=value)
+
+
+def plot_graph_overview(
+    *, nodes_df: pd.DataFrame, edges_df: pd.DataFrame, out_path: Path, title: str, figsize: tuple[float, float]
+) -> None:
+    """Overview — bike edges thin blue, rail thick purple, rail STATIONS red dots behind the rail lines.
+
+    Fully vectorized: ``from_wkt`` parses the whole WKT column in one C call, ``get_coordinates`` extracts
+    every vertex at once, ``np.split`` slices per-edge segments. Shared by the full build + the fixture gen.
+    """
+    fig, ax = plt.subplots(figsize=figsize)
+    rail_width = 3.0
+    stations = nodes_df[nodes_df[Schema.STATION_NAME].notna()]
+    # Draw bike (thin blue) then rail (thick purple); station dots go BEHIND rail but ABOVE bike, red, with a
+    # diameter 1.5× the rail linewidth (scatter ``s`` is area in pt², so square the diameter → visible dot).
+    ax.add_collection(_mode_lines(edges_df=edges_df, mode=Mode.BIKE, color=Palette.START, width=0.15, zorder=1))
+    dot_diameter = rail_width * 1.5
+    ax.scatter(
+        stations[Schema.LON],
+        stations[Schema.LAT],
+        s=dot_diameter**2,
+        c=Palette.RED,
+        zorder=2,
+        linewidths=0,
+        rasterized=True,
+    )
+    ax.add_collection(_mode_lines(edges_df=edges_df, mode=Mode.RAIL, color=Palette.RAIL, width=rail_width, zorder=3))
+    ax.autoscale_view()
+    ax.set_aspect(1.4)  # rough lat/lon aspect at ~50°N
+    ax.set_title(title)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(out_path, dpi=140, facecolor=PLOT_BG, bbox_inches=MPL_BBOX_TIGHT, pad_inches=0.2)
+    plt.close(fig)
+    logger.info(f"Overview plot written to {out_path}")
+
+
+def _mode_lines(*, edges_df: pd.DataFrame, mode: str, color: str, width: float, zorder: int) -> LineCollection:
+    """A LineCollection of one mode's edge polylines (vectorized WKT parse → per-edge segment slices)."""
+    wkts = edges_df.loc[edges_df[Schema.MODE] == mode, Schema.GEOMETRY_WKT].dropna()
+    if wkts.empty:
+        return LineCollection([], colors=color, linewidths=width, zorder=zorder)
+    coords, index = get_coordinates(from_wkt(np.asarray(wkts, dtype=object)), return_index=True)
+    segments = np.split(coords, np.flatnonzero(np.diff(index)) + 1)
+    logger.info(f"  plotted {mode}: {len(segments)} edges ({len(coords)} vertices)")
+    return LineCollection(segments, colors=color, linewidths=width, rasterized=True, zorder=zorder)

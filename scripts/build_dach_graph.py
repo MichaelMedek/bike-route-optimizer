@@ -24,7 +24,6 @@ Austria and Switzerland have no Geofabrik sub-extracts, so they are bbox-split e
 """
 
 import argparse
-import gc
 import json
 import logging
 import multiprocessing
@@ -38,17 +37,12 @@ from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 
 import matplotlib
-import numpy as np
-import pandas as pd
 from tqdm import tqdm
 
 matplotlib.use("Agg")  # headless — must precede pyplot import
-import matplotlib.pyplot as plt  # noqa: E402
-from matplotlib.collections import LineCollection  # noqa: E402
-from shapely import from_wkt, get_coordinates  # noqa: E402
 
-from bike_router.core.constants import DEMConfig, GraphConfig, Mode, Palette
-from bike_router.core.graph_validation import assert_bike_geometry_valid
+from bike_router.core.constants import DEMConfig, GraphConfig
+from bike_router.core.graph_validation import assert_bike_geometry_valid, assert_no_long_straight_edges
 from bike_router.preprocessing.builder import (
     build_region_graph_clipped,
     remap_contiguous,
@@ -57,6 +51,7 @@ from bike_router.preprocessing.builder import (
 from bike_router.preprocessing.elevation import DEMService
 from bike_router.preprocessing.graph_writer import (
     graph_to_tables,
+    plot_graph_overview,
     write_graph_parquet,
 )
 from bike_router.preprocessing.regions import (
@@ -244,33 +239,6 @@ def _process_region(
     return _peak_rss_gb()  # this child's peak; the process then exits and the OS reclaims everything
 
 
-def _plot_overview(*, edges_df: pd.DataFrame, out_path: Path) -> None:
-    """Save a minimalist matplotlib overview of the final graph: bike edges thin blue, rail thick purple.
-
-    FULLY VECTORIZED — no Python loop over the 10M+ edges: ``from_wkt`` parses the whole WKT column in
-    one C call, ``get_coordinates`` extracts every vertex at once (this is what geopandas does), and
-    ``np.split`` on the geometry-index change points slices per-edge segments. One LineCollection per
-    mode draws them. Station links (short bike↔rail hops) are omitted.
-    """
-    fig, ax = plt.subplots(figsize=(16, 18))
-    # Draw bike first (thin blue), rail on top (thicker purple) so rail reads clearly over the mesh.
-    for mode, color, width in ((Mode.BIKE, Palette.START, 0.15), (Mode.RAIL, Palette.RAIL, 0.9)):
-        wkts = edges_df.loc[edges_df["mode"] == mode, "geometry_wkt"].dropna()
-        geoms = from_wkt(np.asarray(wkts, dtype=object))  # vectorized: whole column in one call
-        coords, index = get_coordinates(geoms, return_index=True)  # all vertices at once, (N,2) + source id
-        segments = np.split(coords, np.flatnonzero(np.diff(index)) + 1)  # slice per-edge, pure numpy
-        # rasterized=True: flatten the millions of segments to a pixel layer in the file (small size, fast).
-        ax.add_collection(LineCollection(segments, colors=color, linewidths=width, rasterized=True))
-        logger.info(f"  plotted {mode}: {len(segments)} edges ({len(coords)} vertices)")
-    ax.autoscale_view()  # LineCollection does not autoscale the axes; do it explicitly
-    ax.set_aspect(1.4)  # rough lat/lon aspect at ~50°N
-    ax.set_title("DACH graph overview — bike (thin blue) · rail (thick purple)")
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(out_path, dpi=140, facecolor="white", bbox_inches="tight", pad_inches=0.2)
-    plt.close(fig)
-    logger.info(f"Overview plot written to {out_path}")
-
-
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Build the full DACH bike+rail graph (runs fully or not at all).")
     parser.add_argument("--only", nargs="+", help="Build only these region keys (test a subset).")
@@ -342,20 +310,25 @@ def main(argv: list[str] | None = None) -> int:
     built = sorted(r.key for r in regions)
     assert_all_regions_complete(regions_dir=_REGIONS_DIR, regions=built)
     nodes_df, edges_df = combine_regions(regions_dir=_REGIONS_DIR, regions=built)
-    # STRICT gate: fail LOUD if any bike edge shortcuts across streets or leaves its endpoint-elevation
-    # band — a corrupt artifact must never be written/uploaded (the whole-night-run guard).
+    # STRICT gates: fail LOUD if any bike edge shortcuts across streets / leaves its elevation band, or any
+    # edge > 1 km is a straight 2-point jump (no real line geometry) — a corrupt artifact must never ship.
     assert_bike_geometry_valid(nodes_df=nodes_df, edges_df=edges_df)
+    assert_no_long_straight_edges(edges_df=edges_df)
     meta = {
         **base_meta(nodes_df=nodes_df, edges_df=edges_df, tolerance_m=tolerance_m),
         "regions_built": built,
     }
     write_graph_parquet(nodes_df=nodes_df, edges_df=edges_df, meta=meta, out_dir=out_dir, compression="zstd")
-    del nodes_df
-    gc.collect()
 
     # Overview plot (Phase-3 prune already enforced connectivity by construction — no separate validation).
     # Saved INTO the artifact dir so the HF upload (upload_folder of GRAPH_DIR) ships it as-is.
-    _plot_overview(edges_df=edges_df, out_path=out_dir / "dach_graph_overview.png")
+    plot_graph_overview(
+        nodes_df=nodes_df,
+        edges_df=edges_df,
+        out_path=out_dir / "dach_graph_overview.png",
+        title="DACH graph overview — bike (thin blue) · rail (thick purple)",
+        figsize=(16, 18),
+    )
 
     print(json.dumps(meta, indent=2))
     print(

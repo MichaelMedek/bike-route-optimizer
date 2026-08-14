@@ -426,8 +426,8 @@ def test_default_params_real_route_mode(origin: str, destination: str, expect_tr
 _SOUTH = (48.4503, 8.4608)
 _NORTH = (48.5601, 8.3981)
 # Baiersbronn → Freudenstadt: both inside the fixture, on the same rail line ~7 km apart.
-_BAIERSBRONN = (48.5057, 8.3703)
-_FREUDENSTADT = (48.4634, 8.4111)
+_BAIERSBRONN = (48.5069519, 8.3720124)
+_FREUDENSTADT = (48.4637727, 8.4111727)
 
 
 def _stub_fixture_geocode(monkeypatch, start: tuple[float, float], end: tuple[float, float]) -> None:

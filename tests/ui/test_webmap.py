@@ -11,7 +11,7 @@ from types import SimpleNamespace
 import pytest
 
 from bike_router.core.composition import MODE_COLORS
-from bike_router.core.constants import Mode, Palette, WebMapConfig
+from bike_router.core.constants import Mode, Palette, SessionKey, WebMapConfig
 from bike_router.core.geo import haversine_distance_m
 from bike_router.core.track import build_track
 from bike_router.ui.webmap import (
@@ -26,13 +26,11 @@ from bike_router.ui.webmap import (
     _segment_tooltip,
     _station_marker_points,
     composition_donut,
-    compute_gate,
     default_view_state,
     elevation_profile_chart,
-    endpoint_labels,
-    flattened_view,
-    map_click_start_pending,
-    map_remount_key,
+    endpoint_markers,
+    map_click_pending,
+    map_key,
     map_waypoint_markers,
     output_donuts,
     output_stat_rows,
@@ -254,61 +252,36 @@ def test_route_view_state():
 # --- shell-decision logic ----------------------------------------------------
 
 
-def test_compute_gate():
-    # Compute enabled ONLY when endpoints are set AND both boxes still hold the resolved text;
-    # the three states map to distinct help strings.
-    unset, msg = compute_gate(start_latlon=None, origin="A", destination="B", start_resolved="A", end_resolved="B")
-    assert unset is False and "Set a start" in msg
-    changed, msg = compute_gate(
-        start_latlon=(48.0, 8.0), origin="A2", destination="B", start_resolved="A", end_resolved="B"
-    )
-    assert changed is False and "again" in msg
-    ready, msg = compute_gate(
-        start_latlon=(48.0, 8.0), origin="A", destination="B", start_resolved="A", end_resolved="B"
-    )
-    assert ready is True and "Plan the route" in msg
-
-
-def test_endpoint_labels():
-    # (start, end) "Name (elev m)" labels; None when either endpoint is unset.
-    labels = endpoint_labels(
+def test_endpoint_markers():
+    # (lat, lon, elev, "Name (elev m)") per SET endpoint — decoupled: start-only, end-only, both, or none.
+    # A coords-literal box shows its readable "(Name)" (box_display_label), never the raw "lat, lon".
+    both = endpoint_markers(
         start_latlon=(48.0, 8.0, 300.0), end_latlon=(48.4, 8.6, 500.0), origin="Freudenstadt", destination="Pforzheim"
     )
-    assert labels == ("Freudenstadt (300 m)", "Pforzheim (500 m)")
-    assert endpoint_labels(start_latlon=None, end_latlon=(48.4, 8.6, 500.0), origin="A", destination="B") is None
+    assert both == [(48.0, 8.0, 300.0, "Freudenstadt (300 m)"), (48.4, 8.6, 500.0, "Pforzheim (500 m)")]
 
-
-def test_map_remount_key():
-    # Keyed on camera_epoch (bumped by Set), the top-down flag (top-stations toggle), AND ribbon
-    # presence — so the map remounts to move the camera, flip pitch, OR show a freshly-computed route
-    # immediately (a colour-scale toggle still repaints in place).
-    assert map_remount_key(camera_epoch=3, top_down=False, has_ribbon=False) == "bike_map_3_tilted_none"
-    assert map_remount_key(camera_epoch=0, top_down=True, has_ribbon=True) == "bike_map_0_topdown_ribbon"
-    assert map_remount_key(camera_epoch=1, top_down=False, has_ribbon=False) != map_remount_key(
-        camera_epoch=2, top_down=False, has_ribbon=False
+    start_only = endpoint_markers(
+        start_latlon=(47.9, 9.0, 600.0),
+        end_latlon=None,
+        origin="47.90000, 9.00000 (Sauldorf Bahnhof)",
+        destination="",
     )
-    # flipping top-down (pitch change) must remount so st_deckgl applies the new pose
-    assert map_remount_key(camera_epoch=1, top_down=False, has_ribbon=False) != map_remount_key(
-        camera_epoch=1, top_down=True, has_ribbon=False
+    assert start_only == [(47.9, 9.0, 600.0, "Sauldorf Bahnhof (600 m)")]  # lone marker, clean name
+
+    assert endpoint_markers(start_latlon=None, end_latlon=None, origin="", destination="") == []
+
+
+def test_map_key():
+    # Derived ONLY from the camera pose: same view → same key (in-place update, no remount); a moved
+    # camera (Compute rewrites view) → different key → remount that reloads terrain at the new pose.
+    view = ViewState(latitude=48.0, longitude=8.0, zoom=10.0, pitch=0.0, bearing=0.0)
+    assert map_key(view=view) == map_key(view=view)  # stable across identical views
+    # markers/ribbon/pitch/bearing don't touch the key — only lat/lon/zoom do (the camera)
+    assert map_key(view=view) == map_key(
+        view=ViewState(latitude=48.0, longitude=8.0, zoom=10.0, pitch=45.0, bearing=9.0)
     )
-    # a fresh route ribbon must remount so it draws immediately, not only after a later toggle
-    assert map_remount_key(camera_epoch=1, top_down=False, has_ribbon=False) != map_remount_key(
-        camera_epoch=1, top_down=False, has_ribbon=True
-    )
-
-
-def test_flattened_view():
-    # Forces pitch to 0 (reliable deck.gl picking) while keeping every other camera field.
-    view = ViewState(latitude=48.0, longitude=8.0, zoom=10.0, pitch=45.0, bearing=20.0)
-    flat = flattened_view(view)
-    assert flat.pitch == 0.0
-    assert (flat.latitude, flat.longitude, flat.zoom, flat.bearing) == (48.0, 8.0, 10.0, 20.0)
-
-
-def test_flattened_view_is_idempotent():
-    # An already-top-down camera is returned unchanged (equal), so re-flattening never remounts.
-    flat = ViewState(latitude=47.0, longitude=9.0, zoom=8.0, pitch=0.0, bearing=0.0)
-    assert flattened_view(flat) == flat
+    moved = ViewState(latitude=47.5, longitude=8.0, zoom=10.0, pitch=0.0, bearing=0.0)
+    assert map_key(view=view) != map_key(view=moved)  # a recenter (Compute) remounts
 
 
 def test_scale_label():
@@ -339,17 +312,18 @@ def test_output_donuts():
 
 
 def test_profile_markers():
-    # Labels endpoints from the typed names + stations; interior waypoints appear ONLY when named.
+    # Labels endpoints from the box names (a coords literal shows its clean "(Name)" via box_display_label)
+    # + stations; interior waypoints appear ONLY when named.
     result = SimpleNamespace(track=_line_track(), rail_legs=[], waypoints=[(48.0, 8.01)])
     named = profile_markers(
         result=result,
         start_latlon=(48.0, 8.0, 100.0),
         end_latlon=(48.0, 8.02, 100.0),
-        start_name="Freudenstadt",
+        start_name="48.00000, 8.00000 (Freudenstadt Bahnhof)",  # coords literal → clean name on the profile
         end_name="Pforzheim",
         village_of=lambda lat, lon: "Baiersbronn",
     )
-    assert [lab for _d, _e, lab in named] == ["Freudenstadt", "Pforzheim", "Baiersbronn"]
+    assert [lab for _d, _e, lab in named] == ["Freudenstadt Bahnhof", "Pforzheim", "Baiersbronn"]
 
     dropped = profile_markers(
         result=result,
@@ -369,6 +343,7 @@ def test_station_marker_points():
     leg = RailLeg(
         board=Station(name="A", lat=48.0, lon=8.0, elevation_m=100.0),
         alight=Station(name="B", lat=48.1, lon=8.1, elevation_m=200.0),
+        url="https://maps.google/transit",
     )
     result = SimpleNamespace(rail_legs=[leg])
     points = _station_marker_points(result=result)
@@ -393,6 +368,7 @@ def test_map_waypoint_markers():
     leg = RailLeg(
         board=Station(name="A", lat=48.0, lon=8.0, elevation_m=100.0),
         alight=Station(name="B", lat=48.0, lon=8.02, elevation_m=100.0),
+        url="https://maps.google/transit",
     )
     with_rail = SimpleNamespace(track=track, rail_legs=[leg], waypoints=[(48.0, 8.01)])
     labels = [lab for _lat, _lon, _e, lab in map_waypoint_markers(result=with_rail, village_of=lambda lat, lon: "V")]
@@ -410,34 +386,32 @@ def test_named_waypoints():
 
 def test_picked_station():
     # st_deckgl spreads the picked datum at TOP LEVEL with deck.gl's OWN eventType
-    # ("deck-click-event", NOT "click"); a top-station click yields (name, lat, lon) from its
-    # name + position [lon, lat, z], everything else (other event, no name/position, blank) → None.
+    # ("deck-click-event", NOT "click"); a marker click yields (name, lat, lon, role) from name +
+    # position [lon, lat, z] + role, everything else (other event, no name/position/role, blank) → None.
     click = WebMapConfig.DECK_CLICK_EVENT
-    assert picked_station({"name": "Freudenstadt Stadt", "position": [8.41, 48.46, 730.0], "eventType": click}) == (
-        "Freudenstadt Stadt",
-        48.46,
-        8.41,
-    )
+    start = SessionKey.START_BOX
+    assert picked_station(
+        {"name": "Freudenstadt Stadt", "position": [8.41, 48.46, 730.0], "role": start, "eventType": click}
+    ) == ("Freudenstadt Stadt", 48.46, 8.41, start)
     assert picked_station({"tooltip": "route seg", "eventType": click}) is None  # no name (route/waypoint)
-    assert picked_station({"name": "X", "eventType": click}) is None  # name but no position → not a marker
-    assert picked_station({"name": "X", "position": [8.0, 48.0], "eventType": "click"}) is None  # raw "click"
-    assert picked_station({"name": "X", "position": [8.0, 48.0], "eventType": "deck-hover-event"}) is None
+    assert picked_station({"name": "X", "role": start, "eventType": click}) is None  # no position → not a marker
+    assert picked_station({"name": "X", "position": [8.0, 48.0], "eventType": click}) is None  # no role → not extremum
+    assert picked_station({"name": "X", "position": [8.0, 48.0], "role": start, "eventType": "click"}) is None
     assert picked_station({"eventType": click}) is None  # empty-terrain click, no datum
     assert picked_station(None) is None  # no event at all
-    assert picked_station({"name": "", "position": [8.0, 48.0], "eventType": click}) is None  # blank name
+    assert picked_station({"name": "", "position": [8.0, 48.0], "role": start, "eventType": click}) is None  # blank
 
 
 def test_station_click_pending():
-    # A top-station click fills a "lat, lon (Name Bahnhof)" value from the marker's EXACT position, so
-    # it snaps to the platform without re-geocoding a name; the re-returned event dedups to None.
+    # An extremum click fills a "lat, lon (Name Bahnhof)" value from the marker's EXACT position (snaps
+    # without re-geocoding) plus the role (Start for a max, End for a min); the re-returned event dedups.
     click = WebMapConfig.DECK_CLICK_EVENT
-    event = {"name": "Sauldorf", "position": [9.0, 47.9, 600.0], "eventType": click}
+    end = SessionKey.END_BOX
+    event = {"name": "Sauldorf", "position": [9.0, 47.9, 600.0], "role": end, "eventType": click}
     pending = station_click_pending(event=event, last_applied=None)
-    assert pending == "47.90000, 9.00000 (Sauldorf Bahnhof)"  # exact coords + Bahnhof label
-    assert station_click_pending(event=event, last_applied=pending) is None  # re-returned → dedup
+    assert pending == ("47.90000, 9.00000 (Sauldorf Bahnhof)", end)  # exact coords + Bahnhof label + role
+    assert station_click_pending(event=event, last_applied=pending[0]) is None  # re-returned → dedup
     assert station_click_pending(event=event, last_applied="other") == pending  # a NEW/changed click
-    already = {"name": "Sauldorf Bahnhof", "position": [9.0, 47.9, 600.0], "eventType": click}
-    assert station_click_pending(event=already, last_applied=None) == "47.90000, 9.00000 (Sauldorf Bahnhof)"
     assert station_click_pending(event=None, last_applied=None) is None  # no click at all
 
 
@@ -466,17 +440,19 @@ def test_picked_terrain():
     assert picked_terrain(None) is None  # no event at all
 
 
-def test_map_click_start_pending():
-    # Only when ARMED and an empty-map click carries a coordinate; a "lat, lon" (no name) value results;
-    # unarmed → None, a marker click → None, and the re-returned event dedups against last_applied.
+def test_map_click_pending():
+    # Only when a target box is armed and an empty-map click carries a coordinate; a "lat, lon" (no name)
+    # value results; no target → None, a marker click → None, and the re-returned event dedups.
     click = WebMapConfig.DECK_CLICK_EVENT
     event = {"coordinate": [9.0, 47.9], "eventType": click}
-    assert map_click_start_pending(event=event, armed=False, last_applied=None) is None  # not armed → ignore
-    pending = map_click_start_pending(event=event, armed=True, last_applied=None)
+    assert map_click_pending(event=event, target=None, last_applied=None) is None  # not armed → ignore
+    pending = map_click_pending(event=event, target=SessionKey.END_BOX, last_applied=None)
     assert pending == "47.90000, 9.00000"  # bare coords, no name (unlike a station pick)
-    assert map_click_start_pending(event=event, armed=True, last_applied=pending) is None  # re-returned → dedup
+    assert map_click_pending(event=event, target=SessionKey.END_BOX, last_applied=pending) is None  # dedup
     marker = {"name": "Freudenstadt", "position": [9.0, 47.9], "coordinate": [9.0, 47.9], "eventType": click}
-    assert map_click_start_pending(event=marker, armed=True, last_applied=None) is None  # marker click, not terrain
+    assert (
+        map_click_pending(event=marker, target=SessionKey.START_BOX, last_applied=None) is None
+    )  # marker, not terrain
 
 
 def test_swapped_endpoint_state():

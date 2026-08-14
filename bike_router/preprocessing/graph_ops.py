@@ -73,21 +73,20 @@ def consolidate_graph(graph: nx.MultiDiGraph, tolerance_m: float) -> nx.MultiDiG
     return unprojected
 
 
-def _densify_coords(coords: list[tuple[float, float]], max_spacing_m: float) -> list[tuple[float, float]]:
-    """Subdivide a lon/lat polyline so no consecutive pair exceeds ``max_spacing_m`` (linear inserts).
+def densify_polyline(points: "np.ndarray", max_spacing_m: float) -> "np.ndarray":
+    """Subdivide an ``(n, D)`` lon/lat[/z] polyline so no consecutive pair exceeds ``max_spacing_m``.
 
-    Vectorized per segment: each over-long segment is filled with np.linspace-interpolated points. Targets
-    90% of the cap so haversine sub-gaps stay STRICTLY under it (lon/lat-linear ≠ great-circle even spacing).
+    D-agnostic (2D bike or 3D rail lon/lat/z): np.linspace interpolates every column (z included) linearly.
+    Targets 90% of the cap so haversine sub-gaps stay STRICTLY under it (lon/lat-linear ≠ great-circle even).
     """
     target = max_spacing_m * 0.9  # margin below the hard cap for the linear-vs-great-circle mismatch
-    xy = np.asarray(coords, dtype=np.float64)
+    xy = np.asarray(points, dtype=np.float64)
     gaps = haversine_vec(lat_a=xy[:-1, 1], lon_a=xy[:-1, 0], lat_b=xy[1:, 1], lon_b=xy[1:, 0])
-    out: list[tuple[float, float]] = [(float(xy[0, 0]), float(xy[0, 1]))]
+    out: list[np.ndarray] = [xy[0]]
     for i, gap in enumerate(gaps):
         steps = int(gap // target) + 1  # 250 m @ 90 m target → 3 sub-segments → linspace(…, 4)[1:]
-        seg = np.linspace(xy[i], xy[i + 1], steps + 1)[1:]  # skip the shared start vertex (already appended)
-        out.extend((float(lon), float(lat)) for lon, lat in seg)
-    return out
+        out.extend(np.linspace(xy[i], xy[i + 1], steps + 1)[1:])  # skip the shared start vertex (already added)
+    return np.array(out, dtype=np.float64)
 
 
 def densify_edge_geometry(graph: nx.MultiDiGraph, max_spacing_m: float) -> None:
@@ -100,8 +99,8 @@ def densify_edge_geometry(graph: nx.MultiDiGraph, max_spacing_m: float) -> None:
         geom = data.get(Schema.GEOMETRY)
         if geom is None:
             continue
-        coords = [(float(x), float(y)) for x, y in geom.coords]
-        data[Schema.GEOMETRY] = LineString(_densify_coords(coords, max_spacing_m=max_spacing_m))
+        dense = densify_polyline(np.asarray(geom.coords, dtype=np.float64)[:, :2], max_spacing_m=max_spacing_m)
+        data[Schema.GEOMETRY] = LineString(dense)
 
 
 def _fill_nan_with_mean(values: "np.ndarray") -> tuple["np.ndarray", int]:

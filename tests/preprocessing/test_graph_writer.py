@@ -17,10 +17,12 @@ from bike_router.preprocessing.graph_writer import (
     _assert_height_diffs_consistent,
     _assert_node_edge_types_consistent,
     _geometry_wkt,
+    _mode_lines,
     _scalar,
     compute_bbox,
     graph_from_tables,
     graph_to_tables,
+    plot_graph_overview,
     read_full_graph,
     read_region_tables,
     write_graph_parquet,
@@ -218,3 +220,41 @@ def test_write_store_roundtrip_fixture(tmp_path: Path):
     pd.testing.assert_frame_equal(fresh_nodes, committed_nodes)
     pd.testing.assert_frame_equal(fresh_edges, committed_edges)
     assert graph_store.load_meta(graph_dir=FIXTURE_ROUNDTRIP_STORE) == graph_store.load_meta(graph_dir=fresh)
+
+
+def test_plot_graph_overview(tmp_path):
+    # Renders a bike+rail overview PNG with red station dots (vectorized); the file is non-trivial.
+    nodes = pd.DataFrame(
+        [
+            _node_row(1, elev=100.0),
+            _node_row(2, elev=200.0, node_type=NodeType.RAIL, name="Bahnhof"),
+        ]
+    )
+    edges = pd.DataFrame(
+        {
+            "mode": [Mode.BIKE, Mode.RAIL],
+            "geometry_wkt": [
+                "LINESTRING (8.0 48.0, 8.01 48.0, 8.02 48.0)",
+                "LINESTRING (8.0 48.1, 8.03 48.1)",
+            ],
+        }
+    )
+    out = tmp_path / "overview.png"
+    plot_graph_overview(nodes_df=nodes, edges_df=edges, out_path=out, title="t", figsize=(4, 4))
+    assert out.exists() and out.stat().st_size > 0
+
+
+def test_mode_lines():
+    # One mode's polylines → a LineCollection (vectorized WKT parse); the other mode + NULL geoms excluded.
+    edges = pd.DataFrame(
+        {
+            "mode": [Mode.BIKE, Mode.BIKE, Mode.RAIL],
+            "geometry_wkt": ["LINESTRING (8.0 48.0, 8.01 48.0)", None, "LINESTRING (8.0 48.1, 8.03 48.1)"],
+        }
+    )
+    bike = _mode_lines(edges_df=edges, mode=Mode.BIKE, color="blue", width=0.2, zorder=1)
+    assert len(bike.get_segments()) == 1  # only the one non-NULL bike edge
+    empty = _mode_lines(
+        edges_df=edges[edges["mode"] == Mode.BIKE].iloc[1:2], mode=Mode.BIKE, color="b", width=0.2, zorder=1
+    )
+    assert len(empty.get_segments()) == 0  # all-NULL slice → empty collection, no raise

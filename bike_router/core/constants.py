@@ -78,6 +78,8 @@ class Schema:
     GEOMETRY = "geometry"
     LENGTH = "length"
     HEIGHT_DIFF = "height_diff"
+    # pyarrow pushdown-filter membership operator, shared by every read_tiles filter (graph_store + rail_extrema).
+    FILTER_IN = "in"
 
 
 class Condition:
@@ -133,6 +135,9 @@ LOG_FORMAT = "%(levelname)s %(name)s: %(message)s"
 # The "name" field/tag — the OSM name column (builder), Photon feature name (geocoding), and the
 # deck.gl picked-datum / marker key (ui). One string across the app's several "name" touch-points.
 NAME_KEY = "name"
+# The deck.gl marker-datum key carrying which box (Start/End) a clicked extremum station fills —
+# one string across the layer builder (writes it) and the click reader (reads it).
+ROLE_KEY = "role"
 # Endpoint human labels — the origin/destination, shown as the geocode-error field name (pipeline)
 # and the Start input box label (web app). Destination has no cross-file dup but pairs here for clarity.
 START_LABEL = "Start"
@@ -148,6 +153,9 @@ LON_OUT_OF_RANGE = "longitude out of range"
 # both the matplotlib debug PNG and the Plotly web profile.
 ELEVATION_AXIS_LABEL = "Elevation (m)"
 PLOT_BG = "white"
+# matplotlib idioms shared by every headless plot: the non-interactive backend + tight bbox on save.
+MPL_BACKEND = "Agg"
+MPL_BBOX_TIGHT = "tight"
 
 
 class RailConfig:
@@ -163,11 +171,29 @@ class RailConfig:
     STATION_MAX_ENTRANCES = 5  # declare up to this many nearest bike nodes as entrances
     RAIL_TAGS = ("rail", "light_rail", "narrow_gauge")  # OSM railway= values kept as routable track
     STATION_TAGS = ("station", "halt")  # OSM railway= values treated as boardable stops
-    # A "top" station is a local high point graded by the TWO standard mountaineering measures
-    # Dominanz (topographic isolation): it must be the highest station within this radius.
-    # Schartenhöhe (prominence): it must rise this far above the LOWEST station in that radius.
-    TOP_STATION_DOMINANCE_KM = 10.0
-    TOP_STATION_PROMINENCE_M = 100.0
+    # "Top": ≥MIN_NEIGHBORS rail branches climb ≥PROMINENCE_M below it (mirrored for "bottom"); each branch
+    # walks on-side terrain until it rises/falls that far. A line-end counts on its one branch. A station can
+    # be BOTH top and bottom; markers nudge ±OFFSET_M (top north, bottom south) so both stay clickable.
+    EXTREMUM_MIN_NEIGHBORS = 2
+    EXTREMA_STATION_PROMINENCE_M = 100.0
+    EXTREMUM_MARKER_OFFSET_M = 10.0
+    # Extrema classification (dominance + prominence) on the CLEAN station↔station graph. A top is a strict
+    # local peak with key-col prominence ≥PEAK_KEYCOL_M, or a junction dominating its DOMINANCE_RADIUS_M
+    # neighbourhood by ≥HUB_RISE_M; a bottom mirrors (VALLEY_KEYCOL_M / HUB_DROP_M).
+    EXTREMA_DOMINANCE_RADIUS_M = 8000.0
+    EXTREMA_PEAK_KEYCOL_M = 120.0
+    EXTREMA_VALLEY_KEYCOL_M = 150.0
+    EXTREMA_HUB_RISE_M = 130.0
+    EXTREMA_HUB_DROP_M = 130.0
+    # Station track-graph reconstruction (name → next-stations). Weld track vertices this close together;
+    # merge platforms within STATION_MERGE_M into one node (I3); seal a station's convergence THROAT this
+    # far out so a walk can't leak past it (running tracks skirt the off-track platform node by >50 m).
+    TRACK_WELD_M = 0.1
+    STATION_MERGE_M = 50.0
+    STATION_THROAT_SEAL_M = 600.0
+    # Densify each emitted station↔station rail polyline so no segment exceeds this (real OSM track is
+    # sparse on long straights — a single 2-point >200 m segment would trip assert_no_long_straight_edges).
+    RAIL_MAX_VERTEX_SPACING_M = 100.0
 
 
 class GraphConfig:
@@ -503,14 +529,11 @@ class GradeConfig:
 
 
 class BuildValidationConfig:
-    """STRICT build-time invariants on bike-edge geometry — a violation fails the build LOUD.
-
-    Guards against the two corruption classes that shipped bad graphs: sparse polylines that shortcut
-    across streets, and baked z that leaves the [endpoint-elevation] band (a tunnel/dip a bike can't take).
-    """
+    """STRICT build-time invariants on graph geometry — a violation fails the build LOUD."""
 
     MAX_VERTEX_SPACING_M = 100.0  # no two consecutive bike-edge vertices may be farther apart than this
     ELEV_BAND_MARGIN_M = 30.0  # bike-edge z must stay within [min,max endpoint elev] ± this (DEM noise)
+    MAX_STRAIGHT_EDGE_M = 200.0  # an edge longer than this MUST trace real line geometry, not a 2-point jump
 
 
 class SpeedConfig:
@@ -538,7 +561,8 @@ class GmapsConfig:
     # short leg isn't cluttered with near-identical points (origin + destination always kept).
     MIN_WAYPOINT_SPACING_KM = 5.0
     BASE_URL = "https://www.google.com/maps/dir/?api=1"
-    TRAVEL_MODE = "bicycling"
+    TRAVEL_MODE = "bicycling"  # bike leg (with mid points)
+    TRANSIT_MODE = "transit"  # train leg (start → end only)
 
 
 class PlotConfig:
@@ -626,6 +650,10 @@ class WebMapConfig:
     START_COLOR = Palette.hex_to_rgb(hex_color=Palette.START)  # blue (start marker)
     END_COLOR = Palette.hex_to_rgb(hex_color=Palette.END)  # cyan (destination marker)
     RAIL_COLOR = Palette.hex_to_rgb(hex_color=Palette.RAIL)  # purple — the train ribbon + donut only
+    # Station-extrema markers: local-max (top) stations green, local-min (bottom) stations red — a
+    # clicked top fills Start, a clicked bottom fills End.
+    MAXIMA_COLOR = Palette.hex_to_rgb(hex_color=Palette.GREEN)  # green — local-maximum ("top") stations
+    MINIMA_COLOR = Palette.hex_to_rgb(hex_color=Palette.RED)  # red — local-minimum ("bottom") stations
     # Composition "by mode" display labels: two buckets only — pedalled vs train (station access-hops
     # fold into "bike route"). The label→colour map lives in core/composition (MODE_COLORS, one source).
     MODE_DONUT_LABELS = {Mode.BIKE: "bike route", Mode.RAIL: "train path"}

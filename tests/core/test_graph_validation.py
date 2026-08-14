@@ -8,11 +8,7 @@ import pandas as pd
 import pytest
 
 from bike_router.core.constants import Mode, Schema
-from bike_router.core.graph_validation import (
-    assert_bike_geometry_valid,
-    bike_edge_max_vertex_gap_m,
-    bike_edge_z_out_of_band_m,
-)
+from bike_router.core.graph_validation import assert_bike_geometry_valid, assert_no_long_straight_edges
 
 
 def _edge_row(*, from_node: int, to_node: int, mode: str, wkt: str | None) -> dict:
@@ -20,35 +16,22 @@ def _edge_row(*, from_node: int, to_node: int, mode: str, wkt: str | None) -> di
     return {Schema.FROM_NODE: from_node, Schema.TO_NODE: to_node, Schema.MODE: mode, Schema.GEOMETRY_WKT: wkt}
 
 
-def test_bike_edge_max_vertex_gap_m():
-    # Largest consecutive great-circle gap along the polyline; < 2 vertices → 0.
-    # Two points ~0.01° lon apart at 48°N ≈ 743 m; a dense 3-point line's max is the bigger sub-gap.
-    assert bike_edge_max_vertex_gap_m(geometry_wkt="LINESTRING Z (8.0 48.0 100, 8.01 48.0 100)") == pytest.approx(
-        743.0, abs=5.0
-    )
-    dense = bike_edge_max_vertex_gap_m(geometry_wkt="LINESTRING Z (8.0 48.0 100, 8.0005 48.0 100, 8.001 48.0 100)")
-    assert dense == pytest.approx(37.0, abs=3.0)  # two ~37 m sub-gaps
-    # a degenerate < 2-vertex polyline is a corrupt bike edge → fails loud, never silently 0
-    with pytest.raises(AssertionError, match="< 2 vertices"):
-        bike_edge_max_vertex_gap_m(geometry_wkt="LINESTRING EMPTY")
+def test_assert_no_long_straight_edges():
+    # A long edge with a real multi-vertex polyline passes; a >1 km straight 2-point jump fails loud;
+    # short 2-point edges (≤1 km) are fine (a straight hop over a small gap is legitimate).
+    def row(f, t, length_m, wkt):
+        return {**_edge_row(from_node=f, to_node=t, mode=Mode.RAIL, wkt=wkt), Schema.LENGTH_M: length_m}
 
-
-def test_bike_edge_z_out_of_band_m():
-    # z within [from,to] → 0; a z above the higher endpoint or below the lower → the overshoot metres.
-    assert (
-        bike_edge_z_out_of_band_m(
-            geometry_wkt="LINESTRING Z (8.0 48.0 100, 8.01 48.0 150, 8.02 48.0 200)", from_elev=100.0, to_elev=200.0
-        )
-        == 0.0
+    ok = pd.DataFrame(
+        [
+            row(1, 2, 5000.0, "LINESTRING (8.0 48.0, 8.02 48.0, 8.04 48.0)"),  # 5 km but traced → OK
+            row(3, 4, 100.0, "LINESTRING (8.0 48.0, 8.001 48.0)"),  # 100 m straight → OK (≤ threshold)
+        ]
     )
-    # midpoint dips to 60, band is [100,200] → 40 m under
-    assert bike_edge_z_out_of_band_m(
-        geometry_wkt="LINESTRING Z (8.0 48.0 100, 8.01 48.0 60, 8.02 48.0 200)", from_elev=100.0, to_elev=200.0
-    ) == pytest.approx(40.0)
-    # midpoint spikes to 260, band [100,200] → 60 m over
-    assert bike_edge_z_out_of_band_m(
-        geometry_wkt="LINESTRING Z (8.0 48.0 100, 8.01 48.0 260, 8.02 48.0 200)", from_elev=100.0, to_elev=200.0
-    ) == pytest.approx(60.0)
+    assert_no_long_straight_edges(edges_df=ok)  # no raise
+    bad = pd.DataFrame([row(5, 6, 3000.0, "LINESTRING (8.0 48.0, 8.04 48.0)")])  # 3 km straight jump → fail
+    with pytest.raises(AssertionError, match="trace real line geometry"):
+        assert_no_long_straight_edges(edges_df=bad)
 
 
 def test_assert_bike_geometry_valid():

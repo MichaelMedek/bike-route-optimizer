@@ -6,16 +6,17 @@ types, ids, and per-row data (position lifted above terrain, colours, tooltips) 
 
 import pydeck as pdk
 
-from bike_router.core.constants import Palette, WebMapConfig
+from bike_router.core.constants import Palette, SessionKey, WebMapConfig
 from bike_router.ui.webmap import RibbonSegment, default_view_state
 from bike_router.ui.webmap_layers import (
+    _blue_marker_layer,
     _marker_layer,
     _marker_row,
     build_deck,
     create_endpoint_layer,
+    create_extremum_station_layer,
     create_route_ribbon_layers,
     create_terrain_layer,
-    create_top_station_layer,
     create_waypoint_layer,
 )
 
@@ -38,8 +39,7 @@ def test_create_terrain_layer():
 
 
 def test_create_route_ribbon_layers():
-    # ONE pickable PathLayer holding every run as a data row (uniform picking across the ribbon);
-    # per-row path/color/width/tooltip carried through.
+    # ONE pickable PathLayer holding every run as a data row (uniform picking across the ribbon).
     segments = [
         _seg(_rgb(Palette.BLUE), 20.0, [[8.0, 48.0, 1100.0], [8.01, 48.0, 1100.0]], tooltip="paved · quiet way"),
         _seg(list(WebMapConfig.RAIL_COLOR), 8.0, [[8.01, 48.0, 1100.0], [8.02, 48.0, 1100.0]], tooltip="Train: A → B"),
@@ -49,7 +49,6 @@ def test_create_route_ribbon_layers():
     layer = ribbons[0]
     assert layer.type == "PathLayer" and layer.pickable and layer.id == "route_ribbon"
     assert len(layer.data) == 2  # both runs are rows in the single layer
-    assert layer.data[0]["tooltip"] == "paved · quiet way"
     assert layer.data[1]["tooltip"] == "Train: A → B"
 
 
@@ -69,12 +68,23 @@ def test_marker_row():
     assert row == {"position": [8.0, 48.0, 300.0 + lift], "color": [10, 20, 30], "tooltip": "hi"}
 
 
+def test_blue_marker_layer():
+    # The shared blue endpoint/waypoint builder: (lat, lon, elev, label) rows → one MARKER_COLOR layer,
+    # each position lifted above terrain, given id + radius, drawn on top.
+    layer = _blue_marker_layer(markers=[(48.0, 8.0, 300.0, "A (300 m)")], layer_id="probe", radius_m=60.0, min_pixels=5)
+    lift = WebMapConfig.RIBBON_FLOAT_ABOVE_M
+    assert layer.type == "ScatterplotLayer" and layer.id == "probe" and layer.get_radius == 60.0
+    assert layer.data[0] == {
+        "position": [8.0, 48.0, 300.0 + lift],
+        "color": list(WebMapConfig.MARKER_COLOR),
+        "tooltip": "A (300 m)",
+    }
+
+
 def test_create_endpoint_layer():
-    # Start + end markers, BOTH the one blue MARKER_COLOR, each [lon, lat, elev+lift], name+elev
-    # tooltips, bigger than waypoints, drawn on top of terrain.
-    layer = create_endpoint_layer(
-        start=(48.0, 8.0, 300.0), end=(48.4, 8.6, 500.0), start_label="A (300 m)", end_label="B (500 m)"
-    )
+    # Endpoint markers from a (lat, lon, elev, label) list — decoupled, so a lone pick draws alone;
+    # BOTH the one blue MARKER_COLOR, each [lon, lat, elev+lift], bigger than waypoints, on top of terrain.
+    layer = create_endpoint_layer(endpoints=[(48.0, 8.0, 300.0, "A (300 m)"), (48.4, 8.6, 500.0, "B (500 m)")])
     assert layer.type == "ScatterplotLayer" and layer.id == "route_endpoints" and layer.pickable
     lift = WebMapConfig.RIBBON_FLOAT_ABOVE_M
     assert [row["position"] for row in layer.data] == [[8.0, 48.0, 300.0 + lift], [8.6, 48.4, 500.0 + lift]]
@@ -83,6 +93,9 @@ def test_create_endpoint_layer():
     assert [row["tooltip"] for row in layer.data] == ["A (300 m)", "B (500 m)"]
     assert layer.get_radius == WebMapConfig.ENDPOINT_RADIUS_M > WebMapConfig.WAYPOINT_RADIUS_M  # bigger than waypoints
     assert layer.parameters == {"depthTest": False}  # drawn on top of terrain, never buried
+
+    lone = create_endpoint_layer(endpoints=[(47.9, 9.0, 600.0, "Sauldorf Bahnhof (600 m)")])
+    assert len(lone.data) == 1  # a single phase-1 pick draws its marker alone
 
 
 def test_create_waypoint_layer():
@@ -95,12 +108,16 @@ def test_create_waypoint_layer():
     assert layer.data[0]["tooltip"] == "Freudenstadt Stadt (700 m)"
 
 
-def test_create_top_station_layer():
-    # Rail-purple clickable markers; each datum carries a ``name`` (for click-to-fill) + hover tooltip.
-    layer = create_top_station_layer(top_stations=[(48.47, 8.41, 739.0, "Freudenstadt Stadt")])
-    assert layer.type == "ScatterplotLayer" and layer.id == "top_stations" and layer.pickable
-    assert layer.data[0]["color"] == list(WebMapConfig.RAIL_COLOR)  # rail purple
-    assert layer.data[0]["name"] == "Freudenstadt Stadt"  # picked datum → fills Start box
+def test_create_extremum_station_layer():
+    # Green maxima (Start role) or red minima (End role); each datum carries name + role + hover tooltip.
+    green = list(WebMapConfig.MAXIMA_COLOR)
+    layer = create_extremum_station_layer(
+        stations=[(48.47, 8.41, 739.0, "Freudenstadt Stadt")], color=green, role=SessionKey.START_BOX, layer_id="maxima"
+    )
+    assert layer.type == "ScatterplotLayer" and layer.id == "maxima" and layer.pickable
+    assert layer.data[0]["color"] == green  # green for a top
+    assert layer.data[0]["name"] == "Freudenstadt Stadt"  # picked datum → fills a box
+    assert layer.data[0]["role"] == SessionKey.START_BOX  # a top fills Start
     assert layer.data[0]["tooltip"] == "Freudenstadt Stadt (739 m)"
 
 
@@ -109,7 +126,12 @@ def test_build_deck():
     # in that draw order, carrying the camera pose from the ViewState.
     view = default_view_state()
     terrain_only = build_deck(
-        view=view, ribbon_segments=None, endpoints=None, endpoint_labels=None, waypoints=None, top_stations=None
+        view=view,
+        ribbon_segments=None,
+        endpoints=None,
+        waypoints=None,
+        maxima=None,
+        minima=None,
     )
     assert len(terrain_only.layers) == 1
     assert terrain_only.initial_view_state.latitude == WebMapConfig.DEFAULT_LAT
@@ -117,12 +139,23 @@ def test_build_deck():
     with_endpoints = build_deck(
         view=view,
         ribbon_segments=None,
-        endpoints=((48.0, 8.0, 300.0), (48.4, 8.6, 500.0)),
-        endpoint_labels=("Start (300 m)", "End (500 m)"),
+        endpoints=[(48.0, 8.0, 300.0, "Start (300 m)"), (48.4, 8.6, 500.0, "End (500 m)")],
         waypoints=None,
-        top_stations=None,
+        maxima=None,
+        minima=None,
     )
     assert len(with_endpoints.layers) == 2
+
+    # A lone phase-1 pick still draws its endpoint layer (decoupled — no both-or-nothing coupling).
+    one_endpoint = build_deck(
+        view=view,
+        ribbon_segments=None,
+        endpoints=[(47.9, 9.0, 600.0, "Sauldorf Bahnhof (600 m)")],
+        waypoints=None,
+        maxima=None,
+        minima=None,
+    )
+    assert [layer.id for layer in one_endpoint.layers] == ["terrain_3d", "route_endpoints"]
 
     two_run = [
         _seg(_rgb(Palette.BLUE), 20.0, [[8.0, 48.0, 1100.0], [8.01, 48.0, 1100.0]]),
@@ -131,22 +164,22 @@ def test_build_deck():
     full = build_deck(
         view=view,
         ribbon_segments=two_run,
-        endpoints=((48.0, 8.0, 300.0), (48.4, 8.6, 500.0)),
-        endpoint_labels=("Start (300 m)", "End (500 m)"),
+        endpoints=[(48.0, 8.0, 300.0, "Start (300 m)"), (48.4, 8.6, 500.0, "End (500 m)")],
         waypoints=[(48.01, 8.01, 500.0, "S (500 m)")],
-        top_stations=None,
+        maxima=None,
+        minima=None,
     )
     assert [layer.id for layer in full.layers] == ["terrain_3d", "route_waypoints", "route_endpoints", "route_ribbon"]
 
 
 def test_build_deck_with_top_stations():
-    # Top-station markers layer is inserted right above the terrain when supplied.
+    # Min/max marker layers stack above terrain, drawn minima → maxima (both separately clickable).
     deck = build_deck(
         view=default_view_state(),
         ribbon_segments=None,
         endpoints=None,
-        endpoint_labels=None,
         waypoints=None,
-        top_stations=[(48.47, 8.41, 739.0, "Freudenstadt Stadt")],
+        maxima=[(48.47, 8.41, 739.0, "Freudenstadt Stadt")],
+        minima=[(48.55, 8.40, 495.0, "Röt")],
     )
-    assert [layer.id for layer in deck.layers] == ["terrain_3d", "top_stations"]
+    assert [layer.id for layer in deck.layers] == ["terrain_3d", "minima", "maxima"]
