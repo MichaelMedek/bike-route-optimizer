@@ -571,7 +571,7 @@ class DbNavigatorConfig:
     ORTE_URL = "https://www.bahn.de/web/api/reiseloesung/orte"  # station name → opaque station id (+ EVA)
     JOURNEY_URL = "https://int.bahn.de/web/api/angebote/fahrplan"  # verify a connection exists (POST)
     SUCHE_URL = "https://www.bahn.de/buchung/fahrplan/suche"  # user-facing link (hash-fragment params)
-    FALLBACK_LABEL = "bahn.de"  # button label when the DB lookup fails (bare-search link)
+    FALLBACK_LABEL = "DB Navigator"  # button label when the DB lookup fails (bare-search link)
     TIMEOUT_S = 5.0
     REQUEST_SPACING_S = 0.1  # wait before each call: bahn.de's Akamai layer 403s bursty back-to-back requests
     ORTE_LIMIT = 1  # top hit only

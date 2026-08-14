@@ -91,10 +91,11 @@ class RouteResult:
 
 
 def _bike_time_label(*, start_s: float, end_s: float, now: datetime.datetime) -> str:
-    """A pedalled leg's estimated clock span "≈ HH:MM–HH:MM" from its start/end elapsed seconds."""
+    """A pedalled leg's estimated clock span "HH:MM → HH:MM (H:MM h)" from its start/end elapsed seconds."""
     start = now + datetime.timedelta(seconds=start_s)
     end = now + datetime.timedelta(seconds=end_s)
-    return f"≈ {start:%H:%M}–{end:%H:%M}"
+    minutes = round((end_s - start_s) / 60.0)
+    return f"{start:%H:%M} → {end:%H:%M} ({minutes // 60}:{minutes % 60:02d} h)"
 
 
 def _geocode_both(*, origin: str, destination: str) -> tuple[tuple[float, float], tuple[float, float]]:

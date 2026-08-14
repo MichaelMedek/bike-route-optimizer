@@ -116,10 +116,11 @@ def rail_link_buttons(result: RouteResult) -> None:
 def bike_link_buttons(result: RouteResult) -> None:
     """One Google Maps bicycling link button per pedalled leg (mirrors rail_link_buttons).
 
-    Each click opens the leg's route in Maps in a new tab; the label is the shared "Bike Route N: from → to".
+    The full-width label carries the leg name AND its estimated clock span, e.g.
+    "Bike Route 1: A → B: 13:16 → 13:29 (0:13 h)"; a click opens the leg's route in Maps.
     """
     for label, leg in zip(format_bike_legs(bike_legs=result.bike_legs), result.bike_legs, strict=True):
-        st.link_button(f"🗺️ {label}", leg.url, width="stretch", help=leg.time_label)
+        st.link_button(f"🗺️ {label}: {leg.time_label}", leg.url, width="stretch", help="Open in Google Maps bike")
 
 
 def render_route_output(result: RouteResult) -> None:

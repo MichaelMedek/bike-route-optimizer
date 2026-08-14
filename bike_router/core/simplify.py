@@ -135,7 +135,7 @@ def format_rail_legs(rail_legs: list[RailLeg]) -> list[str]:
 
 def format_rail_bahn_legs(rail_legs: list[RailLeg]) -> list[str]:
     """One "Train N (bahn): dep … → arr … · trains" line per ride — the bahn.de-side label."""
-    return [f"Train {index} (bahn): {leg.bahn_label}" for index, leg in enumerate(rail_legs, start=1)]
+    return [f"Train {index}: {leg.bahn_label}" for index, leg in enumerate(rail_legs, start=1)]
 
 
 @dataclass(frozen=True)

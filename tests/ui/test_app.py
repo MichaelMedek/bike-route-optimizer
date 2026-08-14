@@ -397,21 +397,21 @@ def test_rail_link_buttons():
     gmaps_label, gmaps_url = col_gmaps.link_button.call_args.args
     bahn_label, bahn_url = col_bahn.link_button.call_args.args
     assert gmaps_label == "🚆 Train 1: Freudenstadt Hbf → Horb" and gmaps_url == leg.url
-    assert bahn_label == "🚉 Train 1 (bahn): dep 13:16 → arr 13:29 · RB1" and bahn_url == leg.bahn_url
+    assert bahn_label == "🚉 Train 1: dep 13:16 → arr 13:29 · RB1" and bahn_url == leg.bahn_url
 
 
 def test_bike_link_buttons():
-    # One 🗺️ button per pedalled leg; label is "Bike Route N: from → to", url the leg's Maps link, time as help.
+    # One 🗺️ button per pedalled leg; label carries "Bike Route N: from → to" PLUS the time span; help fixed.
     leg = SimpleNamespace(
-        url="https://maps.google/x", from_place="Freudenstadt", to_place="Horb", time_label="≈ 08:00–08:30"
+        url="https://maps.google/x", from_place="Freudenstadt", to_place="Horb", time_label="08:00 → 08:30 (0:30 h)"
     )
     result = SimpleNamespace(bike_legs=[leg])
     with patch.object(app, "st") as fake_st:
         app.bike_link_buttons(result=result)
     fake_st.link_button.assert_called_once()
     label, url = fake_st.link_button.call_args.args
-    assert label == "🗺️ Bike Route 1: Freudenstadt → Horb" and url == "https://maps.google/x"
-    assert fake_st.link_button.call_args.kwargs["help"] == "≈ 08:00–08:30"
+    assert label == "🗺️ Bike Route 1: Freudenstadt → Horb: 08:00 → 08:30 (0:30 h)" and url == "https://maps.google/x"
+    assert fake_st.link_button.call_args.kwargs["help"] == "Open in Google Maps bike"
 
 
 def test_configure_logging():

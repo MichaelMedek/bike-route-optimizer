@@ -105,7 +105,7 @@ def test_plan_route(tmp_path: Path, monkeypatch):
     leg = result.bike_legs[0]
     assert leg.url.startswith("https://www.google.com/maps/dir/?api=1")
     assert (leg.from_place, leg.to_place) == ("Start", "End")  # outer ends = origin/destination
-    assert leg.time_label.startswith("≈ ") and "–" in leg.time_label  # estimated clock span always present
+    assert leg.time_label.count(":") >= 2 and "→" in leg.time_label  # "HH:MM → HH:MM (H:MM h)" span present
     assert result.rail_legs == []  # pure-bike line graph → no train ride
     assert result.gpx_path.exists() and result.gpx_path.stat().st_size > 0
     assert result.png_path.exists() and result.png_path.stat().st_size > 0
@@ -240,7 +240,7 @@ def test_format_cli_report(tmp_path: Path, monkeypatch):
     assert "Mode:" in report  # the composition summary is embedded
     assert str(result.gpx_path) in report and str(result.png_path) in report
     assert "Bike legs in Google Maps" in report and result.bike_legs[0].url in report
-    assert "≈ " in report  # each bike link carries its estimated clock span
+    assert "(1:" in report or " h)" in report  # each bike link carries its estimated clock span
     assert "Train legs (" not in report  # pure-bike line route → no train section
     assert "bahn.de" not in report  # ...and no bahn link either
 
@@ -322,9 +322,9 @@ def test_geocode_both(monkeypatch):
 
 
 def test_bike_time_label():
-    # "≈ HH:MM–HH:MM" from now + each end's elapsed seconds (start 0 s, end 3600 s → +0 / +1 h).
+    # "HH:MM → HH:MM (H:MM h)" from now + each end's elapsed seconds (start 0 s, end 3600 s → +0 / +1 h).
     now = datetime.datetime(2026, 8, 20, 9, 0, 0)
-    assert pipeline._bike_time_label(start_s=0.0, end_s=3600.0, now=now) == "≈ 09:00–10:00"
+    assert pipeline._bike_time_label(start_s=0.0, end_s=3600.0, now=now) == "09:00 → 10:00 (1:00 h)"
 
 
 def test_assert_within_coverage(monkeypatch):

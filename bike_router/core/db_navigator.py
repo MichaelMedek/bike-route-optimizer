@@ -164,12 +164,13 @@ def build_link(*, board: tuple[str, str, str], alight: tuple[str, str, str], whe
 
 
 def build_label(*, connection: dict[str, object]) -> str:
-    """A "dep HH:MM → arr HH:MM · RB33 › RE4" label listing each leg's Verkehrsmittel."""
+    """A "HH:MM → HH:MM · RB33 › RE4" label: dep/arr time + trains, elided to "first › … › last" past 2 legs."""
     segments: Any = connection["verbindungsAbschnitte"]
     dep = segments[0]["abfahrt"]["sollzeit"][11:16]
     arr = segments[-1]["ankunft"]["sollzeit"][11:16]
-    trains = " › ".join(mittel for mittel, _ in _leg_products(connection=connection))
-    return f"dep {dep} → arr {arr} · {trains}"
+    names = [mittel for mittel, _ in _leg_products(connection=connection)]
+    shown = names if len(names) <= 2 else [names[0], "…", names[-1]]
+    return f"{dep} → {arr} · {' › '.join(shown)}"
 
 
 def build_bahn_leg(

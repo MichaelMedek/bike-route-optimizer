@@ -122,9 +122,11 @@ def test_leg_products():
 
 
 def test_build_label():
-    # "dep HH:MM → arr HH:MM · <trains joined by ›>" from the first dep + last arr + each leg's mittelText.
-    connection = _connection([("RB33", "REGIONAL"), ("RE4", "REGIONAL")])
-    assert build_label(connection=connection) == "dep 08:44 → arr 09:15 · RB33 › RE4"
+    # ≤2 legs show all; >2 elide to "first › … › last". Time is first dep + last arr.
+    two = _connection([("RB33", "REGIONAL"), ("RE4", "REGIONAL")])
+    assert build_label(connection=two) == "08:44 → 09:15 · RB33 › RE4"
+    many = _connection([("S3", "SBAHN"), ("S5", "SBAHN"), ("MEX17", "REGIONAL"), ("S1", "SBAHN")])
+    assert build_label(connection=many) == "08:44 → 09:15 · S3 › … › S1"
 
 
 # --- verify -----------------------------------------------------------------
@@ -167,7 +169,7 @@ def test_build_bahn_leg():
         return {"verbindungen": [connection]}  # journey POST
 
     url, label = build_bahn_leg(board_name="Berlin Hbf", alight_name="München Hbf", when=_WHEN, http_get=stub)
-    assert url.startswith(f"{DbNavigatorConfig.SUCHE_URL}#") and label == "dep 08:44 → arr 09:15 · RB33"
+    assert url.startswith(f"{DbNavigatorConfig.SUCHE_URL}#") and label == "08:44 → 09:15 · RB33"
 
 
 def test_build_bahn_leg_degrades_on_request_error():
@@ -219,4 +221,4 @@ def test_build_bahn_leg_live(board: str, alight: str):
     now = datetime.datetime.now().replace(second=0, microsecond=0)
     url, label = build_bahn_leg(board_name=board, alight_name=alight, when=now, http_get=default_db_get)
     assert url.startswith(f"{DbNavigatorConfig.SUCHE_URL}#") and "soid=" in url  # a real deep link, not the bare URL
-    assert label.startswith("dep ") and "→ arr" in label  # a real connection label, not "bahn.de"
+    assert "→" in label and label != DbNavigatorConfig.FALLBACK_LABEL  # a real connection label, not the fallback

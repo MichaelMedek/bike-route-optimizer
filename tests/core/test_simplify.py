@@ -213,8 +213,8 @@ def test_format_rail_bahn_legs():
     # "Train N (bahn): <bahn_label>" per ride — the bahn.de-side label line.
     legs = [_rail_leg(board="Freudenstadt", alight="Pforzheim"), _rail_leg(board="Horb", alight="Karlsruhe")]
     assert format_rail_bahn_legs(rail_legs=legs) == [
-        "Train 1 (bahn): dep 08:00 → arr 08:30 · RB1",
-        "Train 2 (bahn): dep 08:00 → arr 08:30 · RB1",
+        "Train 1: dep 08:00 → arr 08:30 · RB1",
+        "Train 2: dep 08:00 → arr 08:30 · RB1",
     ]
 
 
