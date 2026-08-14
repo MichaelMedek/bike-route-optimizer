@@ -1,23 +1,26 @@
 """Station extrema: local-max ("top") and local-min ("bottom") rail stations for trip planning.
 
-Two passes: (1) direction-only candidacy — dead-end always, else ≥MIN_NEIGHBORS rail branches going the
-same way; (2) prominence — each branch walks on-side terrain until it rises/falls ≥PROMINENCE_M.
+Reads the clean station↔station rail graph the build baked in (no track weld/watershed at runtime);
+classifies extrema by direction-candidacy + key-col prominence over that graph.
 """
 
 import logging
 from collections import deque
 from dataclasses import dataclass
+from heapq import heappop, heappush
 from pathlib import Path
+from typing import Hashable, TypeVar
 
 import numpy as np
 import pandas as pd
-from scipy.sparse import csr_matrix
-from scipy.sparse.csgraph import dijkstra
 
 from bike_router.core.constants import GeoConfig, GraphConfig, Mode, NodeType, RailConfig, Schema
 from bike_router.core.graph_store import NODE_COLS, read_tiles
 
 logger = logging.getLogger(__name__)
+
+# Extrema helpers are node-id-agnostic — they run on the osmid-keyed OR the name-keyed station graph.
+_Node = TypeVar("_Node", bound=Hashable)
 
 
 @dataclass(frozen=True)
@@ -44,35 +47,62 @@ def load_stations(*, graph_dir: Path) -> pd.DataFrame:
     return stations
 
 
-def station_rail_neighbors(*, edges_df: pd.DataFrame, station_ids: set[int]) -> dict[int, set[int]]:
-    """Each station → its next-stop stations up/down the line (the station-level graph).
+def station_markers(*, stations_df: pd.DataFrame, want_high: bool) -> list[tuple[float, float, float, str]]:
+    """(lat, lon, elevation_m, name) markers, nudged north (tops) / south (bottoms) so a both-station splits.
 
-    Vectorized graph-Voronoi: one multi-source ``dijkstra(min_only, unweighted)`` labels every node with
-    its nearest station, then station-level edges are the unique label pairs of rail edges crossing cells.
+    A station that is both a top and a bottom gets a marker in each set at the same point; the ±latitude
+    offset keeps them separately clickable (top north, bottom south) — see EXTREMUM_MARKER_OFFSET_M.
     """
-    from_ids = edges_df["from_node"].to_numpy(dtype=np.int64)
-    to_ids = edges_df["to_node"].to_numpy(dtype=np.int64)
-    # Dense-index every node, build the undirected CSR (both directions), then flood from station rows.
-    codes, uniques = pd.factorize(np.concatenate([from_ids, to_ids]))
-    n = len(uniques)
-    fu, tu = codes[: len(from_ids)], codes[len(from_ids) :]
-    rows = np.concatenate([fu, tu])
-    cols = np.concatenate([tu, fu])
-    graph = csr_matrix((np.ones(len(rows), dtype=np.float64), (rows, cols)), shape=(n, n))
-    id_to_row = {int(osmid): i for i, osmid in enumerate(uniques)}
-    seed_rows = np.array([id_to_row[s] for s in station_ids if s in id_to_row], dtype=np.int64)
-    _dist, _pred, sources = dijkstra(
-        graph, directed=False, indices=seed_rows, min_only=True, unweighted=True, return_predecessors=True
+    d_lat = RailConfig.EXTREMUM_MARKER_OFFSET_M / GeoConfig.METERS_PER_DEGREE_EQUATOR
+    offset = d_lat if want_high else -d_lat
+    return [
+        (float(row.lat) + offset, float(row.lon), float(row.elevation_m), str(row.station_name))
+        for row in stations_df.itertuples(index=False)
+    ]
+
+
+
+def _load_station_graph(*, graph_dir: Path) -> tuple[pd.DataFrame, dict[str, set[str]], dict[str, float]]:
+    """Read the clean rail layer ONCE → (stations_df, name→neighbours graph, name→elevation).
+
+    The build already merged platforms and collapsed parallel tracks to one edge per pair, so this is a
+    pure id→name relabel of the station↔station edges; shared by track-graph, line-degrees, and extrema.
+    """
+    stations_df = load_stations(graph_dir=graph_dir)
+    edges_df = read_tiles(
+        directory=graph_dir / GraphConfig.EDGES_SUBDIR,
+        columns=[Schema.FROM_NODE, Schema.TO_NODE],
+        tiles=None,
+        filters=[(Schema.MODE, Schema.FILTER_IN, [Mode.RAIL])],
     )
-    label = uniques[sources]  # each node → its nearest station's osmid (its Voronoi cell)
-    # Rail edges whose two endpoints fall in DIFFERENT cells connect those two stations (next stops).
-    su, sv = label[fu], label[tu]
-    cross = su != sv
-    neighbors: dict[int, set[int]] = {s: set() for s in station_ids}
-    for a, b in np.unique(np.sort(np.stack([su[cross], sv[cross]], axis=1), axis=1), axis=0):
-        neighbors[int(a)].add(int(b))
-        neighbors[int(b)].add(int(a))
-    return neighbors
+    name_of = {int(r.osmid): str(r.station_name) for r in stations_df.itertuples(index=False)}
+    elev_by_name = {str(r.station_name): float(r.elevation_m) for r in stations_df.itertuples(index=False)}
+    graph: dict[str, set[str]] = {name: set() for name in name_of.values()}
+    for u, v in zip(edges_df[Schema.FROM_NODE], edges_df[Schema.TO_NODE], strict=True):
+        nu, nv = name_of.get(int(u)), name_of.get(int(v))
+        if nu is not None and nv is not None and nu != nv:
+            graph[nu].add(nv)
+            graph[nv].add(nu)
+    return stations_df, graph, elev_by_name
+
+
+def station_track_graph(*, graph_dir: Path) -> dict[str, set[str]]:
+    """Each station → the set of directly-connected station names (the clean line-degree graph).
+
+    A pure read of the station↔station rail edges the build already baked: platforms merged, parallel
+    tracks collapsed to one edge per pair offline, so the graph is symmetric and simple by construction.
+    """
+    _stations_df, graph, _elev = _load_station_graph(graph_dir=graph_dir)
+    return graph
+
+
+def station_line_degrees(*, graph_dir: Path) -> dict[str, int]:
+    """Per-station rail line-degree: station name → number of distinct next-stations along the track.
+
+    The degree IS the size of the station's neighbour set in ``station_track_graph`` (parallel rails,
+    switches, and multi-track throats between the same two stations already collapsed to one edge offline).
+    """
+    return {name: len(neighbours) for name, neighbours in station_track_graph(graph_dir=graph_dir).items()}
 
 
 def extremum_candidates(
@@ -102,7 +132,7 @@ def branch_confirms(
 ) -> bool:
     """Whether one branch clears the prominence gate — it rises (top) / falls (bottom) ≥PROMINENCE_M.
 
-    Walks outward from ``first`` following ON-SIDE terrain only (higher for a bottom, lower for a top),
+    Walks outward from ``first`` following ON-SIDE terrain only (lower for a top, higher for a bottom),
     stopping a path once it crests back toward ``source``; confirms if any path reaches ≥prominence away.
     """
     prom = RailConfig.EXTREMA_STATION_PROMINENCE_M
@@ -142,13 +172,40 @@ def is_confirmed_extremum(
     return confirmed >= RailConfig.EXTREMUM_MIN_NEIGHBORS
 
 
+def key_col_prominence(
+    *, station_graph: dict[int, set[int]], elev_by_id: dict[int, float], source: int, want_high: bool
+) -> float:
+    """Topographic key-col prominence of ``source`` as a max (want_high) / min over the station graph.
+
+    Dijkstra on the path's extreme intervening elevation: the lowest saddle to cross to reach HIGHER
+    (top) / LOWER (bottom) ground. inf if none exists (a global summit/valley of its component).
+    """
+    elev_s = elev_by_id[source]
+    best = {source: elev_s}
+    pq: list[tuple[float, int]] = [(-elev_s if want_high else elev_s, source)]
+    while pq:
+        signed, u = heappop(pq)
+        ridge = -signed if want_high else signed
+        if (ridge < best[u]) if want_high else (ridge > best[u]):
+            continue
+        if u != source and ((elev_by_id[u] > elev_s) if want_high else (elev_by_id[u] < elev_s)):
+            return abs(ridge - elev_s)  # reached higher/lower ground; prominence = saddle depth
+        for v in station_graph[u]:
+            nridge = min(ridge, elev_by_id[v]) if want_high else max(ridge, elev_by_id[v])
+            improved = (nridge > best.get(v, -np.inf)) if want_high else (nridge < best.get(v, np.inf))
+            if improved:
+                best[v] = nridge
+                heappush(pq, (-nridge if want_high else nridge, v))
+    return float("inf")
+
+
 def extremum_stations(
     *, stations_df: pd.DataFrame, station_graph: dict[int, set[int]], want_high: bool
 ) -> pd.DataFrame:
     """The confirmed local-max (want_high) / local-min stations — Pass 1 candidacy then Pass 2 prominence.
 
-    A station is kept iff it is a direction-only candidate AND ≥MIN_NEIGHBORS branches clear the prominence
-    gate (a dead-end on its one branch). Sorted high-first (max) / low-first (min).
+    A station is kept iff it is a direction-only candidate AND clears the prominence gate. Sorted
+    high-first (max) / low-first (min).
     """
     elev_by_id = {int(row.osmid): float(row.elevation_m) for row in stations_df.itertuples(index=False)}
     tagged = extremum_candidates(station_graph=station_graph, elev_by_id=elev_by_id, want_high=want_high)
@@ -163,35 +220,32 @@ def extremum_stations(
     return stations_df.iloc[keep].sort_values(Schema.ELEVATION_M, ascending=not want_high).reset_index(drop=True)
 
 
-def station_markers(*, stations_df: pd.DataFrame, want_high: bool) -> list[tuple[float, float, float, str]]:
-    """(lat, lon, elevation_m, name) markers, nudged north (tops) / south (bottoms) so a both-station splits.
-
-    A station that is both a top and a bottom gets a marker in each set at the same point; the ±latitude
-    offset keeps them separately clickable (top north, bottom south) — see EXTREMUM_MARKER_OFFSET_M.
-    """
-    d_lat = RailConfig.EXTREMUM_MARKER_OFFSET_M / GeoConfig.METERS_PER_DEGREE_EQUATOR
-    offset = d_lat if want_high else -d_lat
-    return [
-        (float(row.lat) + offset, float(row.lon), float(row.elevation_m), str(row.station_name))
-        for row in stations_df.itertuples(index=False)
-    ]
-
-
 def station_extrema(*, graph_dir: Path) -> StationExtrema:
-    """The 🚞 payload from ONE scan: green local-max + red local-min station markers."""
-    stations_df = load_stations(graph_dir=graph_dir)
-    edges_lite = read_tiles(
-        directory=graph_dir / GraphConfig.EDGES_SUBDIR,
-        columns=[Schema.FROM_NODE, Schema.TO_NODE],
-        tiles=None,
-        filters=[(Schema.MODE, Schema.FILTER_IN, [Mode.RAIL])],
-    )
-    station_ids = set(stations_df["osmid"].astype(int))
-    station_graph = station_rail_neighbors(edges_df=edges_lite, station_ids=station_ids)
-    maxima_df = extremum_stations(stations_df=stations_df, station_graph=station_graph, want_high=True)
-    minima_df = extremum_stations(stations_df=stations_df, station_graph=station_graph, want_high=False)
+    """The 🚞 payload from ONE scan: green local-max + red local-min station markers.
+
+    On the clean station↔station graph, a station is a top/bottom iff it is a direction candidate whose
+    key-col prominence clears PEAK_KEYCOL_M / VALLEY_KEYCOL_M — dominant summits/valleys only.
+    """
+    stations_df, graph, elev_by_name = _load_station_graph(graph_dir=graph_dir)
+    top_cand = extremum_candidates(station_graph=graph, elev_by_id=elev_by_name, want_high=True)
+    bot_cand = extremum_candidates(station_graph=graph, elev_by_id=elev_by_name, want_high=False)
+    top_names = {
+        g
+        for g in top_cand
+        if key_col_prominence(station_graph=graph, elev_by_id=elev_by_name, source=g, want_high=True)
+        >= RailConfig.EXTREMA_PEAK_KEYCOL_M
+    }
+    bot_names = {
+        g
+        for g in bot_cand
+        if key_col_prominence(station_graph=graph, elev_by_id=elev_by_name, source=g, want_high=False)
+        >= RailConfig.EXTREMA_VALLEY_KEYCOL_M
+    }
+    maxima_df = stations_df[stations_df[Schema.STATION_NAME].isin(top_names)].reset_index(drop=True)
+    minima_df = stations_df[stations_df[Schema.STATION_NAME].isin(bot_names)].reset_index(drop=True)
     logger.info(f"Station-extrema scan: {len(maxima_df)} tops, {len(minima_df)} bottoms")
     return StationExtrema(
         maxima=station_markers(stations_df=maxima_df, want_high=True),
         minima=station_markers(stations_df=minima_df, want_high=False),
     )
+

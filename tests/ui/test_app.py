@@ -353,7 +353,7 @@ def test_station_extrema_markers(fixture_graph):
     extrema = app.station_extrema_markers()
     assert all(len(m) == 4 and isinstance(m[3], str) for m in extrema.maxima + extrema.minima)
     assert "Freudenstadt Stadt" in {m[3] for m in extrema.maxima}
-    assert "Röt" in {m[3] for m in extrema.minima}
+    assert "Horb" in {m[3] for m in extrema.minima}
 
 
 def test_village_names(fixture_graph):

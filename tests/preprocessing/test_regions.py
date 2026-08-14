@@ -5,10 +5,11 @@ tiny per-region artifacts on disk (no pbf/DEM) to exercise the cumulative-offset
 dedup and the component prune, plus the split-overlap invariant. Folds the former test_build_dach.py.
 """
 
+import numpy as np
 import pandas as pd
 import pytest
 
-from bike_router.core.constants import GraphConfig
+from bike_router.core.constants import GraphConfig, Mode, NodeType
 from bike_router.preprocessing.graph_writer import write_graph_parquet
 from bike_router.preprocessing.regions import (
     DACH_REGIONS,
@@ -18,9 +19,14 @@ from bike_router.preprocessing.regions import (
     assert_all_regions_complete,
     base_meta,
     combine_regions,
+    consolidate_rail,
+    merge_station_platforms,
     prune_components,
+    rail_edge,
     region_complete,
     split_geofabrik_path,
+    watershed_station_adjacency,
+    weld_rail_track,
 )
 
 _NODE_COLS = ["osmid", "lat", "lon", "elevation_m", "node_type", "station_name"]
@@ -33,6 +39,25 @@ def _region_artifact(region_dir, nodes: list[tuple], edges: list[tuple]) -> None
     edges_df = pd.DataFrame(edges, columns=_EDGE_COLS)
     meta = {"tile_deg": GraphConfig.TILE_DEG, "confirmed_complete": True}
     write_graph_parquet(nodes_df=nodes_df, edges_df=edges_df, meta=meta, out_dir=region_dir, compression="snappy")
+
+
+def test_weld_rail_track():
+    # Two LINESTRINGs sharing an endpoint weld to ONE vertex (3 total); NULL geometry is discarded.
+    geometries = np.array(
+        ["LINESTRING(8.0 48.0, 8.001 48.0)", "LINESTRING(8.001 48.0, 8.002 48.0)", None], dtype=object
+    )
+    coords, neighbours = weld_rail_track(geometries=geometries, weld_m=0.1)
+    assert len(coords) == 3  # the shared 8.001 vertex is fused, not duplicated
+    assert sorted(len(n) for n in neighbours) == [1, 1, 2]  # middle deg-2, two ends deg-1
+
+
+def test_rail_edge():
+    # One directed station→station row carries straight z-geometry, length, and signed height diff.
+    latlon = {1: (48.0, 8.0), 2: (48.1, 8.0)}
+    elev = {1: 500.0, 2: 700.0}
+    row = rail_edge(a=1, b=2, latlon=latlon, elev_by_osmid=elev)
+    assert row["from_node"] == 1 and row["to_node"] == 2 and row["mode"] == Mode.RAIL
+    assert row["height_diff_m"] == 200.0 and row["length_m"] > 0
 
 
 def _line(lat1, lon1, lat2, lon2) -> str:  # noqa: ANN001
@@ -323,3 +348,75 @@ class TestPruneComponents:
     def test_empty_layer_raises(self, nodes, edges, match):  # noqa: ANN001
         with pytest.raises(ValueError, match=match):
             prune_components(nodes_df=nodes, edges_df=pd.DataFrame(edges, columns=_EDGE_COLS))
+
+
+def test_merge_station_platforms():
+    # Two platforms 10 m apart merge into one complex; a third 1 km away stays separate (I3 by geometry).
+    station_xy = np.array([[0.0, 0.0], [10.0, 0.0], [1000.0, 0.0]])
+    labels = merge_station_platforms(station_xy=station_xy, merge_m=50.0)
+    assert labels[0] == labels[1] and labels[2] != labels[0]
+
+
+def test_watershed_station_adjacency():
+    # Line 0(regionA)—1—2—3(regionB): the flood from A reaches B's throat within the seal → edge A↔B.
+    coords = np.array([[0.0, 0.0], [10.0, 0.0], [20.0, 0.0], [30.0, 0.0]])
+    neighbours = [[1], [0, 2], [1, 3], [2]]
+    region = np.array([0, -1, -1, 3], dtype=np.int64)
+    adj = watershed_station_adjacency(coords=coords, neighbours=neighbours, region=region, seal_m=50.0)
+    assert adj == {0: {3}, 3: {0}}
+
+
+def _station_rail_frame():  # noqa: ANN202
+    # Bike 0—1 (edge kept as-is); stations A(10)@8.00, B(11)@8.02, A' (12) 10 m from A (merges into A);
+    # track nodes 20,21 (dropped); real-WKT rail A—B; a NULL-geometry connector; STATION access 0↔A'(12).
+    nodes = pd.DataFrame(
+        [
+            (0, 48.00, 8.000, 300.0, "bike", None),
+            (1, 48.00, 8.005, 300.0, "bike", None),
+            (10, 48.00, 8.000, 400.0, "rail", "Aaaa"),
+            (11, 48.00, 8.020, 500.0, "rail", "Bbbb"),
+            (12, 48.00009, 8.000, 400.0, "rail", "Aaaa Extra"),  # ~10 m north of A → merges into A (id 10)
+            (20, 48.00, 8.010, 450.0, "rail", None),  # track-intermediate → dropped
+            (21, 48.00, 8.015, 480.0, "rail", None),  # track-intermediate → dropped
+        ],
+        columns=_NODE_COLS,
+    )
+    line = "LINESTRING(8.000 48.00 400, 8.010 48.00 450, 8.020 48.00 500)"
+    edges = pd.DataFrame(
+        [
+            (0, 1, 0, 400.0, 0.0, "asphalt", "residential", "bike", None),
+            (1, 0, 0, 400.0, 0.0, "asphalt", "residential", "bike", None),
+            (10, 20, 0, 5.0, 0.0, None, None, "rail", line),  # real track A→B via 20,21
+            (20, 11, 0, 5.0, 0.0, None, None, "rail", line),
+            (10, 11, 0, 9000.0, 0.0, None, None, "rail", None),  # corrupt NULL-geometry connector → dropped
+            (0, 12, 0, 8.0, 0.0, None, None, "station", None),  # bike↔station access to the merged platform
+            (12, 0, 0, 8.0, 0.0, None, None, "station", None),
+        ],
+        columns=_EDGE_COLS,
+    )
+    return nodes, edges
+
+
+def test_consolidate_rail():
+    # Track nodes vanish, platforms merge (Aaaa keeps its shorter name), one rail edge per pair (both
+    # directions) with real geometry, bike edges untouched, and access edges re-point to the survivor.
+    nodes, edges = _station_rail_frame()
+    out_nodes, out_edges = consolidate_rail(nodes_df=nodes, edges_df=edges)
+    rail_nodes = out_nodes[out_nodes["node_type"] == NodeType.RAIL]
+    assert set(rail_nodes["osmid"]) == {10, 11}  # track nodes 20,21 gone; platform 12 merged into 10
+    assert rail_nodes["station_name"].notna().all()
+    assert set(out_nodes[out_nodes["node_type"] == "bike"]["osmid"]) == {0, 1}  # bike nodes intact
+    rail_edges = out_edges[out_edges["mode"] == Mode.RAIL]
+    assert len(rail_edges) == 2 and rail_edges["geometry_wkt"].notna().all()  # one pair, both directions
+    assert set(zip(rail_edges["from_node"], rail_edges["to_node"], strict=False)) == {(10, 11), (11, 10)}
+    station_edges = out_edges[out_edges["mode"] == Mode.STATION]
+    assert set(station_edges["to_node"]) | set(station_edges["from_node"]) == {0, 10}  # 12 re-pointed to 10
+    assert len(out_edges[out_edges["mode"] == Mode.BIKE]) == 2
+
+
+def test_consolidate_rail_passthrough_without_rail():
+    # A bike-only frame (no rail nodes/edges) is returned unchanged — the guard for non-rail regions.
+    nodes = _mk_nodes(bike=[0, 1], rail=[], stations=[])
+    edges = pd.DataFrame(_bidir(0, 1, "bike", 10.0), columns=_EDGE_COLS)
+    out_nodes, out_edges = consolidate_rail(nodes_df=nodes, edges_df=edges)
+    assert out_nodes.equals(nodes) and out_edges.equals(edges)

@@ -1,4 +1,4 @@
-"""rail_extrema tests — 2-pass topological station extrema (candidacy → prominence).
+"""rail_extrema tests — extrema over the clean station↔station graph baked by preprocessing.
 
 One test_<fn> per production symbol (exact-name mirror). Pure helpers use tiny synthetic graphs;
 load_stations/station_extrema run against the committed FIXTURE_GRAPH_DIR (+ a real-dataset e2e).
@@ -10,15 +10,17 @@ import pytest
 from bike_router.core.constants import GeoConfig, GraphConfig, RailConfig
 from bike_router.core.rail_extrema import (
     StationExtrema,
+    _load_station_graph,
     branch_confirms,
     extremum_candidates,
     extremum_stations,
     is_confirmed_extremum,
+    key_col_prominence,
     load_stations,
     station_extrema,
     station_line_degrees,
     station_markers,
-    station_rail_neighbors,
+    station_track_graph,
 )
 from tests.conftest import FIXTURE_GRAPH_DIR
 
@@ -33,7 +35,6 @@ _STATIONS = pd.DataFrame(
         "node_type": ["rail", "rail", "rail"],
     }
 )
-# Station-level graph for the line + a synthetic mainline where a bottom needs a monotone up-walk.
 _STATION_GRAPH = {1: {2}, 2: {1, 3}, 3: {2}}
 _ELEV = {1: 500.0, 2: 505.0, 3: 700.0}
 
@@ -52,55 +53,42 @@ def test_load_stations():
     assert "Freudenstadt Stadt" in set(stations["station_name"])
 
 
-def test_station_rail_neighbors():
-    # Track nodes (negative ids) are walked THROUGH, stations STOP the walk → the station-level graph.
-    # Line: station 1 — track -9 — station 2 — track -8 — station 3 (both directed rows present).
-    edges = pd.DataFrame(
-        {
-            "from_node": [1, -9, -9, 2, 2, -8, -8, 3],
-            "to_node": [-9, 1, 2, -9, -8, 2, 3, -8],
-        }
-    )
-    graph = station_rail_neighbors(edges_df=edges, station_ids={1, 2, 3})
-    assert graph == {1: {2}, 2: {1, 3}, 3: {2}}
+def test_load_station_graph():
+    # ONE read of the fixture → stations frame + name graph + elevations; graph is symmetric.
+    stations_df, graph, elev_by_name = _load_station_graph(graph_dir=FIXTURE_GRAPH_DIR)
+    assert "Freudenstadt Stadt" in graph and "Freudenstadt Stadt" in elev_by_name
+    assert len(stations_df) == len(graph) == len(elev_by_name)
+    for a, neighbours in graph.items():
+        assert all(a in graph[b] for b in neighbours)  # symmetric
+
+
+def test_station_track_graph():
+    # Against the fixture: a symmetric, self-loop-free name→neighbours graph over the Freudenstadt lines.
+    graph = station_track_graph(graph_dir=FIXTURE_GRAPH_DIR)
+    assert "Freudenstadt Stadt" in graph
+    for a, neighbours in graph.items():
+        assert isinstance(neighbours, set) and a not in neighbours
+        assert all(a in graph[b] for b in neighbours)  # symmetric
+
+
+def test_station_line_degrees():
+    # The line-degree is exactly the neighbour-set size of the track graph (one source of truth).
+    graph = station_track_graph(graph_dir=FIXTURE_GRAPH_DIR)
+    degrees = station_line_degrees(graph_dir=FIXTURE_GRAPH_DIR)
+    assert degrees == {name: len(neighbours) for name, neighbours in graph.items()}
 
 
 def test_extremum_candidates():
-    # PASS 1, direction-only: High is a top candidate (dead-end, neighbour lower), Low a bottom candidate;
-    # Mid (a junction with one lower + one higher) is neither. No prominence applied yet.
+    # PASS 1, direction-only: High is a top candidate (dead-end, neighbour lower), Low a bottom candidate.
     tops = extremum_candidates(station_graph=_STATION_GRAPH, elev_by_id=_ELEV, want_high=True)
     bottoms = extremum_candidates(station_graph=_STATION_GRAPH, elev_by_id=_ELEV, want_high=False)
     assert tops == {3} and bottoms == {1}
 
 
-def test_extremum_candidates_both():
-    # A junction with 2 lower AND 2 higher branches is candidate for BOTH top and bottom (a saddle hub).
-    graph = {0: {1, 2, 3, 4}, 1: {0}, 2: {0}, 3: {0}, 4: {0}}
-    elev = {0: 500.0, 1: 400.0, 2: 400.0, 3: 600.0, 4: 600.0}
-    assert 0 in extremum_candidates(station_graph=graph, elev_by_id=elev, want_high=True)
-    assert 0 in extremum_candidates(station_graph=graph, elev_by_id=elev, want_high=False)
-
-
-def test_extremum_candidates_needs_two():
-    # A junction with only ONE lower branch (the other higher) is NOT a top candidate (needs ≥2).
-    graph = {0: {1, 2}, 1: {0}, 2: {0}}
-    elev = {0: 500.0, 1: 400.0, 2: 600.0}
-    assert 0 not in extremum_candidates(station_graph=graph, elev_by_id=elev, want_high=True)
-
-
 def test_branch_confirms():
-    # A top's downhill branch confirms once it has dropped ≥100 m; the in-band Mid (−0 from a bottom's
-    # view) is walked THROUGH. High→Mid→Low drops 200 m → confirms; the same branch can't confirm a bottom.
+    # High→Mid→Low drops 200 m → confirms a top on that branch; the same branch can't confirm a bottom.
     assert branch_confirms(station_graph=_STATION_GRAPH, elev_by_id=_ELEV, source=3, first=2, want_high=True)
     assert not branch_confirms(station_graph=_STATION_GRAPH, elev_by_id=_ELEV, source=3, first=2, want_high=False)
-
-
-def test_branch_confirms_walks_past_in_band():
-    # A bottom's uphill branch must WALK PAST a near-elevation stop to a station ≥100 m higher.
-    # 0(400) — 1(410, in-band) — 2(560, +160): the branch confirms only by continuing past 1.
-    graph = {0: {1}, 1: {0, 2}, 2: {1}}
-    elev = {0: 400.0, 1: 410.0, 2: 560.0}
-    assert branch_confirms(station_graph=graph, elev_by_id=elev, source=0, first=1, want_high=False)
 
 
 def test_is_confirmed_extremum():
@@ -108,6 +96,14 @@ def test_is_confirmed_extremum():
     assert is_confirmed_extremum(station_graph=_STATION_GRAPH, elev_by_id=_ELEV, source=3, want_high=True)
     assert is_confirmed_extremum(station_graph=_STATION_GRAPH, elev_by_id=_ELEV, source=1, want_high=False)
     assert not is_confirmed_extremum(station_graph=_STATION_GRAPH, elev_by_id=_ELEV, source=1, want_high=True)
+
+
+def test_key_col_prominence():
+    # Low(500)—Mid(505)—High(700): High is the summit → infinite max-prominence; Low the valley →
+    # infinite min-prominence. Mid escapes to lower/higher ground immediately (its key col is itself → 0).
+    assert key_col_prominence(station_graph=_STATION_GRAPH, elev_by_id=_ELEV, source=3, want_high=True) == float("inf")
+    assert key_col_prominence(station_graph=_STATION_GRAPH, elev_by_id=_ELEV, source=1, want_high=False) == float("inf")
+    assert key_col_prominence(station_graph=_STATION_GRAPH, elev_by_id=_ELEV, source=2, want_high=True) == 0.0
 
 
 def test_extremum_stations():
@@ -128,10 +124,10 @@ def test_station_markers():
 
 
 def test_station_extrema():
-    # The fixture scan surfaces tops + bottoms (Freudenstadt Stadt a top, Röt a bottom).
+    # The fixture scan surfaces tops + bottoms (Freudenstadt Stadt the summit, Schönmünzach the valley end).
     payload = station_extrema(graph_dir=FIXTURE_GRAPH_DIR)
     assert "Freudenstadt Stadt" in {m[3] for m in payload.maxima}
-    assert "Röt" in {m[3] for m in payload.minima}
+    assert "Schönmünzach" in {m[3] for m in payload.minima}
     assert payload.maxima and payload.minima
 
 
@@ -203,3 +199,66 @@ def test_station_line_degree_real() -> None:
     for name, want in _REAL_LINE_DEGREE.items():
         got = degrees[name]
         assert got == want, f"{name}: line-degree {got} != ground-truth {want}"
+
+
+# --- FORMAL INVARIANTS of the station track-graph (name -> set of directly-connected neighbour names).
+# "Directly connected" = one real-track edge with NO other station between; parallel rails / switches /
+# multi-track throats between the same two stations collapse to ONE edge. The final DACH graph is the input.
+@pytest.fixture(scope="module")
+def _real_station_graph() -> dict[str, set[str]]:
+    # Read straight from the final DACH graph — the build already baked the clean station↔station edges.
+    return station_track_graph(graph_dir=GraphConfig.GRAPH_DIR)
+
+
+@pytest.mark.skipif(
+    not (GraphConfig.GRAPH_DIR / GraphConfig.META_FILENAME).exists(),
+    reason="real dataset not present in data/ (only the committed fixture is available)",
+)
+def test_station_track_graph_symmetric(_real_station_graph: dict[str, set[str]]) -> None:
+    """I1 — edges are bidirectional: B in G[A] <=> A in G[B]."""
+    for a, neighbours in _real_station_graph.items():
+        for b in neighbours:
+            assert a in _real_station_graph[b], f"asymmetric edge {a}->{b}"
+
+
+@pytest.mark.skipif(
+    not (GraphConfig.GRAPH_DIR / GraphConfig.META_FILENAME).exists(),
+    reason="real dataset not present in data/ (only the committed fixture is available)",
+)
+def test_station_track_graph_no_self_loops(_real_station_graph: dict[str, set[str]]) -> None:
+    """I2 — no A->A self-loop."""
+    for a, neighbours in _real_station_graph.items():
+        assert a not in neighbours, f"self-loop at {a}"
+
+
+@pytest.mark.skipif(
+    not (GraphConfig.GRAPH_DIR / GraphConfig.META_FILENAME).exists(),
+    reason="real dataset not present in data/ (only the committed fixture is available)",
+)
+def test_station_track_graph_merged_within_threshold(_real_station_graph: dict[str, set[str]]) -> None:
+    """I3 — co-located platforms within 50 m are ONE node: the split-name is absent, merged-name present."""
+    assert "Eyach" in _real_station_graph  # shorter name kept
+    assert "Eyach HzL" not in _real_station_graph  # merged away (32.8 m apart)
+
+
+@pytest.mark.skipif(
+    not (GraphConfig.GRAPH_DIR / GraphConfig.META_FILENAME).exists(),
+    reason="real dataset not present in data/ (only the committed fixture is available)",
+)
+def test_station_track_graph_simple(_real_station_graph: dict[str, set[str]]) -> None:
+    """I4 — at most ONE edge between any two stations (parallel rails/switches/throat collapse to one)."""
+    for a, neighbours in _real_station_graph.items():
+        assert isinstance(neighbours, set), f"{a}: neighbours must be a set (no multi-edges)"
+        assert len(neighbours) == len(set(neighbours)), f"{a}: duplicate edge to same neighbour"
+
+
+@pytest.mark.skipif(
+    not (GraphConfig.GRAPH_DIR / GraphConfig.META_FILENAME).exists(),
+    reason="real dataset not present in data/ (only the committed fixture is available)",
+)
+def test_station_track_graph_degree(_real_station_graph: dict[str, set[str]]) -> None:
+    """I5 — the node degree (edge count) equals the hand-read ground truth exactly (I4 simple by set)."""
+    for name, want in _REAL_LINE_DEGREE.items():
+        assert name in _real_station_graph, f"{name} missing from station graph"
+        got = len(_real_station_graph[name])
+        assert got == want, f"{name}: degree {got} (neighbours={sorted(_real_station_graph[name])}) != {want}"

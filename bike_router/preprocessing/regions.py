@@ -6,13 +6,22 @@ invariant, completion gate, cumulative-offset combine with seam dedup, component
 
 import json
 import logging
+from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
 
 import networkx as nx
+import numpy as np
 import pandas as pd
+from scipy.sparse import csr_matrix
+from scipy.sparse.csgraph import dijkstra
+from scipy.spatial import cKDTree
+from shapely import from_wkt
+from shapely.geometry import LineString
 
-from bike_router.core.constants import GraphConfig, Mode, NodeType
+from bike_router.core.constants import GeoConfig, GraphConfig, Mode, NodeType, RailConfig, Schema
+from bike_router.core.geo import haversine_distance_m
+from bike_router.core.graph_store import EDGE_COLS, NODE_COLS
 from bike_router.preprocessing.builder import dedup_by_geometry, reindex_region, remap_contiguous
 from bike_router.preprocessing.graph_writer import compute_bbox, read_region_tables
 
@@ -173,29 +182,246 @@ def base_meta(*, nodes_df: pd.DataFrame, edges_df: pd.DataFrame, tolerance_m: fl
     }
 
 
-def combine_regions(*, regions_dir: Path, regions: list[str]) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """Phase 3: offset each region's contiguous ids into a global space, dedup the seam, re-densify.
+def merge_station_platforms(*, station_xy: "np.ndarray", merge_m: float) -> "np.ndarray":
+    """Union platforms within ``merge_m`` of each other into one complex; return each platform's root label.
 
-    A running offset (ΣN of earlier regions) makes ids collision-free; geometry dedup collapses border
-    duplicates; a prune drops strays; a final remap closes the holes (n_nodes == max_id + 1). Returns (nodes, edges).
+    Union-find over the KD-tree radius pairs — co-located platforms (e.g. Eyach / Eyach HzL, 33 m) collapse
+    to one node while a duplicate name 100 km away stays separate (merge is by geometry, not name).
+    """
+    n = len(station_xy)
+    parent = list(range(n))
+
+    def find(a: int) -> int:
+        while parent[a] != a:
+            parent[a] = parent[parent[a]]
+            a = parent[a]
+        return a
+
+    for a, b in cKDTree(station_xy).query_pairs(r=merge_m):
+        parent[find(a)] = find(b)
+    return np.array([find(i) for i in range(n)], dtype=np.int64)
+
+
+def watershed_station_adjacency(
+    *, coords: "np.ndarray", neighbours: list[list[int]], region: "np.ndarray", seal_m: float
+) -> dict[int, set[int]]:
+    """Per-complex BFS over welded track vertices → symmetric complex adjacency (complex root → neighbours).
+
+    Multi-source Dijkstra assigns each vertex its nearest complex; a flood from each complex halts at another
+    region OR inside another complex's throat (owner within ``seal_m``), else walks through. Mutual-union.
+    """
+    n_vertices = len(coords)
+    # Vectorized undirected CSR: flatten the adjacency list, keep u<v, weight = euclidean edge length.
+    degrees = np.fromiter((len(a) for a in neighbours), dtype=np.int64, count=n_vertices)
+    us = np.repeat(np.arange(n_vertices), degrees)
+    vs = np.concatenate([np.asarray(a, dtype=np.int64) for a in neighbours]) if n_vertices else np.empty(0, np.int64)
+    upper = us < vs
+    u2, v2 = us[upper], vs[upper]
+    w = np.hypot(coords[u2, 0] - coords[v2, 0], coords[u2, 1] - coords[v2, 1])
+    csr = csr_matrix(
+        (np.concatenate([w, w]), (np.concatenate([u2, v2]), np.concatenate([v2, u2]))),
+        shape=(n_vertices, n_vertices),
+    )
+    seeds = np.where(region >= 0)[0]
+    owner_dist, _pred, source = dijkstra(csr, indices=seeds, min_only=True, return_predecessors=True)
+    owner = np.where(source >= 0, region[source], -1)
+    seeds_by_complex: dict[int, list[int]] = {}
+    for v in seeds:
+        seeds_by_complex.setdefault(int(region[v]), []).append(int(v))
+    visited = np.full(n_vertices, -1, dtype=np.int64)
+    # A step to nb arrives at complex `arrival[nb]` (>=0) or is walk-through (-1): its own region's vertices
+    # and throat vertices (owned within seal, off-region) are arrivals; everything else keeps flooding.
+    arrival = np.where(region >= 0, region, np.where((owner >= 0) & (owner_dist <= seal_m), owner, -1))
+
+    def flood(rep: int, rep_seeds: list[int]) -> set[int]:
+        """One complex's BFS: record the first complex each branch arrives at; walk through the rest."""
+        found: set[int] = set()
+        queue = deque(rep_seeds)
+        for s in rep_seeds:
+            visited[s] = rep
+        while queue:
+            for nb in neighbours[queue.popleft()]:
+                if visited[nb] == rep:
+                    continue
+                visited[nb] = rep
+                reached = int(arrival[nb])
+                if reached >= 0 and reached != rep:
+                    found.add(reached)
+                else:
+                    queue.append(nb)
+        return found
+
+    graph: dict[int, set[int]] = {rep: flood(rep, rep_seeds) for rep, rep_seeds in seeds_by_complex.items()}
+    for a in list(graph):
+        for b in list(graph[a]):
+            graph[b].add(a)
+    return graph
+
+
+def weld_rail_track(*, geometries: "np.ndarray", weld_m: float) -> tuple["np.ndarray", list[list[int]]]:
+    """Fuse rail WKT LINESTRINGs into ONE planar graph, welding shared vertices on a ``weld_m`` grid.
+
+    Equirectangular metres (per-point cos-lat) map lon/lat to a metric plane; NULL geometry (corrupt
+    connectors) is dropped. Returns the ``(V, 2)`` vertex coordinates and an undirected adjacency list.
+    """
+    mpd = GeoConfig.METERS_PER_DEGREE_EQUATOR
+    coord_to_vertex: dict[tuple[int, int], int] = {}
+    xs: list[float] = []
+    ys: list[float] = []
+    adjacency: dict[int, set[int]] = {}
+    for wkt in geometries:
+        if not isinstance(wkt, str):
+            continue  # corrupt builder connector (no geometry) — not real track
+        lonlat = np.asarray(from_wkt(wkt).coords)
+        px = lonlat[:, 0] * mpd * np.cos(np.radians(lonlat[:, 1]))
+        py = lonlat[:, 1] * mpd
+        previous = -1
+        for x, y in zip(px, py, strict=True):
+            key = (round(x / weld_m), round(y / weld_m))
+            vertex = coord_to_vertex.get(key)
+            if vertex is None:
+                vertex = len(xs)
+                coord_to_vertex[key] = vertex
+                xs.append(float(x))
+                ys.append(float(y))
+            if previous not in (-1, vertex):
+                adjacency.setdefault(previous, set()).add(vertex)
+                adjacency.setdefault(vertex, set()).add(previous)
+            previous = vertex
+    coords = np.column_stack([xs, ys]) if xs else np.empty((0, 2))
+    neighbours = [sorted(adjacency.get(v, set())) for v in range(len(xs))]
+    return coords, neighbours
+
+
+def rail_edge(
+    *, a: int, b: int, latlon: dict[int, tuple[float, float]], elev_by_osmid: dict[int, float]
+) -> dict[str, object]:
+    """One directed station→station rail row (a=from, b=to) with straight z-carrying geometry."""
+    la, lo_a = latlon[a]
+    lb, lo_b = latlon[b]
+    ea, eb = elev_by_osmid[a], elev_by_osmid[b]
+    return {
+        Schema.FROM_NODE: a,
+        Schema.TO_NODE: b,
+        Schema.KEY: 0,
+        Schema.LENGTH_M: haversine_distance_m(lat_a=la, lon_a=lo_a, lat_b=lb, lon_b=lo_b),
+        Schema.HEIGHT_DIFF_M: eb - ea,
+        Schema.SURFACE: None,
+        Schema.HIGHWAY: None,
+        Schema.MODE: Mode.RAIL,
+        Schema.GEOMETRY_WKT: LineString([(lo_a, la, ea), (lo_b, lb, eb)]).wkt,
+    }
+
+
+def consolidate_rail(*, nodes_df: pd.DataFrame, edges_df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Replace the corrupt rail layer with a clean station↔station graph (one edge per adjacent pair).
+
+    Drops NULL-geometry connectors + unnamed track nodes, merges platforms within STATION_MERGE_M, and emits
+    one straight rail edge per watershed-adjacent station pair; bike + station-access edges pass through.
+    """
+    is_rail_node = nodes_df[Schema.NODE_TYPE] == NodeType.RAIL
+    is_station = is_rail_node & nodes_df[Schema.STATION_NAME].notna()
+    is_rail_edge = edges_df[Schema.MODE] == Mode.RAIL
+    if not is_station.any() or not is_rail_edge.any():
+        return nodes_df, edges_df  # no rail to consolidate (e.g. a bike-only synthetic frame)
+
+    stations = nodes_df[is_station].reset_index(drop=True)
+    lat = stations[Schema.LAT].to_numpy(dtype=np.float64)
+    lon = stations[Schema.LON].to_numpy(dtype=np.float64)
+    station_xy = np.column_stack(
+        [lon * GeoConfig.METERS_PER_DEGREE_EQUATOR * np.cos(np.radians(lat)), lat * GeoConfig.METERS_PER_DEGREE_EQUATOR]
+    )
+    osmids = stations[Schema.OSMID].to_numpy(dtype=np.int64)
+    elevs = stations[Schema.ELEVATION_M].to_numpy(dtype=np.float64)
+    complex_of = merge_station_platforms(station_xy=station_xy, merge_m=RailConfig.STATION_MERGE_M)
+
+    # Per complex, sorted by (name-length, name, osmid): first row = shorter name; min-osmid = survivor id.
+    grp = pd.DataFrame({"root": complex_of, "sid": osmids, "row": np.arange(len(osmids))})
+    grp["name"] = stations[Schema.STATION_NAME].astype(str).to_numpy()
+    grp["namelen"] = grp["name"].str.len()
+    by_osmid = grp.sort_values(["root", "sid"]).groupby("root")
+    survivor = by_osmid["sid"].first().astype(np.int64).to_dict()
+    survivor_row = by_osmid["row"].first().astype(np.int64).to_dict()
+    kept_name = grp.sort_values(["root", "namelen", "name"]).groupby("root")["name"].first().to_dict()
+    platform_to_survivor = {int(o): int(survivor[int(r)]) for o, r in zip(osmids, complex_of, strict=True)}
+
+    coords, neighbours = weld_rail_track(
+        geometries=edges_df.loc[is_rail_edge, Schema.GEOMETRY_WKT].to_numpy(), weld_m=RailConfig.TRACK_WELD_M
+    )
+    logger.info(f"consolidate_rail: welded {len(coords)} track vertices from {len(stations)} platforms; watershed …")
+    region = np.full(len(coords), -1, dtype=np.int64)
+    if len(coords):
+        # Track vertices within merge_m of ANY platform get their nearest platform's complex (vectorized:
+        # one nearest-platform query, then keep only those inside the radius).
+        dist, nearest = cKDTree(station_xy).query(coords)
+        inside = dist <= RailConfig.STATION_MERGE_M
+        region[inside] = complex_of[nearest[inside]]
+    adjacency = watershed_station_adjacency(
+        coords=coords, neighbours=neighbours, region=region, seal_m=RailConfig.STATION_THROAT_SEAL_M
+    )
+
+    elev_by_osmid = {int(osmids[i]): float(elevs[i]) for i in range(len(osmids))}
+    latlon = {int(osmids[i]): (float(lat[i]), float(lon[i])) for i in range(len(osmids))}
+
+    pairs: set[tuple[int, int]] = set()
+    for a_root, roots in adjacency.items():
+        for b_root in roots:
+            sa, sb = survivor[int(a_root)], survivor[int(b_root)]
+            if sa != sb:
+                pairs.add((min(sa, sb), max(sa, sb)))
+    rail_rows = [rail_edge(a=a, b=b, latlon=latlon, elev_by_osmid=elev_by_osmid) for a, b in pairs] + [
+        rail_edge(a=b, b=a, latlon=latlon, elev_by_osmid=elev_by_osmid) for a, b in pairs
+    ]
+
+    survivor_rows = sorted(survivor_row.values())
+    survivor_nodes = stations.iloc[survivor_rows].copy()
+    survivor_nodes[Schema.STATION_NAME] = [kept_name[int(complex_of[r])] for r in survivor_rows]
+    kept_nodes = pd.concat([nodes_df[~is_rail_node], survivor_nodes[NODE_COLS]], ignore_index=True)
+
+    # Re-point STATION access edges from any merged-away platform onto its survivor (bike endpoints, absent
+    # from the map, keep their id via fillna). Vectorized map + fillna, no per-row Python.
+    access = edges_df[edges_df[Schema.MODE] == Mode.STATION].copy()
+    remap = pd.Series(platform_to_survivor, dtype=np.int64)
+    for col in (Schema.FROM_NODE, Schema.TO_NODE):
+        access[col] = access[col].map(remap).fillna(access[col]).astype(np.int64)
+    bike_edges = edges_df[edges_df[Schema.MODE] == Mode.BIKE]
+    new_rail = pd.DataFrame(rail_rows, columns=EDGE_COLS)
+    kept_edges = pd.concat([bike_edges, access[EDGE_COLS], new_rail], ignore_index=True)
+    logger.info(f"consolidate_rail: {len(survivor_nodes)} stations, {len(new_rail)} rail edges (both directions)")
+    return kept_nodes, kept_edges
+
+
+def combine_regions(*, regions_dir: Path, regions: list[str]) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Phase 3: offset each region's ids into a global space, dedup the seam, consolidate rail, re-densify.
+
+    Running-offset combine + geometry dedup stitch region borders; consolidate_rail rebuilds the clean
+    station↔station rail layer; a prune drops strays; a final remap closes id holes. Returns (nodes, edges).
     """
     node_frames: list[pd.DataFrame] = []
     edge_frames: list[pd.DataFrame] = []
     offset = 0
-    for region_key in regions:
+    for i, region_key in enumerate(regions, start=1):
         nodes_df, edges_df = read_region_tables(region_dir=regions_dir / region_key)
         nodes_df, edges_df = reindex_region(nodes_df=nodes_df, edges_df=edges_df, offset=offset)
         offset += len(nodes_df)
         node_frames.append(nodes_df)
         edge_frames.append(edges_df)
+        logger.info(f"combine [{i}/{len(regions)}] read {region_key}: +{len(nodes_df)} nodes → {offset} total")
     if offset >= _MAX_TOTAL_NODES:
         raise ValueError(f"Combined node count {offset} exceeds sanity ceiling {_MAX_TOTAL_NODES} — aborting.")
     nodes_df = pd.concat(node_frames, ignore_index=True)
     edges_df = pd.concat(edge_frames, ignore_index=True)
+    logger.info(f"combine: concatenated {len(nodes_df)} nodes / {len(edges_df)} edges; deduping seams …")
     nodes_df, edges_df = dedup_by_geometry(nodes_df=nodes_df, edges_df=edges_df)
+    logger.info(f"combine: after dedup {len(nodes_df)} nodes / {len(edges_df)} edges; consolidating rail …")
+    # Rebuild the rail layer as ONE clean edge per station pair (drops corrupt connectors + track nodes),
+    # AFTER seam dedup so cross-region track is welded, BEFORE prune so it runs on the clean topology.
+    nodes_df, edges_df = consolidate_rail(nodes_df=nodes_df, edges_df=edges_df)
+    logger.info(f"combine: after rail consolidation {len(nodes_df)} nodes / {len(edges_df)} edges; pruning …")
     # ONE global component prune, AFTER dedup has stitched the region seams: rail → single component,
     # bike → keep every island ≥ MIN_BIKE_COMPONENT_KM. The sole connectivity gate (no separate pass).
     nodes_df, edges_df = prune_components(nodes_df=nodes_df, edges_df=edges_df)
+    logger.info(f"combine: after prune {len(nodes_df)} nodes / {len(edges_df)} edges; remapping to dense ids …")
     # Dedup + prune removed nodes, leaving id holes → renumber to dense 0..N-1 (n_nodes==max_id+1).
     return remap_contiguous(nodes_df=nodes_df, edges_df=edges_df)
 

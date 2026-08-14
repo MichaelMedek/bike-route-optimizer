@@ -174,6 +174,20 @@ class RailConfig:
     EXTREMUM_MIN_NEIGHBORS = 2
     EXTREMA_STATION_PROMINENCE_M = 100.0
     EXTREMUM_MARKER_OFFSET_M = 10.0
+    # Extrema classification (dominance + prominence) on the CLEAN station↔station graph. A top is a strict
+    # local peak with key-col prominence ≥PEAK_KEYCOL_M, or a junction dominating its DOMINANCE_RADIUS_M
+    # neighbourhood by ≥HUB_RISE_M; a bottom mirrors (VALLEY_KEYCOL_M / HUB_DROP_M).
+    EXTREMA_DOMINANCE_RADIUS_M = 8000.0
+    EXTREMA_PEAK_KEYCOL_M = 120.0
+    EXTREMA_VALLEY_KEYCOL_M = 120.0
+    EXTREMA_HUB_RISE_M = 100.0
+    EXTREMA_HUB_DROP_M = 130.0
+    # Station track-graph reconstruction (name → next-stations). Weld track vertices this close together;
+    # merge platforms within STATION_MERGE_M into one node (I3); seal a station's convergence THROAT this
+    # far out so a walk can't leak past it (running tracks skirt the off-track platform node by >50 m).
+    TRACK_WELD_M = 0.1
+    STATION_MERGE_M = 50.0
+    STATION_THROAT_SEAL_M = 600.0
 
 
 class GraphConfig:
