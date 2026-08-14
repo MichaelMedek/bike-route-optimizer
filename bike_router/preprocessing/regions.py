@@ -211,6 +211,19 @@ def _trace_to_root(*, node: int, parent: dict[int, int]) -> list[int]:
     return chain[::-1]
 
 
+def _trace_via_predecessors(*, node: int, pred: "np.ndarray") -> list[int]:
+    """The welded-track chain from ``node`` to its nearest seed, following scipy's predecessor tree.
+
+    ``pred`` is dijkstra(min_only) predecessors: ``pred[v]`` steps toward v's nearest seed (or -9999 at it).
+    Returns node→seed order (so the arrival vertex is first), tracing real track vertices the whole way.
+    """
+    chain = [node]
+    while pred[node] >= 0:
+        node = int(pred[node])
+        chain.append(node)
+    return chain
+
+
 def watershed_station_adjacency(
     *, coords: "np.ndarray", neighbours: list[list[int]], region: "np.ndarray", seal_m: float
 ) -> tuple[dict[int, set[int]], dict[tuple[int, int], list[int]]]:
@@ -232,7 +245,7 @@ def watershed_station_adjacency(
         shape=(n_vertices, n_vertices),
     )
     seeds = np.where(region >= 0)[0]
-    owner_dist, _pred, source = dijkstra(csr, indices=seeds, min_only=True, return_predecessors=True)
+    owner_dist, pred, source = dijkstra(csr, indices=seeds, min_only=True, return_predecessors=True)
     # source is scipy's per-vertex nearest-seed (or -9999 when a vertex is unreachable from every seed);
     # clip the sentinel before indexing so an isolated track component just gets owner -1 (walk-through).
     owner = np.where(source >= 0, region[np.clip(source, 0, n_vertices - 1)], -1)
@@ -247,7 +260,11 @@ def watershed_station_adjacency(
     paths: dict[tuple[int, int], list[int]] = {}
 
     def flood(rep: int, rep_seeds: list[int]) -> None:
-        """One complex's BFS: record the first complex each branch arrives at + the vertex path to it."""
+        """One complex's BFS: record the first complex each branch arrives at + the FULL welded path to it.
+
+        The path is stitched from two real-track halves: rep-seed→arrival (this flood's BFS parent tree) and
+        arrival→other-seed (scipy's nearest-seed predecessor tree), so it spans platform-to-platform with no gap.
+        """
         parent = {s: -1 for s in rep_seeds}
         queue = deque(rep_seeds)
         for s in rep_seeds:
@@ -265,7 +282,10 @@ def watershed_station_adjacency(
                     continue
                 graph.setdefault(rep, set()).add(reached)
                 key = (min(rep, reached), max(rep, reached))
-                paths.setdefault(key, _trace_to_root(node=nb, parent=parent))  # first BFS arrival wins the path
+                if key not in paths:  # first BFS arrival wins; stitch both real-track halves at the arrival vertex
+                    head = _trace_to_root(node=nb, parent=parent)  # rep-seed → arrival vertex
+                    tail = _trace_via_predecessors(node=nb, pred=pred)  # arrival vertex → its nearest (other) seed
+                    paths[key] = head + tail[1:]  # drop the duplicated arrival vertex where the halves meet
 
     for rep, rep_seeds in seeds_by_complex.items():
         flood(rep, rep_seeds)

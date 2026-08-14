@@ -21,6 +21,7 @@ from bike_router.preprocessing.graph_writer import (
     compute_bbox,
     graph_from_tables,
     graph_to_tables,
+    plot_graph_overview,
     read_full_graph,
     read_region_tables,
     write_graph_parquet,
@@ -218,3 +219,25 @@ def test_write_store_roundtrip_fixture(tmp_path: Path):
     pd.testing.assert_frame_equal(fresh_nodes, committed_nodes)
     pd.testing.assert_frame_equal(fresh_edges, committed_edges)
     assert graph_store.load_meta(graph_dir=FIXTURE_ROUNDTRIP_STORE) == graph_store.load_meta(graph_dir=fresh)
+
+
+def test_plot_graph_overview(tmp_path):
+    # Renders a bike+rail overview PNG with red station dots (vectorized); the file is non-trivial.
+    nodes = pd.DataFrame(
+        [
+            _node_row(1, elev=100.0),
+            _node_row(2, elev=200.0, node_type=NodeType.RAIL, name="Bahnhof"),
+        ]
+    )
+    edges = pd.DataFrame(
+        {
+            "mode": [Mode.BIKE, Mode.RAIL],
+            "geometry_wkt": [
+                "LINESTRING (8.0 48.0, 8.01 48.0, 8.02 48.0)",
+                "LINESTRING (8.0 48.1, 8.03 48.1)",
+            ],
+        }
+    )
+    out = tmp_path / "overview.png"
+    plot_graph_overview(nodes_df=nodes, edges_df=edges, out_path=out, title="t", figsize=(4, 4))
+    assert out.exists() and out.stat().st_size > 0

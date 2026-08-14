@@ -153,6 +153,9 @@ LON_OUT_OF_RANGE = "longitude out of range"
 # both the matplotlib debug PNG and the Plotly web profile.
 ELEVATION_AXIS_LABEL = "Elevation (m)"
 PLOT_BG = "white"
+# matplotlib idioms shared by every headless plot: the non-interactive backend + tight bbox on save.
+MPL_BACKEND = "Agg"
+MPL_BBOX_TIGHT = "tight"
 
 
 class RailConfig:

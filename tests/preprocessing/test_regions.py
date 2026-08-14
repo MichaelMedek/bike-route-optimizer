@@ -19,6 +19,7 @@ from bike_router.preprocessing.regions import (
     _build_rail_rows,
     _oriented_track_polyline,
     _trace_to_root,
+    _trace_via_predecessors,
     assert_all_regions_complete,
     base_meta,
     combine_regions,
@@ -378,8 +379,8 @@ def test_watershed_station_adjacency():
     region = np.array([0, -1, -1, 3], dtype=np.int64)
     adj, paths = watershed_station_adjacency(coords=coords, neighbours=neighbours, region=region, seal_m=50.0)
     assert adj == {0: {3}, 3: {0}}
-    # The path traces welded vertices from A's seed to the throat vertex it arrives at (owned by B within seal).
-    assert paths[(0, 3)] in ([0, 1, 2], [3, 2, 1])
+    # The path is the FULL welded chain platform→platform (A-seed→throat stitched with throat→B-seed).
+    assert paths[(0, 3)] in ([0, 1, 2, 3], [3, 2, 1, 0])
 
 
 def test_trace_to_root():
@@ -387,6 +388,14 @@ def test_trace_to_root():
     parent = {0: -1, 1: 0, 2: 1}
     assert _trace_to_root(node=2, parent=parent) == [0, 1, 2]
     assert _trace_to_root(node=0, parent=parent) == [0]
+
+
+def test_trace_via_predecessors():
+    # Follows scipy's predecessor tree node→seed (node first); -9999 marks the seed (chain stops).
+    pred = np.array([-9999, 0, 1, 4, -9999], dtype=np.int64)  # 1→0, 2→1, 3→4; 0 and 4 are seeds
+    assert _trace_via_predecessors(node=2, pred=pred) == [2, 1, 0]
+    assert _trace_via_predecessors(node=3, pred=pred) == [3, 4]
+    assert _trace_via_predecessors(node=0, pred=pred) == [0]  # already a seed
 
 
 def test_oriented_track_polyline():
