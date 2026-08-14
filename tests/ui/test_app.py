@@ -377,6 +377,33 @@ def test_village_lookup():
     assert lookup(48.46, 8.41) == "Freudenstadt" and lookup(0.0, 0.0) is None
 
 
+def test_rail_link_buttons():
+    # One 🚆 button per train ride → the leg's Google Maps public-transport URL (built in the pipeline).
+    leg = SimpleNamespace(
+        board=SimpleNamespace(name_or_placeholder="Freudenstadt Hbf"),
+        alight=SimpleNamespace(name_or_placeholder="Horb"),
+        url="https://www.google.com/maps/dir/?api=1&travelmode=transit&origin=48.5%2C8.4&destination=48.4%2C8.7",
+    )
+    result = SimpleNamespace(rail_legs=[leg])
+    with patch.object(app, "st") as fake_st:
+        app.rail_link_buttons(result=result)
+    fake_st.link_button.assert_called_once()
+    label, url = fake_st.link_button.call_args.args
+    assert label == "🚆 Train 1: Freudenstadt Hbf → Horb"
+    assert url == leg.url and "travelmode=transit" in url
+
+
+def test_bike_link_buttons():
+    # One 🗺️ button per pedalled leg; label is "Bike Route N: from → to", url the leg's Maps link.
+    leg = SimpleNamespace(url="https://maps.google/x", from_place="Freudenstadt", to_place="Horb")
+    result = SimpleNamespace(bike_legs=[leg])
+    with patch.object(app, "st") as fake_st:
+        app.bike_link_buttons(result=result)
+    fake_st.link_button.assert_called_once()
+    label, url = fake_st.link_button.call_args.args
+    assert label == "🗺️ Bike Route 1: Freudenstadt → Horb" and url == "https://maps.google/x"
+
+
 def test_configure_logging():
     # Configures ONLY the bike_router package logger at INFO (info trail visible, not just warnings),
     # with its own handler + propagate=False; idempotent — reruns don't stack handlers.

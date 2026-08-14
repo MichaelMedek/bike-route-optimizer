@@ -343,6 +343,7 @@ def test_station_marker_points():
     leg = RailLeg(
         board=Station(name="A", lat=48.0, lon=8.0, elevation_m=100.0),
         alight=Station(name="B", lat=48.1, lon=8.1, elevation_m=200.0),
+        url="https://maps.google/transit",
     )
     result = SimpleNamespace(rail_legs=[leg])
     points = _station_marker_points(result=result)
@@ -367,6 +368,7 @@ def test_map_waypoint_markers():
     leg = RailLeg(
         board=Station(name="A", lat=48.0, lon=8.0, elevation_m=100.0),
         alight=Station(name="B", lat=48.0, lon=8.02, elevation_m=100.0),
+        url="https://maps.google/transit",
     )
     with_rail = SimpleNamespace(track=track, rail_legs=[leg], waypoints=[(48.0, 8.01)])
     labels = [lab for _lat, _lon, _e, lab in map_waypoint_markers(result=with_rail, village_of=lambda lat, lon: "V")]

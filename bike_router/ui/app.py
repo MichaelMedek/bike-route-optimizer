@@ -99,6 +99,25 @@ def village_lookup(result: RouteResult) -> Callable[[float, float], str | None]:
     return lambda lat, lon: names.get((lat, lon))
 
 
+def rail_link_buttons(result: RouteResult) -> None:
+    """One Google Maps PUBLIC-TRANSPORT link button per train ride (mirrors bike_link_buttons).
+
+    Each click opens the ride's board→alight transit directions in a new tab; the label is the shared
+    "Train N: board → alight" text.
+    """
+    for label, leg in zip(format_rail_legs(rail_legs=result.rail_legs), result.rail_legs, strict=True):
+        st.link_button(f"🚆 {label}", leg.url, width="stretch")
+
+
+def bike_link_buttons(result: RouteResult) -> None:
+    """One Google Maps bicycling link button per pedalled leg (mirrors rail_link_buttons).
+
+    Each click opens the leg's route in Maps in a new tab; the label is the shared "Bike Route N: from → to".
+    """
+    for label, leg in zip(format_bike_legs(bike_legs=result.bike_legs), result.bike_legs, strict=True):
+        st.link_button(f"🗺️ {label}", leg.url, width="stretch")
+
+
 def render_route_output(result: RouteResult) -> None:
     """Route output: stats + donuts in a collapsible box; trains, links, downloads always shown."""
     track = result.track
@@ -126,16 +145,15 @@ def render_route_output(result: RouteResult) -> None:
         )
         st.plotly_chart(elevation_profile_chart(track=track, markers=markers), width="stretch")
 
-    # Always visible: which trains to catch, the bike-leg Maps links, and the downloads.
+    # Per-leg link buttons — train legs open Google Maps public-transport directions, bike legs
+    # open Maps bicycling; each caption shows only when that mode has legs.
     if result.rail_legs:
-        st.caption("🚆 Trains to catch (look these up in your railway app):")
-        for line in format_rail_legs(rail_legs=result.rail_legs):
-            st.markdown(f"- {line}")
+        st.caption("🚆 Train legs in Google Maps (one link per leg):")
+        rail_link_buttons(result=result)
 
-    # One Google Maps bicycling link per pedalled leg — a link button opens the route in a new tab.
-    st.caption("🗺️ Bike legs in Google Maps (one link per leg):")
-    for label, leg in zip(format_bike_legs(bike_legs=result.bike_legs), result.bike_legs, strict=True):
-        st.link_button(f"🗺️ {label}", leg.url, width="stretch")
+    if result.bike_legs:
+        st.caption("🗺️ Bike legs in Google Maps (one link per leg):")
+        bike_link_buttons(result=result)
 
     downloads = ((result.gpx_path, "application/gpx+xml"), (result.png_path, "image/png"))
     for col, (path, mime) in zip(st.columns(len(downloads)), downloads, strict=True):

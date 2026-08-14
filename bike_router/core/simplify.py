@@ -77,26 +77,24 @@ class Station:
 
 @dataclass(frozen=True)
 class RailLeg:
-    """One train ride the rider takes: the station boarded at and the one alighted at.
+    """One train ride the rider takes: the boarded/alighted station plus its Maps transit URL.
 
-    Each ``Station`` carries name + position (from the rail node), so the CLI/web lists, the
-    map's station markers, and the ribbon's train-leg tooltip all read from this one structure.
+    Each ``Station`` carries name + position; ``url`` is the Google Maps public-transport directions
+    link (board → alight), the train-leg analogue of BikeLeg.url. One structure for lists/markers/links.
     """
 
     board: Station
     alight: Station
+    url: str
 
 
-def split_rail_legs(route: RoutePath) -> list[RailLeg]:
-    """Boarding + alighting station (name + position) for each train ride on the route.
+def split_rail_legs(route: RoutePath) -> list[tuple[Station, Station]]:
+    """Split a route into (board, alight) station pairs, one per train ride (rail-run boundaries).
 
-    A ride is a maximal run of consecutive RAIL edges (a junction change stays one ride):
-    board the first rail node, alight the last. Separate rides yield separate RailLegs.
+    A ride is a maximal run of consecutive RAIL edges (a junction change stays one ride): board the
+    first rail node, alight the last. The pipeline wraps each pair in a RailLeg with its Maps URL.
     """
-    return [
-        RailLeg(board=_station(node=run[0]), alight=_station(node=run[-1]))
-        for run in _split_mode_runs(route=route, mode=Mode.RAIL)
-    ]
+    return [(_station(node=run[0]), _station(node=run[-1])) for run in _split_mode_runs(route=route, mode=Mode.RAIL)]
 
 
 def _station(node: RouteNode) -> Station:

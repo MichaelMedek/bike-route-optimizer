@@ -561,7 +561,8 @@ class GmapsConfig:
     # short leg isn't cluttered with near-identical points (origin + destination always kept).
     MIN_WAYPOINT_SPACING_KM = 5.0
     BASE_URL = "https://www.google.com/maps/dir/?api=1"
-    TRAVEL_MODE = "bicycling"
+    TRAVEL_MODE = "bicycling"  # bike leg (with mid points)
+    TRANSIT_MODE = "transit"  # train leg (start → end only)
 
 
 class PlotConfig:

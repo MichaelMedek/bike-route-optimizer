@@ -1,7 +1,7 @@
-"""Google Maps directions-URL builder (the official `api=1` scheme, travelmode=bicycling).
+"""Google Maps directions-URL builders (the official `api=1` scheme).
 
-Origin + up to 9 intermediate waypoints + destination; with N=10 Visvalingam-selected points
-that is 8 intermediate waypoints, within the api=1 limit.
+``build_bicycling_url`` for a pedalled leg (origin + up to 9 waypoints + destination, travelmode=bicycling);
+``build_transit_url`` for a train leg (origin → destination only, travelmode=transit).
 """
 
 from urllib.parse import urlencode
@@ -17,7 +17,7 @@ def _fmt(point: tuple[float, float]) -> str:
     return f"{latitude:.{GraphConfig.COORD_PRECISION}f},{longitude:.{GraphConfig.COORD_PRECISION}f}"
 
 
-def build_gmaps_url(waypoints_latlon: list[tuple[float, float]]) -> str:
+def build_bicycling_url(waypoints_latlon: list[tuple[float, float]]) -> str:
     """Build a bicycling directions URL from 2..N (lat, lon) points (origin + interior + dest).
 
     select_waypoints thins over-close interior points, so a short leg may pass fewer than
@@ -39,6 +39,23 @@ def build_gmaps_url(waypoints_latlon: list[tuple[float, float]]) -> str:
         params["waypoints"] = "|".join(intermediate)
 
     # urlencode handles URL-escaping (the "|" becomes %7C, commas %2C).
+    url = f"{GmapsConfig.BASE_URL}&{urlencode(params)}"
+    assert url.startswith("https://"), "Maps URL must be https"
+    return url
+
+
+def build_transit_url(*, origin: tuple[float, float], destination: tuple[float, float]) -> str:
+    """A Google Maps PUBLIC-TRANSPORT directions URL for a train leg — start → end only, no waypoints.
+
+    Args:
+        origin: (lat, lon) of the boarding station.
+        destination: (lat, lon) of the alighting station.
+    """
+    params = {
+        "origin": _fmt(point=origin),
+        "destination": _fmt(point=destination),
+        "travelmode": GmapsConfig.TRANSIT_MODE,
+    }
     url = f"{GmapsConfig.BASE_URL}&{urlencode(params)}"
     assert url.startswith("https://"), "Maps URL must be https"
     return url

@@ -30,7 +30,7 @@ from bike_router.core.errors import (
 )
 from bike_router.core.geo import haversine_distance_m
 from bike_router.core.geocoding import geocode_endpoint, make_geocode_fn
-from bike_router.core.gmaps import build_gmaps_url
+from bike_router.core.gmaps import build_bicycling_url, build_transit_url
 from bike_router.core.gpx_export import build_gpx
 from bike_router.core.graph_store import (
     download_graph_from_hf,
@@ -260,9 +260,16 @@ def plan_route(
     gpx_path.write_text(build_gpx(track=track, start_time=None, track_name="Optimized bike route"))
     logger.info(f"Wrote {gpx_path} ({len(track.points)} trackpoints)")
 
-    # Train rides first (boarding + alighting station per ride) — they both label the bike
-    # legs and let the rider look the actual train up in a railway app. Empty for pure bike.
-    rail_legs = split_rail_legs(route=route)
+    # Train rides first (boarding + alighting station per ride) — each becomes a RailLeg with a Google
+    # Maps public-transport URL (board → alight). They label the bike legs too. Empty for pure bike.
+    rail_legs = [
+        RailLeg(
+            board=board,
+            alight=alight,
+            url=build_transit_url(origin=(board.lat, board.lon), destination=(alight.lat, alight.lon)),
+        )
+        for board, alight in split_rail_legs(route=route)
+    ]
 
     # One Google Maps bicycling URL per pedalled leg: a train ride splits the route, so a
     # pure-bike trip yields one link and a one-train trip yields two. Each leg is labelled
@@ -280,7 +287,7 @@ def plan_route(
         for leg in leg_paths
     ]
     bike_legs = [
-        BikeLeg(url=build_gmaps_url(waypoints_latlon=wps), from_place=from_place, to_place=to_place)
+        BikeLeg(url=build_bicycling_url(waypoints_latlon=wps), from_place=from_place, to_place=to_place)
         for wps, (from_place, to_place) in zip(leg_waypoints, endpoints, strict=True)
     ]
     waypoints = [wp for wps in leg_waypoints for wp in wps[1:-1]]  # interior only; ends are already named
