@@ -38,7 +38,7 @@ from bike_router.core.geocoding import (
 from bike_router.core.graph_store import download_graph_from_hf, load_meta, snap_to_node
 from bike_router.core.pipeline import RouteResult, plan_route, resolve_endpoints
 from bike_router.core.rail_extrema import StationExtrema, station_extrema
-from bike_router.core.simplify import format_bike_legs, format_rail_legs, rail_leg_tooltips
+from bike_router.core.simplify import format_bike_legs, format_rail_bahn_legs, format_rail_legs, rail_leg_tooltips
 from bike_router.ui.webmap import (
     COMPUTE_LABEL,
     GRADE_SCALE,
@@ -100,22 +100,27 @@ def village_lookup(result: RouteResult) -> Callable[[float, float], str | None]:
 
 
 def rail_link_buttons(result: RouteResult) -> None:
-    """One Google Maps PUBLIC-TRANSPORT link button per train ride (mirrors bike_link_buttons).
+    """Two half-width link buttons per train ride: left Google Maps transit, right bahn.de deep link.
 
-    Each click opens the ride's board→alight transit directions in a new tab; the label is the shared
-    "Train N: board → alight" text.
+    The two share one ``st.columns(2)`` row so they stay side-by-side on mobile; the left label is the
+    "Train N: board → alight" text, the right the bahn "dep … → arr … · trains" (or "bahn.de" fallback).
     """
-    for label, leg in zip(format_rail_legs(rail_legs=result.rail_legs), result.rail_legs, strict=True):
-        st.link_button(f"🚆 {label}", leg.url, width="stretch")
+    gmaps_labels = format_rail_legs(rail_legs=result.rail_legs)
+    bahn_labels = format_rail_bahn_legs(rail_legs=result.rail_legs)
+    for gmaps_label, bahn_label, leg in zip(gmaps_labels, bahn_labels, result.rail_legs, strict=True):
+        col_gmaps, col_bahn = st.columns(2)
+        col_gmaps.link_button(f"🚆 {gmaps_label}", leg.url, width="stretch", help="Open in Google Maps transit")
+        col_bahn.link_button(f"🚉 {bahn_label}", leg.bahn_url, width="stretch", help="Open the connection on bahn.de")
 
 
 def bike_link_buttons(result: RouteResult) -> None:
     """One Google Maps bicycling link button per pedalled leg (mirrors rail_link_buttons).
 
-    Each click opens the leg's route in Maps in a new tab; the label is the shared "Bike Route N: from → to".
+    The full-width label carries the leg name AND its estimated clock span, e.g.
+    "Bike Route 1: A → B: 13:16 → 13:29 (0:13 h)"; a click opens the leg's route in Maps.
     """
     for label, leg in zip(format_bike_legs(bike_legs=result.bike_legs), result.bike_legs, strict=True):
-        st.link_button(f"🗺️ {label}", leg.url, width="stretch")
+        st.link_button(f"🗺️ {label}: {leg.time_label}", leg.url, width="stretch", help="Open in Google Maps bike")
 
 
 def render_route_output(result: RouteResult) -> None:
@@ -148,7 +153,7 @@ def render_route_output(result: RouteResult) -> None:
     # Per-leg link buttons — train legs open Google Maps public-transport directions, bike legs
     # open Maps bicycling; each caption shows only when that mode has legs.
     if result.rail_legs:
-        st.caption("🚆 Train legs in Google Maps (one link per leg):")
+        st.caption("🚆 Train legs — Google Maps (left) & bahn.de (right):")
         rail_link_buttons(result=result)
 
     if result.bike_legs:
@@ -156,6 +161,7 @@ def render_route_output(result: RouteResult) -> None:
         bike_link_buttons(result=result)
 
     downloads = ((result.gpx_path, "application/gpx+xml"), (result.png_path, "image/png"))
+    st.caption("💾 Export the route:")
     for col, (path, mime) in zip(st.columns(len(downloads)), downloads, strict=True):
         col.download_button(
             f"Download {path.suffix.lstrip('.').upper()}",

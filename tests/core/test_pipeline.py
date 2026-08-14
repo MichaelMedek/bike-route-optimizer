@@ -5,6 +5,7 @@ tiny in-memory fixtures so the whole flow runs offline. No DEM is involved — e
 baked into the fixture. Asserts a single route is produced with real artifacts.
 """
 
+import datetime
 from pathlib import Path
 
 import pandas as pd
@@ -87,6 +88,12 @@ def _wire_offline(monkeypatch, tmp_path, *, nodes_df, edges_df, route: RoutePath
     monkeypatch.setattr(
         pipeline, "route_output_paths", lambda origin, destination, params: (tmp_path / "r.gpx", tmp_path / "r.png")
     )
+    # No network for the bahn deep link: stub the DB lookup to a fixed (url, label) per rail leg.
+    monkeypatch.setattr(
+        pipeline,
+        "build_bahn_leg",
+        lambda board_name, alight_name, when, http_get: ("https://www.bahn.de/x", "dep 13:16 → arr 13:29 · RB33"),
+    )
 
 
 def test_plan_route(tmp_path: Path, monkeypatch):
@@ -98,6 +105,7 @@ def test_plan_route(tmp_path: Path, monkeypatch):
     leg = result.bike_legs[0]
     assert leg.url.startswith("https://www.google.com/maps/dir/?api=1")
     assert (leg.from_place, leg.to_place) == ("Start", "End")  # outer ends = origin/destination
+    assert leg.time_label.count(":") >= 2 and "→" in leg.time_label  # "HH:MM → HH:MM (H:MM h)" span present
     assert result.rail_legs == []  # pure-bike line graph → no train ride
     assert result.gpx_path.exists() and result.gpx_path.stat().st_size > 0
     assert result.png_path.exists() and result.png_path.stat().st_size > 0
@@ -232,7 +240,24 @@ def test_format_cli_report(tmp_path: Path, monkeypatch):
     assert "Mode:" in report  # the composition summary is embedded
     assert str(result.gpx_path) in report and str(result.png_path) in report
     assert "Bike legs in Google Maps" in report and result.bike_legs[0].url in report
-    assert "Trains to catch:" not in report  # pure-bike line route → no train section
+    assert "(1:" in report or " h)" in report  # each bike link carries its estimated clock span
+    assert "Train legs (" not in report  # pure-bike line route → no train section
+    assert "bahn.de" not in report  # ...and no bahn link either
+
+
+def test_format_cli_report_includes_bahn_links(tmp_path: Path, monkeypatch):
+    # A train route lists BOTH the gmaps train line and the bahn.de deep-link block (mirrored links).
+    result = _plan_fixture(
+        monkeypatch=monkeypatch,
+        tmp_path=tmp_path,
+        start=_BAIERSBRONN,
+        end=_FREUDENSTADT,
+        extra_km_per_boarding=0.2,
+        extra_km_per_rail_km=0.05,
+    )
+    report = pipeline.format_cli_report(result=result)
+    assert "Train legs (Google Maps + bahn.de" in report
+    assert result.rail_legs[0].url in report and result.rail_legs[0].bahn_url in report
 
 
 def test_run_route(tmp_path: Path, monkeypatch):
@@ -294,6 +319,12 @@ def test_geocode_both(monkeypatch):
     monkeypatch.setattr(pipeline, "geocode_endpoint", _boom)
     with pytest.raises(GeocodeConnectionError):
         pipeline._geocode_both(origin="X", destination="Y")
+
+
+def test_bike_time_label():
+    # "HH:MM → HH:MM (H:MM h)" from now + each end's elapsed seconds (start 0 s, end 3600 s → +0 / +1 h).
+    now = datetime.datetime(2026, 8, 20, 9, 0, 0)
+    assert pipeline._bike_time_label(start_s=0.0, end_s=3600.0, now=now) == "09:00 → 10:00 (1:00 h)"
 
 
 def test_assert_within_coverage(monkeypatch):
@@ -443,6 +474,12 @@ def _plan_fixture(monkeypatch, tmp_path, start, end, **overrides):
     monkeypatch.setattr(
         pipeline, "route_output_paths", lambda origin, destination, params: (tmp_path / "r.gpx", tmp_path / "r.png")
     )
+    # No network for the bahn deep link: stub the DB lookup to a fixed (url, label) per rail leg.
+    monkeypatch.setattr(
+        pipeline,
+        "build_bahn_leg",
+        lambda board_name, alight_name, when, http_get: ("https://www.bahn.de/x", "dep 13:16 → arr 13:29 · RB33"),
+    )
     return pipeline.plan_route(
         origin="Start", destination="End", params=params(**overrides), graph_dir=FIXTURE_GRAPH_DIR
     )
@@ -506,6 +543,10 @@ def test_plan_route_e2e_one_train_two_bike_legs(tmp_path: Path, monkeypatch):
     assert result.bike_legs[1].to_place == "End"
     assert result.bike_legs[0].to_place == result.rail_legs[0].board.name_or_placeholder
     assert result.bike_legs[1].from_place == result.rail_legs[0].alight.name_or_placeholder
+    # The rail leg carries all three link kinds: gmaps transit URL, the bahn deep link + its label.
+    rail = result.rail_legs[0]
+    assert "travelmode=transit" in rail.url
+    assert rail.bahn_url == "https://www.bahn.de/x" and rail.bahn_label == "dep 13:16 → arr 13:29 · RB33"
     assert result.composition.by_mode_km["bike route"] > 0
     assert "station" not in result.composition.by_mode_km
 

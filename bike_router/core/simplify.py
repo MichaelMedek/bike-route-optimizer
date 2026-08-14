@@ -77,15 +77,17 @@ class Station:
 
 @dataclass(frozen=True)
 class RailLeg:
-    """One train ride the rider takes: the boarded/alighted station plus its Maps transit URL.
+    """One train ride the rider takes: the boarded/alighted station plus its Maps + bahn.de links.
 
-    Each ``Station`` carries name + position; ``url`` is the Google Maps public-transport directions
-    link (board → alight), the train-leg analogue of BikeLeg.url. One structure for lists/markers/links.
+    ``url`` is the Google Maps transit link (board → alight); ``bahn_url``/``bahn_label`` are the
+    bahn.de deep link and its "dep … → arr … · trains" label. One structure for lists/markers/links.
     """
 
     board: Station
     alight: Station
     url: str
+    bahn_url: str
+    bahn_label: str
 
 
 def split_rail_legs(route: RoutePath) -> list[tuple[Station, Station]]:
@@ -131,17 +133,23 @@ def format_rail_legs(rail_legs: list[RailLeg]) -> list[str]:
     ]
 
 
+def format_rail_bahn_legs(rail_legs: list[RailLeg]) -> list[str]:
+    """One "Train N (bahn): dep … → arr … · trains" line per ride — the bahn.de-side label."""
+    return [f"Train {index}: {leg.bahn_label}" for index, leg in enumerate(rail_legs, start=1)]
+
+
 @dataclass(frozen=True)
 class BikeLeg:
-    """One pedalled leg's Google Maps URL plus its two endpoint place names.
+    """One pedalled leg's Google Maps URL, its two endpoint place names, and its estimated time span.
 
-    ``from_place``/``to_place`` are the trip origin/destination at the outer ends, else the
-    boarding/alighting station names where a train ride abuts the leg ("Route N: from → to").
+    ``from_place``/``to_place`` are the trip origin/destination at the outer ends, else the abutting rail
+    station name; ``time_label`` is the leg's estimated clock span ("≈ HH:MM–HH:MM") from the route timing.
     """
 
     url: str
     from_place: str
     to_place: str
+    time_label: str
 
 
 def bike_leg_endpoints(

@@ -4,6 +4,7 @@ Loads the corridor subset of the prebuilt graph (elevations + baked 3D geometry 
 and computes ONE route per RoutingParams; a single Track feeds GPX, stats, and PNG. No DEM at inference.
 """
 
+import datetime
 import logging
 from dataclasses import dataclass
 from pathlib import Path
@@ -22,6 +23,7 @@ from bike_router.core.constants import (
 )
 from bike_router.core.corridor import build_corridor
 from bike_router.core.cost import edge_cost_array
+from bike_router.core.db_navigator import build_bahn_leg, default_db_get
 from bike_router.core.errors import (
     OutOfCoverageError,
     RouteTooLargeError,
@@ -49,6 +51,7 @@ from bike_router.core.simplify import (
     RailLeg,
     bike_leg_endpoints,
     format_bike_legs,
+    format_rail_bahn_legs,
     format_rail_legs,
     route_to_linestring,
     select_waypoints,
@@ -85,6 +88,14 @@ class RouteResult:
     rail_legs: list[RailLeg]  # boarding + alighting station per train ride (empty = no train)
     composition: RouteComposition
     waypoints: list[tuple[float, float]]  # (lat, lon) interior gmaps waypoints — named for the map/profile
+
+
+def _bike_time_label(*, start_s: float, end_s: float, now: datetime.datetime) -> str:
+    """A pedalled leg's estimated clock span "HH:MM → HH:MM (H:MM h)" from its start/end elapsed seconds."""
+    start = now + datetime.timedelta(seconds=start_s)
+    end = now + datetime.timedelta(seconds=end_s)
+    minutes = round((end_s - start_s) / 60.0)
+    return f"{start:%H:%M} → {end:%H:%M} ({minutes // 60}:{minutes % 60:02d} h)"
 
 
 def _geocode_both(*, origin: str, destination: str) -> tuple[tuple[float, float], tuple[float, float]]:
@@ -246,6 +257,12 @@ def plan_route(
     log_rss(label="path edges loaded (corridor freed)")
 
     track = build_track(route=route)
+    # Per-node elapsed seconds BEFORE densifying (densify makes points per-vertex): points align with
+    # route.nodes/route.osmids here, so these maps give each leg's boarding/start clock offset. This
+    # timing (bike speeds + 15-min board/alight waits) is authoritative; bahn's returned times are display-only.
+    elapsed_by_osmid = {osmid: point.elapsed_s for osmid, point in zip(route.osmids, track.points, strict=True)}
+    elapsed_by_latlon = {(point.lat, point.lon): point.elapsed_s for point in track.points}
+    now = datetime.datetime.now().replace(second=0, microsecond=0)
     # Expand to the full real 2D polyline; elevation stays LINEAR node-to-node (edge_vertices_3d),
     # so the GPX, 3D ribbon, and elevation profile all read the SAME elevation the optimiser + stats use.
     track = densify_track(route=route, track=track)
@@ -261,15 +278,26 @@ def plan_route(
     logger.info(f"Wrote {gpx_path} ({len(track.points)} trackpoints)")
 
     # Train rides first (boarding + alighting station per ride) — each becomes a RailLeg with a Google
-    # Maps public-transport URL (board → alight). They label the bike legs too. Empty for pure bike.
-    rail_legs = [
-        RailLeg(
-            board=board,
-            alight=alight,
-            url=build_transit_url(origin=(board.lat, board.lon), destination=(alight.lat, alight.lon)),
+    # Maps transit URL AND a bahn.de deep link (labelled by its regional trains). They label the bike
+    # legs too. Departure = now + the route's own elapsed time to the boarding node; empty for pure bike.
+    rail_legs = []
+    for board, alight in split_rail_legs(route=route):
+        depart_at = now + datetime.timedelta(seconds=elapsed_by_latlon[(board.lat, board.lon)])
+        bahn_url, bahn_label = build_bahn_leg(
+            board_name=board.name_or_placeholder,
+            alight_name=alight.name_or_placeholder,
+            when=depart_at,
+            http_get=default_db_get,
         )
-        for board, alight in split_rail_legs(route=route)
-    ]
+        rail_legs.append(
+            RailLeg(
+                board=board,
+                alight=alight,
+                url=build_transit_url(origin=(board.lat, board.lon), destination=(alight.lat, alight.lon)),
+                bahn_url=bahn_url,
+                bahn_label=bahn_label,
+            )
+        )
 
     # One Google Maps bicycling URL per pedalled leg: a train ride splits the route, so a
     # pure-bike trip yields one link and a one-train trip yields two. Each leg is labelled
@@ -287,8 +315,13 @@ def plan_route(
         for leg in leg_paths
     ]
     bike_legs = [
-        BikeLeg(url=build_bicycling_url(waypoints_latlon=wps), from_place=from_place, to_place=to_place)
-        for wps, (from_place, to_place) in zip(leg_waypoints, endpoints, strict=True)
+        BikeLeg(
+            url=build_bicycling_url(waypoints_latlon=wps),
+            from_place=from_place,
+            to_place=to_place,
+            time_label=_bike_time_label(start_s=elapsed_by_osmid[leg[0]], end_s=elapsed_by_osmid[leg[-1]], now=now),
+        )
+        for wps, (from_place, to_place), leg in zip(leg_waypoints, endpoints, leg_paths, strict=True)
     ]
     waypoints = [wp for wps in leg_waypoints for wp in wps[1:-1]]  # interior only; ends are already named
 
@@ -339,12 +372,20 @@ def format_cli_report(result: RouteResult) -> str:
         f"Heatmap: {result.png_path}",
     ]
     if result.rail_legs:  # boarding + alighting station per ride, to look up in a railway app
-        lines.append("Trains to catch:")
-        lines += [f"  {line}" for line in format_rail_legs(rail_legs=result.rail_legs)]
-    # One Google Maps bicycling link per pedalled leg, labelled by its real endpoints.
+        lines.append("Train legs (Google Maps + bahn.de, one pair per leg):")
+        for gmaps_label, bahn_label, leg in zip(
+            format_rail_legs(rail_legs=result.rail_legs),
+            format_rail_bahn_legs(rail_legs=result.rail_legs),
+            result.rail_legs,
+            strict=True,
+        ):
+            lines.append(f"  {gmaps_label}")
+            lines.append(f"    Google Maps: {leg.url}")
+            lines.append(f"    bahn.de ({bahn_label}): {leg.bahn_url}")
+    # One Google Maps bicycling link per pedalled leg, labelled by its real endpoints + estimated span.
     lines.append("Bike legs in Google Maps (one link per leg):")
     lines += [
-        f"  {label}: {leg.url}"
+        f"  {label} ({leg.time_label}): {leg.url}"
         for label, leg in zip(format_bike_legs(bike_legs=result.bike_legs), result.bike_legs, strict=True)
     ]
     return "\n".join(lines)

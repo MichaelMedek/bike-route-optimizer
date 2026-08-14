@@ -565,6 +565,25 @@ class GmapsConfig:
     TRANSIT_MODE = "transit"  # train leg (start → end only)
 
 
+class DbNavigatorConfig:
+    """Deutsche Bahn (bahn.de) timetable deep-link output + the APIs that resolve it."""
+
+    ORTE_URL = "https://www.bahn.de/web/api/reiseloesung/orte"  # station name → opaque station id (+ EVA)
+    JOURNEY_URL = "https://int.bahn.de/web/api/angebote/fahrplan"  # verify a connection exists (POST)
+    SUCHE_URL = "https://www.bahn.de/buchung/fahrplan/suche"  # user-facing link (hash-fragment params)
+    FALLBACK_LABEL = "DB Navigator"  # button label when the DB lookup fails (bare-search link)
+    TIMEOUT_S = 5.0
+    REQUEST_SPACING_S = 0.1  # wait before each call: bahn.de's Akamai layer 403s bursty back-to-back requests
+    ORTE_LIMIT = 1  # top hit only
+    # produktGattung values counted as regional/local — the strict allow-set for a valid leg.
+    ALLOWED_PRODUCTS = ("REGIONAL", "SBAHN", "UBAHN", "TRAM")
+    # bahn.de link "vm" codes for the SAME set: 03=Regional 04=S-Bahn 07=U-Bahn 08=Tram (no ICE/IC/IR/Bus).
+    VM_CODES = "03,04,07,08"
+    TRAVELLER = "13:16:KLASSENLOS:1"  # one adult, 2nd class, no discount ("r" param)
+    KLASSE = "2"
+    USER_AGENT = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"  # browser UA (script-verified)
+
+
 class PlotConfig:
     """Debug elevation-heatmap PNG rendering."""
 
