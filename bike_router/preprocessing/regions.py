@@ -224,7 +224,9 @@ def watershed_station_adjacency(
     )
     seeds = np.where(region >= 0)[0]
     owner_dist, _pred, source = dijkstra(csr, indices=seeds, min_only=True, return_predecessors=True)
-    owner = np.where(source >= 0, region[source], -1)
+    # source is scipy's per-vertex nearest-seed (or -9999 when a vertex is unreachable from every seed);
+    # clip the sentinel before indexing so an isolated track component just gets owner -1 (walk-through).
+    owner = np.where(source >= 0, region[np.clip(source, 0, n_vertices - 1)], -1)
     seeds_by_complex: dict[int, list[int]] = {}
     for v in seeds:
         seeds_by_complex.setdefault(int(region[v]), []).append(int(v))
@@ -423,7 +425,9 @@ def combine_regions(*, regions_dir: Path, regions: list[str]) -> tuple[pd.DataFr
     nodes_df, edges_df = prune_components(nodes_df=nodes_df, edges_df=edges_df)
     logger.info(f"combine: after prune {len(nodes_df)} nodes / {len(edges_df)} edges; remapping to dense ids …")
     # Dedup + prune removed nodes, leaving id holes → renumber to dense 0..N-1 (n_nodes==max_id+1).
-    return remap_contiguous(nodes_df=nodes_df, edges_df=edges_df)
+    nodes_df, edges_df = remap_contiguous(nodes_df=nodes_df, edges_df=edges_df)
+    logger.info(f"combine: DONE — {len(nodes_df)} nodes / {len(edges_df)} edges (dense ids 0..N-1)")
+    return nodes_df, edges_df
 
 
 def prune_components(*, nodes_df: pd.DataFrame, edges_df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:

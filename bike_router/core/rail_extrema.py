@@ -6,13 +6,16 @@ classifies extrema by direction-candidacy + key-col prominence over that graph.
 
 import logging
 from collections import deque
+from collections.abc import Hashable
 from dataclasses import dataclass
+from functools import lru_cache
 from heapq import heappop, heappush
 from pathlib import Path
-from typing import Hashable, TypeVar
+from typing import NamedTuple, TypeVar
 
 import numpy as np
 import pandas as pd
+from scipy.spatial import cKDTree
 
 from bike_router.core.constants import GeoConfig, GraphConfig, Mode, NodeType, RailConfig, Schema
 from bike_router.core.graph_store import NODE_COLS, read_tiles
@@ -21,6 +24,14 @@ logger = logging.getLogger(__name__)
 
 # Extrema helpers are node-id-agnostic — they run on the osmid-keyed OR the name-keyed station graph.
 _Node = TypeVar("_Node", bound=Hashable)
+
+
+class StationGraph(NamedTuple):
+    """ONE cached read of the clean rail layer, shared by track-graph / line-degrees / extrema."""
+
+    stations_df: pd.DataFrame  # every named rail station (osmid, lat, lon, elevation_m, name)
+    graph: dict[str, set[str]]  # station NAME → directly-connected station names
+    elev_by_name: dict[str, float]  # station NAME → elevation (m)
 
 
 @dataclass(frozen=True)
@@ -61,12 +72,12 @@ def station_markers(*, stations_df: pd.DataFrame, want_high: bool) -> list[tuple
     ]
 
 
+@lru_cache(maxsize=4)
+def station_track_graph(graph_dir: Path) -> StationGraph:
+    """ONE cached read → the stations frame + name-keyed line-degree graph + name→elevation.
 
-def _load_station_graph(*, graph_dir: Path) -> tuple[pd.DataFrame, dict[str, set[str]], dict[str, float]]:
-    """Read the clean rail layer ONCE → (stations_df, name→neighbours graph, name→elevation).
-
-    The build already merged platforms and collapsed parallel tracks to one edge per pair, so this is a
-    pure id→name relabel of the station↔station edges; shared by track-graph, line-degrees, and extrema.
+    The build baked ONE rail edge per adjacent station pair (platforms merged, parallel tracks collapsed);
+    a duplicate name (Hochdorf DE/CH, 145 km apart, distinct nodes) keeps its highest-degree node, no merge.
     """
     stations_df = load_stations(graph_dir=graph_dir)
     edges_df = read_tiles(
@@ -76,24 +87,26 @@ def _load_station_graph(*, graph_dir: Path) -> tuple[pd.DataFrame, dict[str, set
         filters=[(Schema.MODE, Schema.FILTER_IN, [Mode.RAIL])],
     )
     name_of = {int(r.osmid): str(r.station_name) for r in stations_df.itertuples(index=False)}
-    elev_by_name = {str(r.station_name): float(r.elevation_m) for r in stations_df.itertuples(index=False)}
-    graph: dict[str, set[str]] = {name: set() for name in name_of.values()}
+    by_osmid: dict[int, set[int]] = {osmid: set() for osmid in name_of}
     for u, v in zip(edges_df[Schema.FROM_NODE], edges_df[Schema.TO_NODE], strict=True):
-        nu, nv = name_of.get(int(u)), name_of.get(int(v))
-        if nu is not None and nv is not None and nu != nv:
-            graph[nu].add(nv)
-            graph[nv].add(nu)
-    return stations_df, graph, elev_by_name
-
-
-def station_track_graph(*, graph_dir: Path) -> dict[str, set[str]]:
-    """Each station → the set of directly-connected station names (the clean line-degree graph).
-
-    A pure read of the station↔station rail edges the build already baked: platforms merged, parallel
-    tracks collapsed to one edge per pair offline, so the graph is symmetric and simple by construction.
-    """
-    _stations_df, graph, _elev = _load_station_graph(graph_dir=graph_dir)
-    return graph
+        iu, iv = int(u), int(v)
+        if iu in by_osmid and iv in by_osmid and iu != iv:
+            by_osmid[iu].add(iv)
+            by_osmid[iv].add(iu)
+    kept: dict[str, int] = {}  # a duplicate name keeps its highest-degree node (its real, unmerged degree)
+    for osmid, neighbours in by_osmid.items():
+        name = name_of[osmid]
+        if name not in kept or len(neighbours) > len(by_osmid[kept[name]]):
+            kept[name] = osmid
+    kept_ids = set(kept.values())
+    graph: dict[str, set[str]] = {}
+    for name, osmid in kept.items():
+        neighbour_names = {name_of[nb] for nb in by_osmid[osmid] if nb in kept_ids}
+        neighbour_names.discard(name)  # drop any self-edge a same-name neighbour would introduce
+        graph[name] = neighbour_names
+    elev_of = {int(r.osmid): float(r.elevation_m) for r in stations_df.itertuples(index=False)}
+    elev_by_name = {name: elev_of[osmid] for name, osmid in kept.items()}
+    return StationGraph(stations_df=stations_df, graph=graph, elev_by_name=elev_by_name)
 
 
 def station_line_degrees(*, graph_dir: Path) -> dict[str, int]:
@@ -102,18 +115,18 @@ def station_line_degrees(*, graph_dir: Path) -> dict[str, int]:
     The degree IS the size of the station's neighbour set in ``station_track_graph`` (parallel rails,
     switches, and multi-track throats between the same two stations already collapsed to one edge offline).
     """
-    return {name: len(neighbours) for name, neighbours in station_track_graph(graph_dir=graph_dir).items()}
+    return {name: len(neighbours) for name, neighbours in station_track_graph(graph_dir).graph.items()}
 
 
 def extremum_candidates(
-    *, station_graph: dict[int, set[int]], elev_by_id: dict[int, float], want_high: bool
-) -> set[int]:
+    *, station_graph: dict[_Node, set[_Node]], elev_by_id: dict[_Node, float], want_high: bool
+) -> set[_Node]:
     """PASS 1 — direction-only candidacy (no prominence yet).
 
     A dead-end (1 branch) is a candidate iff its neighbour is on-side (lower for a top, higher for a
     bottom); a junction (≥2 branches) iff ≥EXTREMUM_MIN_NEIGHBORS immediate neighbours are on-side.
     """
-    out: set[int] = set()
+    out: set[_Node] = set()
     for source, neighbors in station_graph.items():
         if not neighbors:
             continue
@@ -128,7 +141,12 @@ def extremum_candidates(
 
 
 def branch_confirms(
-    *, station_graph: dict[int, set[int]], elev_by_id: dict[int, float], source: int, first: int, want_high: bool
+    *,
+    station_graph: dict[_Node, set[_Node]],
+    elev_by_id: dict[_Node, float],
+    source: _Node,
+    first: _Node,
+    want_high: bool,
 ) -> bool:
     """Whether one branch clears the prominence gate — it rises (top) / falls (bottom) ≥PROMINENCE_M.
 
@@ -154,10 +172,10 @@ def branch_confirms(
 
 
 def is_confirmed_extremum(
-    *, station_graph: dict[int, set[int]], elev_by_id: dict[int, float], source: int, want_high: bool
+    *, station_graph: dict[_Node, set[_Node]], elev_by_id: dict[_Node, float], source: _Node, want_high: bool
 ) -> bool:
     """PASS 2 — prominence. A dead-end confirms on its one branch, a junction on ≥EXTREMUM_MIN_NEIGHBORS."""
-    branches = sorted(station_graph[source])
+    branches = list(station_graph[source])
     if not branches:
         return False
     confirmed = sum(
@@ -173,7 +191,7 @@ def is_confirmed_extremum(
 
 
 def key_col_prominence(
-    *, station_graph: dict[int, set[int]], elev_by_id: dict[int, float], source: int, want_high: bool
+    *, station_graph: dict[_Node, set[_Node]], elev_by_id: dict[_Node, float], source: _Node, want_high: bool
 ) -> float:
     """Topographic key-col prominence of ``source`` as a max (want_high) / min over the station graph.
 
@@ -182,9 +200,10 @@ def key_col_prominence(
     """
     elev_s = elev_by_id[source]
     best = {source: elev_s}
-    pq: list[tuple[float, int]] = [(-elev_s if want_high else elev_s, source)]
+    counter = 0  # tiebreaker so the heap never compares two _Node values
+    pq: list[tuple[float, int, _Node]] = [(-elev_s if want_high else elev_s, counter, source)]
     while pq:
-        signed, u = heappop(pq)
+        signed, _tie, u = heappop(pq)
         ridge = -signed if want_high else signed
         if (ridge < best[u]) if want_high else (ridge > best[u]):
             continue
@@ -195,8 +214,9 @@ def key_col_prominence(
             improved = (nridge > best.get(v, -np.inf)) if want_high else (nridge < best.get(v, np.inf))
             if improved:
                 best[v] = nridge
-                heappush(pq, (-nridge if want_high else nridge, v))
-    return float("inf")
+                counter += 1
+                heappush(pq, (-nridge if want_high else nridge, counter, v))
+    return float(np.inf)
 
 
 def extremum_stations(
@@ -223,24 +243,45 @@ def extremum_stations(
 def station_extrema(*, graph_dir: Path) -> StationExtrema:
     """The 🚞 payload from ONE scan: green local-max + red local-min station markers.
 
-    On the clean station↔station graph, a station is a top/bottom iff it is a direction candidate whose
-    key-col prominence clears PEAK_KEYCOL_M / VALLEY_KEYCOL_M — dominant summits/valleys only.
+    Dominance + prominence on the clean graph: a top is a strict local peak with key-col prominence
+    ≥PEAK_KEYCOL_M, OR a junction (deg≥3) dominating its DOMINANCE_RADIUS_M region by ≥HUB_RISE_M; bottom mirrors.
     """
-    stations_df, graph, elev_by_name = _load_station_graph(graph_dir=graph_dir)
-    top_cand = extremum_candidates(station_graph=graph, elev_by_id=elev_by_name, want_high=True)
-    bot_cand = extremum_candidates(station_graph=graph, elev_by_id=elev_by_name, want_high=False)
-    top_names = {
-        g
-        for g in top_cand
-        if key_col_prominence(station_graph=graph, elev_by_id=elev_by_name, source=g, want_high=True)
-        >= RailConfig.EXTREMA_PEAK_KEYCOL_M
-    }
-    bot_names = {
-        g
-        for g in bot_cand
-        if key_col_prominence(station_graph=graph, elev_by_id=elev_by_name, source=g, want_high=False)
-        >= RailConfig.EXTREMA_VALLEY_KEYCOL_M
-    }
+    stations_df, adjacency, elev_by_name = station_track_graph(graph_dir)
+    mpd = GeoConfig.METERS_PER_DEGREE_EQUATOR
+    lat = stations_df[Schema.LAT].to_numpy(dtype=np.float64)
+    lon = stations_df[Schema.LON].to_numpy(dtype=np.float64)
+    names = stations_df[Schema.STATION_NAME].astype(str).to_numpy()
+    elev = stations_df[Schema.ELEVATION_M].to_numpy(dtype=np.float64)
+    xy = np.column_stack([lon * mpd * np.cos(np.radians(lat)), lat * mpd])
+    tree = cKDTree(xy)
+    radius = RailConfig.EXTREMA_DOMINANCE_RADIUS_M
+    within = tree.query_ball_point(xy, radius)
+    top_names: set[str] = set()
+    bot_names: set[str] = set()
+    for i, name in enumerate(names):
+        neighbours = adjacency.get(name, set())
+        if not neighbours:
+            continue  # isolated (only boundary-clipped stubs) — never an extremum
+        here = float(elev[i])
+        near_elev = elev[within[i]]
+        rise = here - float(near_elev.min())  # metres above the lowest station in the region
+        drop = float(near_elev.max()) - here  # metres below the highest station in the region
+        n_elev = [elev_by_name[nb] for nb in neighbours]
+        degree = len(neighbours)
+        top_prom = key_col_prominence(station_graph=adjacency, elev_by_id=elev_by_name, source=name, want_high=True)
+        bot_prom = key_col_prominence(station_graph=adjacency, elev_by_id=elev_by_name, source=name, want_high=False)
+        is_top = (here >= max(n_elev) and top_prom >= RailConfig.EXTREMA_PEAK_KEYCOL_M) or (
+            degree >= 3 and rise >= RailConfig.EXTREMA_HUB_RISE_M
+        )
+        is_bot = (here <= min(n_elev) and bot_prom >= RailConfig.EXTREMA_VALLEY_KEYCOL_M) or (
+            degree >= 3 and drop >= RailConfig.EXTREMA_HUB_DROP_M
+        )
+        if is_top and not is_bot:
+            top_names.add(name)
+        elif is_bot and not is_top:
+            bot_names.add(name)
+        elif is_top and is_bot:
+            (top_names if rise >= drop else bot_names).add(name)
     maxima_df = stations_df[stations_df[Schema.STATION_NAME].isin(top_names)].reset_index(drop=True)
     minima_df = stations_df[stations_df[Schema.STATION_NAME].isin(bot_names)].reset_index(drop=True)
     logger.info(f"Station-extrema scan: {len(maxima_df)} tops, {len(minima_df)} bottoms")
@@ -248,4 +289,3 @@ def station_extrema(*, graph_dir: Path) -> StationExtrema:
         maxima=station_markers(stations_df=maxima_df, want_high=True),
         minima=station_markers(stations_df=minima_df, want_high=False),
     )
-

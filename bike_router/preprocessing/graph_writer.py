@@ -10,12 +10,13 @@ from pathlib import Path
 from typing import Any
 
 import networkx as nx
+import numpy as np
 import pandas as pd
 from shapely import from_wkt, to_wkt
 from shapely.geometry import LineString
 
 from bike_router.core.constants import WGS84_CRS, GraphConfig, Mode, NodeType, Schema
-from bike_router.core.graph_store import EDGE_COLS, NODE_COLS, read_tiles, str_or_none, tile_index, tile_name
+from bike_router.core.graph_store import EDGE_COLS, NODE_COLS, read_tiles, str_or_none, tile_name
 
 logger = logging.getLogger(__name__)
 
@@ -55,23 +56,24 @@ def write_graph_parquet(
     nodes_dir.mkdir(parents=True, exist_ok=True)
     edges_dir.mkdir(parents=True, exist_ok=True)
 
-    node_tiles = [
-        tile_index(lat=lat, lon=lon, tile_deg=tile_deg)
-        for lat, lon in zip(nodes_df["lat"], nodes_df["lon"], strict=True)
-    ]
-    nodes_df = nodes_df.assign(_tile=node_tiles)
-    coord = {
-        osmid: (lat, lon) for osmid, lat, lon in zip(nodes_df["osmid"], nodes_df["lat"], nodes_df["lon"], strict=True)
-    }
-    edge_tiles = [
-        tile_index(lat=coord[node][0], lon=coord[node][1], tile_deg=tile_deg) for node in edges_df["from_node"]
-    ]
-    edges_df = edges_df.assign(_tile=edge_tiles)
+    # Vectorized tiling (a per-row tile_index() call over 8M+24M rows silently stalls the build): floor the
+    # node coords to (row, col), then map each edge to its from_node's tile via searchsorted — no per-row Python.
+    logger.info(f"write: tiling {len(nodes_df)} nodes / {len(edges_df)} edges (deg={tile_deg}) …")
+    node_row = np.floor(nodes_df[Schema.LAT].to_numpy() / tile_deg).astype(np.int64)
+    node_col = np.floor(nodes_df[Schema.LON].to_numpy() / tile_deg).astype(np.int64)
+    node_ids = nodes_df[Schema.OSMID].to_numpy()
+    order = np.argsort(node_ids)
+    sorted_ids = node_ids[order]
+    edge_pos = order[np.searchsorted(sorted_ids, edges_df[Schema.FROM_NODE].to_numpy())]  # from_node's node row
+    nodes_df = nodes_df.assign(_tile=list(zip(node_row.tolist(), node_col.tolist(), strict=True)))
+    edges_df = edges_df.assign(_tile=list(zip(node_row[edge_pos].tolist(), node_col[edge_pos].tolist(), strict=True)))
 
+    logger.info(f"write: saving node tiles → {nodes_dir} …")
     for (row, col), group in nodes_df.groupby("_tile"):
         group[NODE_COLS].to_parquet(
             nodes_dir / f"{tile_name(row=row, col=col)}{GraphConfig.TILE_SUFFIX}", index=False, compression=compression
         )
+    logger.info(f"write: saving edge tiles → {edges_dir} …")
     for (row, col), group in edges_df.groupby("_tile"):
         group[EDGE_COLS].to_parquet(
             edges_dir / f"{tile_name(row=row, col=col)}{GraphConfig.TILE_SUFFIX}", index=False, compression=compression

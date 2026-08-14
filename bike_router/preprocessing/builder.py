@@ -385,15 +385,16 @@ def remap_contiguous(nodes_df: pd.DataFrame, edges_df: pd.DataFrame) -> tuple[pd
     """Renumber a region's gapped/negative node ids to contiguous ``0..N-1`` (Phase 2).
 
     Maps every id to its rank in sorted order and rewrites ``osmid`` + both edge endpoints, so
-    afterwards ``n_nodes == max_id + 1``. Station-ness lives in ``node_type``, not the id sign.
+    afterwards ``n_nodes == max_id + 1``. Vectorized via searchsorted (a giant dict .map OOMs at DACH scale).
     """
-    ordered = sorted(nodes_df["osmid"].tolist())
-    remap = {old: new for new, old in enumerate(ordered)}
+    ordered = np.sort(nodes_df["osmid"].to_numpy())  # rank of an id == its index in the sorted id array
     nodes_df = nodes_df.copy()
     edges_df = edges_df.copy()
-    nodes_df["osmid"] = nodes_df["osmid"].map(remap)
-    edges_df["from_node"] = edges_df["from_node"].map(remap)
-    edges_df["to_node"] = edges_df["to_node"].map(remap)
+    logger.info(f"  remap: renumbering {len(nodes_df)} nodes + {len(edges_df)} edges to dense ids …")
+    nodes_df["osmid"] = np.searchsorted(ordered, nodes_df["osmid"].to_numpy())
+    edges_df["from_node"] = np.searchsorted(ordered, edges_df["from_node"].to_numpy())
+    edges_df["to_node"] = np.searchsorted(ordered, edges_df["to_node"].to_numpy())
+    logger.info("  remap: done")
     return nodes_df, edges_df
 
 

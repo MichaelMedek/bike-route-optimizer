@@ -10,7 +10,6 @@ import pytest
 from bike_router.core.constants import GeoConfig, GraphConfig, RailConfig
 from bike_router.core.rail_extrema import (
     StationExtrema,
-    _load_station_graph,
     branch_confirms,
     extremum_candidates,
     extremum_stations,
@@ -46,6 +45,14 @@ class TestStationExtrema:
         assert payload.maxima[0][3] == "H" and payload.minima[0][3] == "L"
 
 
+class TestStationGraph:
+    def test_fields(self) -> None:
+        # The one cached read: (stations_df, name→neighbours graph, name→elevation) unpacks in order.
+        result = station_track_graph(graph_dir=FIXTURE_GRAPH_DIR)
+        assert result.stations_df is result[0] and result.graph is result[1] and result.elev_by_name is result[2]
+        assert isinstance(result.graph, dict) and isinstance(result.elev_by_name, dict)
+
+
 def test_load_stations():
     # Every named rail station in the fixture, with elevation baked in.
     stations = load_stations(graph_dir=FIXTURE_GRAPH_DIR)
@@ -53,19 +60,11 @@ def test_load_stations():
     assert "Freudenstadt Stadt" in set(stations["station_name"])
 
 
-def test_load_station_graph():
-    # ONE read of the fixture → stations frame + name graph + elevations; graph is symmetric.
-    stations_df, graph, elev_by_name = _load_station_graph(graph_dir=FIXTURE_GRAPH_DIR)
-    assert "Freudenstadt Stadt" in graph and "Freudenstadt Stadt" in elev_by_name
-    assert len(stations_df) == len(graph) == len(elev_by_name)
-    for a, neighbours in graph.items():
-        assert all(a in graph[b] for b in neighbours)  # symmetric
-
-
 def test_station_track_graph():
-    # Against the fixture: a symmetric, self-loop-free name→neighbours graph over the Freudenstadt lines.
-    graph = station_track_graph(graph_dir=FIXTURE_GRAPH_DIR)
-    assert "Freudenstadt Stadt" in graph
+    # ONE cached read → (stations_df, name graph, name→elevation); the graph is symmetric + self-loop-free.
+    result = station_track_graph(graph_dir=FIXTURE_GRAPH_DIR)
+    stations_df, graph, elev_by_name = result
+    assert not stations_df.empty and "Freudenstadt Stadt" in graph and "Freudenstadt Stadt" in elev_by_name
     for a, neighbours in graph.items():
         assert isinstance(neighbours, set) and a not in neighbours
         assert all(a in graph[b] for b in neighbours)  # symmetric
@@ -73,7 +72,7 @@ def test_station_track_graph():
 
 def test_station_line_degrees():
     # The line-degree is exactly the neighbour-set size of the track graph (one source of truth).
-    graph = station_track_graph(graph_dir=FIXTURE_GRAPH_DIR)
+    graph = station_track_graph(graph_dir=FIXTURE_GRAPH_DIR).graph
     degrees = station_line_degrees(graph_dir=FIXTURE_GRAPH_DIR)
     assert degrees == {name: len(neighbours) for name, neighbours in graph.items()}
 
@@ -124,10 +123,10 @@ def test_station_markers():
 
 
 def test_station_extrema():
-    # The fixture scan surfaces tops + bottoms (Freudenstadt Stadt the summit, Schönmünzach the valley end).
+    # The fixture scan surfaces tops + bottoms (Freudenstadt Stadt the summit, Horb the valley hub).
     payload = station_extrema(graph_dir=FIXTURE_GRAPH_DIR)
     assert "Freudenstadt Stadt" in {m[3] for m in payload.maxima}
-    assert "Schönmünzach" in {m[3] for m in payload.minima}
+    assert "Horb" in {m[3] for m in payload.minima}
     assert payload.maxima and payload.minima
 
 
@@ -207,7 +206,7 @@ def test_station_line_degree_real() -> None:
 @pytest.fixture(scope="module")
 def _real_station_graph() -> dict[str, set[str]]:
     # Read straight from the final DACH graph — the build already baked the clean station↔station edges.
-    return station_track_graph(graph_dir=GraphConfig.GRAPH_DIR)
+    return station_track_graph(graph_dir=GraphConfig.GRAPH_DIR).graph
 
 
 @pytest.mark.skipif(
