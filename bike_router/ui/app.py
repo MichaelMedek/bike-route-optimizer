@@ -47,9 +47,8 @@ from bike_router.ui.webmap import (
     default_view_state,
     elevation_profile_chart,
     endpoint_markers,
-    flattened_view,
     map_click_pending,
-    map_remount_key,
+    map_key,
     map_waypoint_markers,
     output_donuts,
     output_stat_rows,
@@ -192,15 +191,12 @@ def place_input(field: str, label: str, placeholder: str, bbox: tuple[float, flo
 
 
 def _recenter_on_endpoints(start: tuple[float, float, float], end: tuple[float, float, float]) -> None:
-    """Reframe the map straight-down on the start→end span and bump the camera epoch (one remount).
+    """Reframe the map straight-down on the start→end span (the ONE camera move).
 
-    The ONLY camera move: Compute calls this to reframe on the fresh route. Phase-1 picks never do —
-    reconcile_endpoints places markers without touching the view, so the camera stays put until Compute.
+    Compute is the only caller: storing a fresh ``view`` changes the deck initialViewState so it snaps
+    to the route. Every other action leaves ``view`` untouched, so the camera stays put until Compute.
     """
-    st.session_state.update(
-        view=route_view_state(start_latlon=start[:2], end_latlon=end[:2]),
-        camera_epoch=st.session_state.camera_epoch + 1,
-    )
+    st.session_state.update(view=route_view_state(start_latlon=start[:2], end_latlon=end[:2]))
 
 
 def apply_pending_box(*, field: str, box_value: str) -> None:
@@ -229,7 +225,7 @@ def reconcile_endpoints() -> None:
     """Phase 1: keep each endpoint's marker in sync with its box, WITHOUT moving the camera.
 
     A box holding a coords literal (GPS/map/station/suggestion pick) snaps locally to a marker; free
-    text clears it (no marker). An off-graph pick toasts and clears. Never bumps camera_epoch — no recenter.
+    text clears it (no marker). An off-graph pick toasts and clears. Never touches ``view`` — no recenter.
     """
     for box_key, resolved_key, latlon_key in (
         (SessionKey.START_BOX, SessionKey.START_BOX_RESOLVED, SessionKey.START_LATLON),
@@ -334,8 +330,7 @@ def seed_state() -> None:
         SessionKey.RESULT: None,
         SessionKey.START_BOX_RESOLVED: None,  # exact box text last resolved (hides suggestions + gates re-snap)
         SessionKey.END_BOX_RESOLVED: None,
-        "view": default_view_state(),
-        "camera_epoch": 0,
+        "view": default_view_state(),  # deck initialViewState; only Compute rewrites it → the one camera move
         "show_station_extrema": False,  # green-max (top→Start) / red-min (bottom→End) station markers toggle
         "gps_requested": False,  # armed by "My location", read on the next render
         "map_click_target": None,  # START_BOX / END_BOX armed by 🚩/🏁, consumed by the next empty-map click
@@ -449,8 +444,8 @@ def compute_button(origin: str, destination: str) -> None:
 def render_map(origin: str, destination: str) -> None:
     """Render the 3D map: endpoints, the colour-scale radio, and the route ribbon.
 
-    camera_epoch (bumped only by Compute) drives the one camera move; colour scale, ribbon presence, and
-    the endpoint-marker count fold into the remount key so markers/routes show without moving the view.
+    The component key is derived from ``view`` (map_key): unchanged view → in-place layer/marker update
+    (picks/arming/ribbon show immediately, no blank); Compute rewrites ``view`` → remount at the route.
     """
     endpoints = endpoint_markers(
         start_latlon=st.session_state.start_latlon,
@@ -482,10 +477,9 @@ def render_map(origin: str, destination: str) -> None:
     extrema = station_extrema_markers() if st.session_state.get("show_station_extrema", False) else None
     maxima = extrema.maxima if extrema is not None else None
     minima = extrema.minima if extrema is not None else None
-    # deck.gl picking is unreliable under pitch, so WHENEVER a click must be caught (extrema markers
-    # shown OR a map-click button armed) flatten the camera to top-down — the one gate the arm-buttons share.
-    top_down = extrema is not None or st.session_state.get("map_click_target") is not None
-    view = flattened_view(st.session_state.view) if top_down else st.session_state.view
+    # The stored view is always top-down (DEFAULT_PITCH=0, no pitch UI), so deck.gl terrain-click
+    # picking stays reliable; no per-render flattening needed.
+    view = st.session_state.view
     deck = build_deck(
         view=view,
         ribbon_segments=ribbon,
@@ -494,13 +488,7 @@ def render_map(origin: str, destination: str) -> None:
         maxima=maxima,
         minima=minima,
     )
-    map_key = map_remount_key(
-        camera_epoch=st.session_state.camera_epoch,
-        top_down=top_down,
-        has_ribbon=ribbon is not None,
-        endpoint_count=len(endpoints),
-    )
-    event = st_deckgl(deck, key=map_key, height=WebMapConfig.MAP_HEIGHT_PX, events=["click"])
+    event = st_deckgl(deck, key=map_key(view=view), height=WebMapConfig.MAP_HEIGHT_PX, events=["click"])
     handle_station_click(event=event)
     handle_map_click(event=event)
 

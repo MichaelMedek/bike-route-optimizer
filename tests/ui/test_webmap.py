@@ -29,9 +29,8 @@ from bike_router.ui.webmap import (
     default_view_state,
     elevation_profile_chart,
     endpoint_markers,
-    flattened_view,
     map_click_pending,
-    map_remount_key,
+    map_key,
     map_waypoint_markers,
     output_donuts,
     output_stat_rows,
@@ -272,47 +271,17 @@ def test_endpoint_markers():
     assert endpoint_markers(start_latlon=None, end_latlon=None, origin="", destination="") == []
 
 
-def test_map_remount_key():
-    # Keyed on camera_epoch (bumped by Compute), the top-down flag, ribbon presence, AND the endpoint
-    # count — so the map remounts to move the camera, flip pitch, show a fresh route, OR draw a phase-1
-    # marker immediately (the last WITHOUT moving the camera — view is untouched).
-    assert (
-        map_remount_key(camera_epoch=3, top_down=False, has_ribbon=False, endpoint_count=0)
-        == "bike_map_3_tilted_none_0"
+def test_map_key():
+    # Derived ONLY from the camera pose: same view → same key (in-place update, no remount); a moved
+    # camera (Compute rewrites view) → different key → remount that reloads terrain at the new pose.
+    view = ViewState(latitude=48.0, longitude=8.0, zoom=10.0, pitch=0.0, bearing=0.0)
+    assert map_key(view=view) == map_key(view=view)  # stable across identical views
+    # markers/ribbon/pitch/bearing don't touch the key — only lat/lon/zoom do (the camera)
+    assert map_key(view=view) == map_key(
+        view=ViewState(latitude=48.0, longitude=8.0, zoom=10.0, pitch=45.0, bearing=9.0)
     )
-    assert (
-        map_remount_key(camera_epoch=0, top_down=True, has_ribbon=True, endpoint_count=2)
-        == "bike_map_0_topdown_ribbon_2"
-    )
-    assert map_remount_key(camera_epoch=1, top_down=False, has_ribbon=False, endpoint_count=0) != map_remount_key(
-        camera_epoch=2, top_down=False, has_ribbon=False, endpoint_count=0
-    )
-    # flipping top-down (pitch change) must remount so st_deckgl applies the new pose
-    assert map_remount_key(camera_epoch=1, top_down=False, has_ribbon=False, endpoint_count=0) != map_remount_key(
-        camera_epoch=1, top_down=True, has_ribbon=False, endpoint_count=0
-    )
-    # a fresh route ribbon must remount so it draws immediately, not only after a later toggle
-    assert map_remount_key(camera_epoch=1, top_down=False, has_ribbon=False, endpoint_count=0) != map_remount_key(
-        camera_epoch=1, top_down=False, has_ribbon=True, endpoint_count=0
-    )
-    # a phase-1 pick (endpoint count 0→1) must remount to draw the marker, same camera_epoch (no recenter)
-    assert map_remount_key(camera_epoch=1, top_down=False, has_ribbon=False, endpoint_count=0) != map_remount_key(
-        camera_epoch=1, top_down=False, has_ribbon=False, endpoint_count=1
-    )
-
-
-def test_flattened_view():
-    # Forces pitch to 0 (reliable deck.gl picking) while keeping every other camera field.
-    view = ViewState(latitude=48.0, longitude=8.0, zoom=10.0, pitch=45.0, bearing=20.0)
-    flat = flattened_view(view)
-    assert flat.pitch == 0.0
-    assert (flat.latitude, flat.longitude, flat.zoom, flat.bearing) == (48.0, 8.0, 10.0, 20.0)
-
-
-def test_flattened_view_is_idempotent():
-    # An already-top-down camera is returned unchanged (equal), so re-flattening never remounts.
-    flat = ViewState(latitude=47.0, longitude=9.0, zoom=8.0, pitch=0.0, bearing=0.0)
-    assert flattened_view(flat) == flat
+    moved = ViewState(latitude=47.5, longitude=8.0, zoom=10.0, pitch=0.0, bearing=0.0)
+    assert map_key(view=view) != map_key(view=moved)  # a recenter (Compute) remounts
 
 
 def test_scale_label():

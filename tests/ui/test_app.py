@@ -89,7 +89,7 @@ def test_download_graph_with_bar():
 def test_seed_state(fixture_graph):
     # Seeds the gating defaults; a stashed _pending_<box> is applied to that box before it renders.
     at = _run()
-    assert at.session_state["start_latlon"] is None and at.session_state["camera_epoch"] == 0
+    assert at.session_state["start_latlon"] is None and at.session_state["view"] is not None
     at.session_state["_pending_start_box"] = "Titisee Bahnhof"
     at.session_state["_pending_end_box"] = "Sauldorf Bahnhof"
     at.run()
@@ -128,7 +128,9 @@ def test_compute_button(fixture_graph):
         _click(at, "🧭 Compute route")
     planned.assert_called_once()
     assert at.session_state["result"] is result
-    assert at.session_state["start_latlon"] == (48.0, 8.0, 300.0) and at.session_state["camera_epoch"] == 1
+    assert at.session_state["start_latlon"] == (48.0, 8.0, 300.0)
+    # Compute is the ONE camera move: the stored view reframes on the start↔end midpoint (48.0/48.02 → 48.01).
+    assert at.session_state["view"].latitude == pytest.approx(48.01)
 
 
 def test_render_route_output(fixture_graph, tmp_path):
@@ -198,14 +200,15 @@ def test_suggest():
 
 def test_reconcile_endpoints(fixture_graph):
     # Phase 1: a coords-literal box snaps locally to a marker (latlon set, box marked resolved) WITHOUT
-    # bumping camera_epoch (no recenter); free text clears the marker; both leave the camera untouched.
+    # moving the camera (view stays the seeded default); free text clears the marker; camera untouched.
     at = _run()
+    default_view = at.session_state["view"]
     with patch.object(app, "snap_box", return_value=(47.9, 9.0, 600.0)) as snapped:
         at.text_input(key="start_box").set_value("47.90000, 9.00000 (Sauldorf Bahnhof)").run()
     snapped.assert_called()
     assert at.session_state["start_latlon"] == (47.9, 9.0, 600.0)
     assert at.session_state["start_box_resolved"] == "47.90000, 9.00000 (Sauldorf Bahnhof)"
-    assert at.session_state["camera_epoch"] == 0  # phase 1 NEVER moves the camera
+    assert at.session_state["view"] == default_view  # phase 1 NEVER moves the camera
 
     at.text_input(key="start_box").set_value("Freetext Town").run()  # free text → marker cleared
     assert at.session_state["start_latlon"] is None and at.session_state["start_box_resolved"] is None
@@ -309,11 +312,12 @@ def test_apply_pending_box():
 
 
 def test_recenter_on_endpoints():
-    # The ONE recenter path (Set + Compute): sets a fresh view and bumps the camera epoch by one.
+    # The ONE camera move (Compute): reframes the stored view on the start↔end midpoint (no epoch/remount).
     with patch.object(app, "st") as fake_st:
-        fake_st.session_state = _State(camera_epoch=2)
+        fake_st.session_state = _State()
         app._recenter_on_endpoints(start=(48.0, 8.0, 300.0), end=(48.4, 8.6, 500.0))
-    assert fake_st.session_state["camera_epoch"] == 3 and fake_st.session_state["view"] is not None
+    view = fake_st.session_state["view"]
+    assert view.latitude == pytest.approx(48.2) and view.longitude == pytest.approx(8.3)
 
 
 def test_arm_map_click():

@@ -6,7 +6,7 @@ pure builders the app shell merely calls.
 
 import math
 from collections.abc import Callable
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 import altair as alt
@@ -323,6 +323,15 @@ def route_view_state(start_latlon: tuple[float, float], end_latlon: tuple[float,
 COMPUTE_LABEL = "🧭 Compute route"
 
 
+def map_key(view: ViewState) -> str:
+    """The st_deckgl component key — derived ONLY from the camera pose (``view``).
+
+    Same view → same key → in-place layer/marker update (no reload), so picks/arming/ribbon show
+    immediately. Only Compute rewrites ``view`` → new key → remount at the fresh route camera.
+    """
+    return f"bike_map_{view.latitude:.5f}_{view.longitude:.5f}_{view.zoom:.3f}"
+
+
 def _named_waypoints(
     *, waypoints: list[tuple[float, float]], village_of: "Callable[[float, float], str | None]"
 ) -> list[tuple[float, float, str]]:
@@ -451,24 +460,6 @@ def endpoint_markers(
             label = place_label(name=box_display_label(value=box), elevation_m=latlon[2])
             markers.append((latlon[0], latlon[1], latlon[2], label))
     return markers
-
-
-def flattened_view(view: ViewState) -> ViewState:
-    """The same camera looking straight down (pitch 0) — deck.gl picking is unreliable under pitch.
-
-    The sister ski-resort project sets VIEWING_PITCH=0 for exactly this reason ("tilted views cause
-    terrain click issues"); we flatten only while clickable top-station markers are shown.
-    """
-    return replace(view, pitch=0.0)
-
-
-def map_remount_key(*, camera_epoch: int, top_down: bool, has_ribbon: bool, endpoint_count: int) -> str:
-    """The st_deckgl remount key — changes when the camera moves (Compute), the pitch flips, a route
-    ribbon appears/disappears, OR the endpoint-marker count changes. Folding ``endpoint_count`` in makes a
-    phase-1 pick's marker draw IMMEDIATELY without moving the camera (``view`` is untouched, so no recenter).
-    """
-    ribbon = "ribbon" if has_ribbon else "none"
-    return f"bike_map_{camera_epoch}_{'topdown' if top_down else 'tilted'}_{ribbon}_{endpoint_count}"
 
 
 def scale_label(scale: str) -> str:
