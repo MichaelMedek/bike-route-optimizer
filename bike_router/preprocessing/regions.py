@@ -20,9 +20,10 @@ from shapely import from_wkt
 from shapely.geometry import LineString
 
 from bike_router.core.constants import GeoConfig, GraphConfig, Mode, NodeType, RailConfig, Schema
-from bike_router.core.geo import haversine_distance_m, haversine_vec
+from bike_router.core.geo import haversine_vec
 from bike_router.core.graph_store import EDGE_COLS, NODE_COLS
 from bike_router.preprocessing.builder import dedup_by_geometry, reindex_region, remap_contiguous
+from bike_router.preprocessing.graph_ops import densify_polyline
 from bike_router.preprocessing.graph_writer import compute_bbox, read_region_tables
 
 logger = logging.getLogger(__name__)
@@ -344,22 +345,20 @@ def rail_edge(
 ) -> dict[str, object]:
     """One directed station→station rail row (a=from, b=to).
 
-    ``polyline`` (an ``(n,3)`` lon/lat/z path along the real welded track, oriented a→b) becomes the edge
-    geometry + length; without it the edge is a straight z-carrying segment between the two platforms.
+    Geometry is the real welded-track ``polyline`` (an ``(n,3)`` lon/lat/z path oriented a→b), ANCHORED at
+    both ends to the fixed station coords and densified so no segment exceeds RAIL_MAX_VERTEX_SPACING_M.
     """
     la, lo_a = latlon[a]
     lb, lo_b = latlon[b]
     ea, eb = elev_by_osmid[a], elev_by_osmid[b]
-    if polyline is not None and len(polyline) >= 2:
-        pts = [(float(x), float(y), float(z)) for x, y, z in polyline]
-        length_m = float(
-            haversine_vec(
-                lat_a=polyline[:-1, 1], lon_a=polyline[:-1, 0], lat_b=polyline[1:, 1], lon_b=polyline[1:, 0]
-            ).sum()
-        )
-    else:
-        pts = [(lo_a, la, ea), (lo_b, lb, eb)]
-        length_m = haversine_distance_m(lat_a=la, lon_a=lo_a, lat_b=lb, lon_b=lo_b)
+    # Anchor to the FIXED station nodes so the drawn line connects to them (endpoints == edge nodes); the
+    # traced track sits between. Densify so a sparse-OSM straight (real track, few vertices) can't span >200 m.
+    track = polyline if polyline is not None and len(polyline) >= 1 else np.empty((0, 3))
+    anchored = np.vstack([[lo_a, la, ea], track, [lo_b, lb, eb]])
+    dense = densify_polyline(anchored, max_spacing_m=RailConfig.RAIL_MAX_VERTEX_SPACING_M)
+    length_m = float(
+        haversine_vec(lat_a=dense[:-1, 1], lon_a=dense[:-1, 0], lat_b=dense[1:, 1], lon_b=dense[1:, 0]).sum()
+    )
     return {
         Schema.FROM_NODE: a,
         Schema.TO_NODE: b,
@@ -369,7 +368,7 @@ def rail_edge(
         Schema.SURFACE: None,
         Schema.HIGHWAY: None,
         Schema.MODE: Mode.RAIL,
-        Schema.GEOMETRY_WKT: LineString(pts).wkt,
+        Schema.GEOMETRY_WKT: LineString([(float(x), float(y), float(z)) for x, y, z in dense]).wkt,
     }
 
 

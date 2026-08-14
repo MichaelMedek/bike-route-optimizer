@@ -191,6 +191,9 @@ class RailConfig:
     TRACK_WELD_M = 0.1
     STATION_MERGE_M = 50.0
     STATION_THROAT_SEAL_M = 600.0
+    # Densify each emitted station↔station rail polyline so no segment exceeds this (real OSM track is
+    # sparse on long straights — a single 2-point >200 m segment would trip assert_no_long_straight_edges).
+    RAIL_MAX_VERTEX_SPACING_M = 100.0
 
 
 class GraphConfig:

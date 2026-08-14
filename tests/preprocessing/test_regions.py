@@ -58,20 +58,37 @@ def test_weld_rail_track():
 
 
 def test_rail_edge():
-    # With polyline=None the row is a straight z-carrying segment; with a polyline it traces the real track.
-    latlon = {1: (48.0, 8.0), 2: (48.1, 8.0)}
+    # The geometry is ANCHORED at both ends to the fixed station coords (gap 0) and densified so no
+    # segment exceeds RAIL_MAX_VERTEX_SPACING_M — with or without a traced welded polyline.
+    from shapely import from_wkt
+
+    from bike_router.core.constants import RailConfig
+    from bike_router.core.geo import haversine_distance_m, haversine_vec
+
+    latlon = {1: (48.0, 8.0), 2: (48.1, 8.0)}  # ~11 km apart → must densify to many sub-segments
     elev = {1: 500.0, 2: 700.0}
     row = rail_edge(a=1, b=2, latlon=latlon, elev_by_osmid=elev, polyline=None)
     assert row["from_node"] == 1 and row["to_node"] == 2 and row["mode"] == Mode.RAIL
     assert row["height_diff_m"] == 200.0 and row["length_m"] > 0
+    coords = np.asarray(from_wkt(row["geometry_wkt"]).coords)
+    # endpoints sit EXACTLY on the two stations (no floating gap), z carried from station elevations
+    assert haversine_distance_m(lat_a=coords[0][1], lon_a=coords[0][0], lat_b=48.0, lon_b=8.0) < 1e-6
+    assert haversine_distance_m(lat_a=coords[-1][1], lon_a=coords[-1][0], lat_b=48.1, lon_b=8.0) < 1e-6
+    assert coords[0][2] == 500.0 and coords[-1][2] == 700.0
+    # densified: no segment exceeds the cap → NOT a 2-point straight despite polyline=None
+    seg = haversine_vec(lat_a=coords[:-1, 1], lon_a=coords[:-1, 0], lat_b=coords[1:, 1], lon_b=coords[1:, 0])
+    assert len(coords) > 2 and seg.max() <= RailConfig.RAIL_MAX_VERTEX_SPACING_M
+    # with a real welded polyline the traced vertices sit BETWEEN the anchored station endpoints
     traced = rail_edge(
         a=1,
         b=2,
         latlon=latlon,
         elev_by_osmid=elev,
-        polyline=np.array([[8.0, 48.0, 500.0], [8.0, 48.05, 600.0], [8.0, 48.1, 700.0]]),
+        polyline=np.array([[8.0, 48.03, 550.0], [8.0, 48.07, 650.0]]),
     )
-    assert traced["geometry_wkt"].count(",") == 2  # 3-vertex polyline, not a straight 2-point line
+    tc = np.asarray(from_wkt(traced["geometry_wkt"]).coords)
+    assert haversine_distance_m(lat_a=tc[0][1], lon_a=tc[0][0], lat_b=48.0, lon_b=8.0) < 1e-6
+    assert haversine_distance_m(lat_a=tc[-1][1], lon_a=tc[-1][0], lat_b=48.1, lon_b=8.0) < 1e-6
 
 
 def _line(lat1, lon1, lat2, lon2) -> str:  # noqa: ANN001
@@ -482,3 +499,32 @@ def test_consolidate_rail_passthrough_without_rail():
     edges = pd.DataFrame(_bidir(0, 1, "bike", 10.0), columns=_EDGE_COLS)
     out_nodes, out_edges = consolidate_rail(nodes_df=nodes, edges_df=edges)
     assert out_nodes.equals(nodes) and out_edges.equals(edges)
+
+
+def test_consolidate_rail_geometry_anchored_on_fixture():
+    # INTEGRATION on the committed fixture: every emitted rail edge's polyline ENDS exactly on its two
+    # station nodes (no ~40m float) and no edge is a 2-point straight over the long-edge gate — the geometry
+    # follows real track AND connects to the fixed stations.
+    import glob
+
+    from shapely import from_wkt, get_num_coordinates
+
+    from bike_router.core.constants import BuildValidationConfig
+    from bike_router.core.geo import haversine_distance_m
+    from tests.conftest import FIXTURE_GRAPH_DIR
+
+    nodes = pd.concat([pd.read_parquet(p) for p in glob.glob(str(FIXTURE_GRAPH_DIR / "nodes" / "*.parquet"))])
+    edges = pd.concat([pd.read_parquet(p) for p in glob.glob(str(FIXTURE_GRAPH_DIR / "edges" / "*.parquet"))])
+    coord_of = {int(r.osmid): (float(r.lat), float(r.lon)) for r in nodes.itertuples(index=False)}
+    rail = edges[edges[Schema.MODE] == Mode.RAIL]
+    assert not rail.empty and rail[Schema.GEOMETRY_WKT].notna().all()  # every rail edge has geometry
+    n_vertices = get_num_coordinates(from_wkt(rail[Schema.GEOMETRY_WKT].to_numpy(dtype=object)))
+    # no 2-vertex straight over the gate — the sparse-OSM long straight is densified away
+    long_straight = (rail[Schema.LENGTH_M].to_numpy() > BuildValidationConfig.MAX_STRAIGHT_EDGE_M) & (n_vertices <= 2)
+    assert not long_straight.any()
+    for r in rail.itertuples(index=False):
+        coords = from_wkt(r.geometry_wkt).coords
+        fa, foa = coord_of[int(r.from_node)]
+        fb, fob = coord_of[int(r.to_node)]
+        assert haversine_distance_m(lat_a=coords[0][1], lon_a=coords[0][0], lat_b=fa, lon_b=foa) < 1e-3
+        assert haversine_distance_m(lat_a=coords[-1][1], lon_a=coords[-1][0], lat_b=fb, lon_b=fob) < 1e-3

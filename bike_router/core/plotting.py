@@ -9,7 +9,9 @@ import math
 
 import matplotlib
 
-matplotlib.use("Agg")  # headless — must precede pyplot import
+from bike_router.core.constants import MPL_BACKEND
+
+matplotlib.use(MPL_BACKEND)  # headless — must precede pyplot import
 import matplotlib.pyplot as plt  # noqa: E402
 import numpy as np  # noqa: E402
 from matplotlib import cm  # noqa: E402
@@ -18,7 +20,14 @@ from matplotlib.colors import Normalize  # noqa: E402
 from matplotlib.ticker import MaxNLocator  # noqa: E402
 
 from bike_router.core.composition import RouteComposition, format_composition  # noqa: E402
-from bike_router.core.constants import ELEVATION_AXIS_LABEL, PLOT_BG, Palette, PlotConfig, RoutingParams  # noqa: E402
+from bike_router.core.constants import (  # noqa: E402
+    ELEVATION_AXIS_LABEL,
+    MPL_BBOX_TIGHT,
+    PLOT_BG,
+    Palette,
+    PlotConfig,
+    RoutingParams,
+)
 from bike_router.core.geo import nearest_index  # noqa: E402
 from bike_router.core.route_path import RoutePath  # noqa: E402
 from bike_router.core.track import (  # noqa: E402
@@ -201,6 +210,6 @@ def plot_route_debug(
         handles, labels, loc="upper right", fontsize=9, framealpha=0.95, facecolor=PLOT_BG, edgecolor="#999999"
     )
 
-    figure.savefig(out_path, dpi=dpi, facecolor=PLOT_BG, bbox_inches="tight", pad_inches=0.3)
+    figure.savefig(out_path, dpi=dpi, facecolor=PLOT_BG, bbox_inches=MPL_BBOX_TIGHT, pad_inches=0.3)
     plt.close(figure)
     logger.info(f"Wrote debug route PNG to {out_path}")

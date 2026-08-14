@@ -17,6 +17,7 @@ from bike_router.preprocessing.graph_writer import (
     _assert_height_diffs_consistent,
     _assert_node_edge_types_consistent,
     _geometry_wkt,
+    _mode_lines,
     _scalar,
     compute_bbox,
     graph_from_tables,
@@ -241,3 +242,19 @@ def test_plot_graph_overview(tmp_path):
     out = tmp_path / "overview.png"
     plot_graph_overview(nodes_df=nodes, edges_df=edges, out_path=out, title="t", figsize=(4, 4))
     assert out.exists() and out.stat().st_size > 0
+
+
+def test_mode_lines():
+    # One mode's polylines → a LineCollection (vectorized WKT parse); the other mode + NULL geoms excluded.
+    edges = pd.DataFrame(
+        {
+            "mode": [Mode.BIKE, Mode.BIKE, Mode.RAIL],
+            "geometry_wkt": ["LINESTRING (8.0 48.0, 8.01 48.0)", None, "LINESTRING (8.0 48.1, 8.03 48.1)"],
+        }
+    )
+    bike = _mode_lines(edges_df=edges, mode=Mode.BIKE, color="blue", width=0.2, zorder=1)
+    assert len(bike.get_segments()) == 1  # only the one non-NULL bike edge
+    empty = _mode_lines(
+        edges_df=edges[edges["mode"] == Mode.BIKE].iloc[1:2], mode=Mode.BIKE, color="b", width=0.2, zorder=1
+    )
+    assert len(empty.get_segments()) == 0  # all-NULL slice → empty collection, no raise
