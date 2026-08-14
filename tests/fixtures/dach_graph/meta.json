@@ -7,7 +7,7 @@
   ],
   "tile_deg": 0.5,
   "tolerance_m": 25.0,
-  "n_nodes": 17759,
-  "n_edges": 54780,
+  "n_nodes": 17737,
+  "n_edges": 54784,
   "n_stations": 29
 }
