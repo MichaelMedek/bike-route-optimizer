@@ -12,6 +12,7 @@ from bike_router.core.constants import (
     Condition,
     CorridorConfig,
     CostConfig,
+    DbNavigatorConfig,
     DEMConfig,
     GeoConfig,
     GmapsConfig,
@@ -256,6 +257,16 @@ class TestGmapsConfig:
     def test_waypoint_and_url_config(self):
         assert GmapsConfig.N_WAYPOINTS >= 2 and GmapsConfig.MAX_INTERMEDIATE_WAYPOINTS == 9
         assert GmapsConfig.TRAVEL_MODE == "bicycling" and GmapsConfig.BASE_URL.startswith("https://")
+
+
+class TestDbNavigatorConfig:
+    def test_urls_products_and_link_params(self):
+        assert DbNavigatorConfig.ORTE_URL.startswith("https://") and DbNavigatorConfig.JOURNEY_URL.startswith(
+            "https://"
+        )
+        assert DbNavigatorConfig.SUCHE_URL.startswith("https://") and DbNavigatorConfig.TIMEOUT_S > 0
+        assert len(DbNavigatorConfig.ALLOWED_PRODUCTS) == len(DbNavigatorConfig.VM_CODES.split(","))
+        assert DbNavigatorConfig.KLASSE == "2"
 
 
 class TestPlotConfig:

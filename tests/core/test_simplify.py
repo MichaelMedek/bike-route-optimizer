@@ -24,6 +24,7 @@ from bike_router.core.simplify import (
     _visvalingam,
     bike_leg_endpoints,
     format_bike_legs,
+    format_rail_bahn_legs,
     format_rail_legs,
     place_label,
     rail_leg_tooltips,
@@ -49,11 +50,13 @@ def _names(pairs) -> list[tuple[str | None, str | None]]:  # noqa: ANN001 — li
 
 
 def _rail_leg(board: str | None, alight: str | None) -> RailLeg:
-    """A RailLeg from two station names (positions/url irrelevant for the format/endpoint tests)."""
+    """A RailLeg from two station names (positions/urls irrelevant for the format/endpoint tests)."""
     return RailLeg(
         board=Station(name=board, lat=48.0, lon=8.0, elevation_m=0.0),
         alight=Station(name=alight, lat=48.0, lon=8.1, elevation_m=0.0),
         url="https://maps.google/transit",
+        bahn_url="https://www.bahn.de/buchung/fahrplan/suche#x",
+        bahn_label="dep 08:00 → arr 08:30 · RB1",
     )
 
 
@@ -150,19 +153,29 @@ class TestRailLeg:
         leg = _rail_leg(board="A", alight="B")
         assert leg.board.name == "A" and leg.alight.name == "B"
 
+    def test_holds_maps_and_bahn_links(self):
+        leg = _rail_leg(board="A", alight="B")
+        assert leg.url.startswith("https://maps") and "bahn.de" in leg.bahn_url
+        assert leg.bahn_label == "dep 08:00 → arr 08:30 · RB1"
+
     def test_is_frozen(self):
         with pytest.raises(AttributeError):
             _rail_leg(board="A", alight="B").board = None  # type: ignore[misc]
 
 
 class TestBikeLeg:
-    def test_holds_url_and_endpoint_names(self):
-        leg = BikeLeg(url="https://maps", from_place="Horb", to_place="Freudenstadt")
-        assert (leg.url, leg.from_place, leg.to_place) == ("https://maps", "Horb", "Freudenstadt")
+    def test_holds_url_endpoint_names_and_time(self):
+        leg = BikeLeg(url="https://maps", from_place="Horb", to_place="Freudenstadt", time_label="≈ 08:00–09:00")
+        assert (leg.url, leg.from_place, leg.to_place, leg.time_label) == (
+            "https://maps",
+            "Horb",
+            "Freudenstadt",
+            "≈ 08:00–09:00",
+        )
 
     def test_is_frozen(self):
         with pytest.raises(AttributeError):
-            BikeLeg(url="u", from_place="a", to_place="b").url = "x"  # type: ignore[misc]
+            BikeLeg(url="u", from_place="a", to_place="b", time_label="t").url = "x"  # type: ignore[misc]
 
 
 # --- station markers / tooltips / rail-leg lines -----------------------------
@@ -193,6 +206,15 @@ def test_format_rail_legs():
     assert format_rail_legs(rail_legs=legs) == [
         "Train 1: Freudenstadt → Pforzheim",
         "Train 2: (unnamed stop) → Karlsruhe",
+    ]
+
+
+def test_format_rail_bahn_legs():
+    # "Train N (bahn): <bahn_label>" per ride — the bahn.de-side label line.
+    legs = [_rail_leg(board="Freudenstadt", alight="Pforzheim"), _rail_leg(board="Horb", alight="Karlsruhe")]
+    assert format_rail_bahn_legs(rail_legs=legs) == [
+        "Train 1 (bahn): dep 08:00 → arr 08:30 · RB1",
+        "Train 2 (bahn): dep 08:00 → arr 08:30 · RB1",
     ]
 
 
@@ -240,8 +262,8 @@ def test_neighbour_station_name():
 def test_format_bike_legs():
     # One "Bike Route N: from → to" label per pedalled leg, numbered from 1.
     legs = [
-        BikeLeg(url="u0", from_place="Horb am Neckar", to_place="Horb-Heiligenfeld"),
-        BikeLeg(url="u1", from_place="Freudenstadt Stadt", to_place="Freudenstadt"),
+        BikeLeg(url="u0", from_place="Horb am Neckar", to_place="Horb-Heiligenfeld", time_label="≈ 08:00–08:30"),
+        BikeLeg(url="u1", from_place="Freudenstadt Stadt", to_place="Freudenstadt", time_label="≈ 09:00–09:30"),
     ]
     assert format_bike_legs(bike_legs=legs) == [
         "Bike Route 1: Horb am Neckar → Horb-Heiligenfeld",
