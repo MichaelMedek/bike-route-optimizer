@@ -215,6 +215,13 @@ def test_bike_leg_endpoints():
     assert bike_leg_endpoints(route=ends_on_train, leg_paths=[[1, 2]], origin="Start", destination="End") == [
         ("Start", "Station 3")
     ]
+    # A coords-literal box value (from a GPS/map/station pick) shows its readable "(Name)", never raw coords.
+    assert bike_leg_endpoints(
+        route=pure,
+        leg_paths=[[1, 2, 3]],
+        origin="48.47652, 7.94654 (Offenburg Bahnhof)",
+        destination="48.46459, 8.43517 (Freudenstadt Bahnhof)",
+    ) == [("Offenburg Bahnhof", "Freudenstadt Bahnhof")]
 
 
 def test_neighbour_station_name():

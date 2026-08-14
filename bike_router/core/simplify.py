@@ -12,6 +12,7 @@ from shapely.geometry import LineString
 
 from bike_router.core.constants import GmapsConfig, GpxConfig, Mode, NodeType
 from bike_router.core.geo import haversine_distance_m
+from bike_router.core.geocoding import box_display_label
 from bike_router.core.route_path import RouteNode, RoutePath
 
 logger = logging.getLogger(__name__)
@@ -150,16 +151,20 @@ def bike_leg_endpoints(
 ) -> list[tuple[str, str]]:
     """(from_place, to_place) for each pedalled leg, derived STRUCTURALLY from the node path.
 
-    Endpoints are ``origin``/``destination`` at the whole route's ends, else the adjacent rail
-    station node (alighted-from / boards-at) — robust to routes starting/ending on/chaining trains.
+    Outer ends show ``origin``/``destination`` (coords-literal box values stripped to their readable
+    ``(Name)`` — never the raw "lat, lon"); interior ends show the abutting rail station name.
     """
     nodes = route.nodes
     position = {node.osmid: index for index, node in enumerate(nodes)}  # osmid → its index on the path
     ends: list[tuple[str, str]] = []
     for leg in leg_paths:
         head, tail = position[leg[0]], position[leg[-1]]
-        from_place = origin if head == 0 else _neighbour_station_name(node=nodes[head - 1])
-        to_place = destination if tail == len(nodes) - 1 else _neighbour_station_name(node=nodes[tail + 1])
+        from_place = box_display_label(value=origin) if head == 0 else _neighbour_station_name(node=nodes[head - 1])
+        to_place = (
+            box_display_label(value=destination)
+            if tail == len(nodes) - 1
+            else _neighbour_station_name(node=nodes[tail + 1])
+        )
         ends.append((from_place, to_place))
     return ends
 

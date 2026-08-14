@@ -132,12 +132,10 @@ def render_route_output(result: RouteResult) -> None:
         for line in format_rail_legs(rail_legs=result.rail_legs):
             st.markdown(f"- {line}")
 
-    # One Google Maps bicycling link per pedalled leg; the code block holds ONLY the URL so its
-    # copy icon copies just the link.
+    # One Google Maps bicycling link per pedalled leg — a link button opens the route in a new tab.
     st.caption("🗺️ Bike legs in Google Maps (one link per leg):")
     for label, leg in zip(format_bike_legs(bike_legs=result.bike_legs), result.bike_legs, strict=True):
-        st.caption(f"**{label}**")
-        st.code(leg.url, language=None)
+        st.link_button(f"🗺️ {label}", leg.url, width="stretch")
 
     downloads = ((result.gpx_path, "application/gpx+xml"), (result.png_path, "image/png"))
     for col, (path, mime) in zip(st.columns(len(downloads)), downloads, strict=True):
