@@ -16,6 +16,31 @@ from bike_router.core.geo import haversine_vec
 logger = logging.getLogger(__name__)
 
 
+def assert_no_long_straight_edges(*, edges_df: pd.DataFrame) -> None:
+    """Fail LOUD if any edge longer than MAX_STRAIGHT_EDGE_M has only straight 2-point geometry.
+
+    A long edge MUST trace real infrastructure (a densified polyline); a >1 km straight jump between two
+    points is a corrupt shortcut that never follows the actual track/road. Runs on the whole built graph.
+    """
+    max_straight = BuildValidationConfig.MAX_STRAIGHT_EDGE_M
+    wkt = edges_df[Schema.GEOMETRY_WKT].to_numpy()
+    length_m = edges_df[Schema.LENGTH_M].to_numpy(dtype=np.float64)
+    logger.info(f"validate: checking {len(edges_df)} edges for long straight jumps (> {max_straight:.0f} m) …")
+    has_geom = np.array([isinstance(w, str) for w in wkt])
+    n_vertices = np.zeros(len(wkt), dtype=np.int64)
+    n_vertices[has_geom] = get_num_coordinates(from_wkt(wkt[has_geom]))
+    # A long edge is invalid if it has NO geometry, or only its 2 endpoints (a straight line, no real trace).
+    invalid = (length_m > max_straight) & (n_vertices <= 2)
+    if invalid.any():
+        i = int(np.where(invalid)[0][np.argmax(length_m[invalid])])
+        raise AssertionError(
+            f"edge {(int(edges_df[Schema.FROM_NODE].iloc[i]), int(edges_df[Schema.TO_NODE].iloc[i]))} is "
+            f"{length_m[i] / 1000:.1f} km but has {n_vertices[i]} vertices — a >{max_straight:.0f} m edge must trace "
+            f"real line geometry, not a straight jump"
+        )
+    logger.info(f"validate: OK — no straight edge exceeds {max_straight:.0f} m")
+
+
 def assert_bike_geometry_valid(*, nodes_df: pd.DataFrame, edges_df: pd.DataFrame) -> None:
     """Fail LOUD if any BIKE edge violates the vertex-spacing or elevation-band invariant.
 

@@ -179,8 +179,8 @@ class RailConfig:
     # neighbourhood by ≥HUB_RISE_M; a bottom mirrors (VALLEY_KEYCOL_M / HUB_DROP_M).
     EXTREMA_DOMINANCE_RADIUS_M = 8000.0
     EXTREMA_PEAK_KEYCOL_M = 120.0
-    EXTREMA_VALLEY_KEYCOL_M = 120.0
-    EXTREMA_HUB_RISE_M = 100.0
+    EXTREMA_VALLEY_KEYCOL_M = 150.0
+    EXTREMA_HUB_RISE_M = 130.0
     EXTREMA_HUB_DROP_M = 130.0
     # Station track-graph reconstruction (name → next-stations). Weld track vertices this close together;
     # merge platforms within STATION_MERGE_M into one node (I3); seal a station's convergence THROAT this
@@ -523,14 +523,11 @@ class GradeConfig:
 
 
 class BuildValidationConfig:
-    """STRICT build-time invariants on bike-edge geometry — a violation fails the build LOUD.
-
-    Guards against the two corruption classes that shipped bad graphs: sparse polylines that shortcut
-    across streets, and baked z that leaves the [endpoint-elevation] band (a tunnel/dip a bike can't take).
-    """
+    """STRICT build-time invariants on graph geometry — a violation fails the build LOUD."""
 
     MAX_VERTEX_SPACING_M = 100.0  # no two consecutive bike-edge vertices may be farther apart than this
     ELEV_BAND_MARGIN_M = 30.0  # bike-edge z must stay within [min,max endpoint elev] ± this (DEM noise)
+    MAX_STRAIGHT_EDGE_M = 200.0  # an edge longer than this MUST trace real line geometry, not a 2-point jump
 
 
 class SpeedConfig:

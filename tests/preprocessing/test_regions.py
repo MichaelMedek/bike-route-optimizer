@@ -9,13 +9,16 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from bike_router.core.constants import GraphConfig, Mode, NodeType
+from bike_router.core.constants import GraphConfig, Mode, NodeType, Schema
 from bike_router.preprocessing.graph_writer import write_graph_parquet
 from bike_router.preprocessing.regions import (
     DACH_REGIONS,
     Region,
     _assert_rectangular_tiling,
     _assert_split_overlaps,
+    _build_rail_rows,
+    _oriented_track_polyline,
+    _trace_to_root,
     assert_all_regions_complete,
     base_meta,
     combine_regions,
@@ -44,20 +47,30 @@ def _region_artifact(region_dir, nodes: list[tuple], edges: list[tuple]) -> None
 def test_weld_rail_track():
     # Two LINESTRINGs sharing an endpoint weld to ONE vertex (3 total); NULL geometry is discarded.
     geometries = np.array(
-        ["LINESTRING(8.0 48.0, 8.001 48.0)", "LINESTRING(8.001 48.0, 8.002 48.0)", None], dtype=object
+        ["LINESTRING Z (8.0 48.0 100, 8.001 48.0 110)", "LINESTRING Z (8.001 48.0 110, 8.002 48.0 120)", None],
+        dtype=object,
     )
-    coords, neighbours = weld_rail_track(geometries=geometries, weld_m=0.1)
-    assert len(coords) == 3  # the shared 8.001 vertex is fused, not duplicated
+    coords, neighbours, vertex_lonlatz = weld_rail_track(geometries=geometries, weld_m=0.1)
+    assert len(coords) == 3 and len(vertex_lonlatz) == 3  # the shared 8.001 vertex is fused, not duplicated
     assert sorted(len(n) for n in neighbours) == [1, 1, 2]  # middle deg-2, two ends deg-1
+    assert vertex_lonlatz[:, 2].tolist() == [100.0, 110.0, 120.0]  # real per-vertex z preserved
 
 
 def test_rail_edge():
-    # One directed station→station row carries straight z-geometry, length, and signed height diff.
+    # With polyline=None the row is a straight z-carrying segment; with a polyline it traces the real track.
     latlon = {1: (48.0, 8.0), 2: (48.1, 8.0)}
     elev = {1: 500.0, 2: 700.0}
-    row = rail_edge(a=1, b=2, latlon=latlon, elev_by_osmid=elev)
+    row = rail_edge(a=1, b=2, latlon=latlon, elev_by_osmid=elev, polyline=None)
     assert row["from_node"] == 1 and row["to_node"] == 2 and row["mode"] == Mode.RAIL
     assert row["height_diff_m"] == 200.0 and row["length_m"] > 0
+    traced = rail_edge(
+        a=1,
+        b=2,
+        latlon=latlon,
+        elev_by_osmid=elev,
+        polyline=np.array([[8.0, 48.0, 500.0], [8.0, 48.05, 600.0], [8.0, 48.1, 700.0]]),
+    )
+    assert traced["geometry_wkt"].count(",") == 2  # 3-vertex polyline, not a straight 2-point line
 
 
 def _line(lat1, lon1, lat2, lon2) -> str:  # noqa: ANN001
@@ -358,12 +371,52 @@ def test_merge_station_platforms():
 
 
 def test_watershed_station_adjacency():
-    # Line 0(regionA)—1—2—3(regionB): the flood from A reaches B's throat within the seal → edge A↔B.
+    # Line 0(regionA)—1—2—3(regionB): the flood from A reaches B's throat within the seal → edge A↔B,
+    # and the returned vertex path traces the real track 0→1→2→3 between the two complexes.
     coords = np.array([[0.0, 0.0], [10.0, 0.0], [20.0, 0.0], [30.0, 0.0]])
     neighbours = [[1], [0, 2], [1, 3], [2]]
     region = np.array([0, -1, -1, 3], dtype=np.int64)
-    adj = watershed_station_adjacency(coords=coords, neighbours=neighbours, region=region, seal_m=50.0)
+    adj, paths = watershed_station_adjacency(coords=coords, neighbours=neighbours, region=region, seal_m=50.0)
     assert adj == {0: {3}, 3: {0}}
+    # The path traces welded vertices from A's seed to the throat vertex it arrives at (owned by B within seal).
+    assert paths[(0, 3)] in ([0, 1, 2], [3, 2, 1])
+
+
+def test_trace_to_root():
+    # Reconstructs the BFS chain root→node from a parent map (root has parent -1).
+    parent = {0: -1, 1: 0, 2: 1}
+    assert _trace_to_root(node=2, parent=parent) == [0, 1, 2]
+    assert _trace_to_root(node=0, parent=parent) == [0]
+
+
+def test_oriented_track_polyline():
+    # Flips the (lon,lat,z) chain so it starts nearest the FROM point; None for a missing/degenerate path.
+    vertex_lonlatz = np.array([[8.0, 48.0, 100.0], [8.01, 48.0, 150.0], [8.02, 48.0, 200.0]])
+    fwd = _oriented_track_polyline(vpath=[0, 1, 2], vertex_lonlatz=vertex_lonlatz, from_lon=8.0, from_lat=48.0)
+    assert fwd[0][0] == 8.0 and fwd[-1][0] == 8.02  # already oriented from the 8.0 end
+    rev = _oriented_track_polyline(vpath=[0, 1, 2], vertex_lonlatz=vertex_lonlatz, from_lon=8.02, from_lat=48.0)
+    assert rev[0][0] == 8.02 and rev[-1][0] == 8.0  # flipped to start at the 8.02 end
+    assert _oriented_track_polyline(vpath=None, vertex_lonlatz=vertex_lonlatz, from_lon=8.0, from_lat=48.0) is None
+
+
+def test_build_rail_rows():
+    # Two adjacent complexes (survivors 10, 11) → both-direction rail rows tracing the welded path.
+    adjacency = {100: {200}, 200: {100}}
+    paths = {(100, 200): [0, 1]}
+    survivor = {100: 10, 200: 11}
+    latlon = {10: (48.0, 8.0), 11: (48.0, 8.02)}
+    elev = {10: 400.0, 11: 500.0}
+    vertex_lonlatz = np.array([[8.0, 48.0, 400.0], [8.02, 48.0, 500.0]])
+    rows = _build_rail_rows(
+        adjacency=adjacency,
+        paths=paths,
+        survivor=survivor,
+        latlon=latlon,
+        elev_by_osmid=elev,
+        vertex_lonlatz=vertex_lonlatz,
+    )
+    assert {(r[Schema.FROM_NODE], r[Schema.TO_NODE]) for r in rows} == {(10, 11), (11, 10)}
+    assert all(isinstance(r[Schema.GEOMETRY_WKT], str) for r in rows)
 
 
 def _station_rail_frame():  # noqa: ANN202

@@ -8,12 +8,30 @@ import pandas as pd
 import pytest
 
 from bike_router.core.constants import Mode, Schema
-from bike_router.core.graph_validation import assert_bike_geometry_valid
+from bike_router.core.graph_validation import assert_bike_geometry_valid, assert_no_long_straight_edges
 
 
 def _edge_row(*, from_node: int, to_node: int, mode: str, wkt: str | None) -> dict:
     """One on-disk edge row for the validator (only the columns it reads)."""
     return {Schema.FROM_NODE: from_node, Schema.TO_NODE: to_node, Schema.MODE: mode, Schema.GEOMETRY_WKT: wkt}
+
+
+def test_assert_no_long_straight_edges():
+    # A long edge with a real multi-vertex polyline passes; a >1 km straight 2-point jump fails loud;
+    # short 2-point edges (≤1 km) are fine (a straight hop over a small gap is legitimate).
+    def row(f, t, length_m, wkt):
+        return {**_edge_row(from_node=f, to_node=t, mode=Mode.RAIL, wkt=wkt), Schema.LENGTH_M: length_m}
+
+    ok = pd.DataFrame(
+        [
+            row(1, 2, 5000.0, "LINESTRING (8.0 48.0, 8.02 48.0, 8.04 48.0)"),  # 5 km but traced → OK
+            row(3, 4, 100.0, "LINESTRING (8.0 48.0, 8.001 48.0)"),  # 100 m straight → OK (≤ threshold)
+        ]
+    )
+    assert_no_long_straight_edges(edges_df=ok)  # no raise
+    bad = pd.DataFrame([row(5, 6, 3000.0, "LINESTRING (8.0 48.0, 8.04 48.0)")])  # 3 km straight jump → fail
+    with pytest.raises(AssertionError, match="trace real line geometry"):
+        assert_no_long_straight_edges(edges_df=bad)
 
 
 def test_assert_bike_geometry_valid():

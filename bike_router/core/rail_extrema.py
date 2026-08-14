@@ -282,8 +282,17 @@ def station_extrema(*, graph_dir: Path) -> StationExtrema:
             bot_names.add(name)
         elif is_top and is_bot:
             (top_names if rise >= drop else bot_names).add(name)
-    maxima_df = stations_df[stations_df[Schema.STATION_NAME].isin(top_names)].reset_index(drop=True)
-    minima_df = stations_df[stations_df[Schema.STATION_NAME].isin(bot_names)].reset_index(drop=True)
+    # One marker per extremum NAME (drop duplicate-name platform rows so counts match the name graph).
+    maxima_df = (
+        stations_df[stations_df[Schema.STATION_NAME].isin(top_names)]
+        .drop_duplicates(subset=Schema.STATION_NAME)
+        .reset_index(drop=True)
+    )
+    minima_df = (
+        stations_df[stations_df[Schema.STATION_NAME].isin(bot_names)]
+        .drop_duplicates(subset=Schema.STATION_NAME)
+        .reset_index(drop=True)
+    )
     logger.info(f"Station-extrema scan: {len(maxima_df)} tops, {len(minima_df)} bottoms")
     return StationExtrema(
         maxima=station_markers(stations_df=maxima_df, want_high=True),

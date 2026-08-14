@@ -20,7 +20,7 @@ from shapely import from_wkt
 from shapely.geometry import LineString
 
 from bike_router.core.constants import GeoConfig, GraphConfig, Mode, NodeType, RailConfig, Schema
-from bike_router.core.geo import haversine_distance_m
+from bike_router.core.geo import haversine_distance_m, haversine_vec
 from bike_router.core.graph_store import EDGE_COLS, NODE_COLS
 from bike_router.preprocessing.builder import dedup_by_geometry, reindex_region, remap_contiguous
 from bike_router.preprocessing.graph_writer import compute_bbox, read_region_tables
@@ -202,13 +202,22 @@ def merge_station_platforms(*, station_xy: "np.ndarray", merge_m: float) -> "np.
     return np.array([find(i) for i in range(n)], dtype=np.int64)
 
 
+def _trace_to_root(*, node: int, parent: dict[int, int]) -> list[int]:
+    """The vertex chain from a BFS root (parent == -1) down to ``node``, in root→node order."""
+    chain: list[int] = []
+    while node != -1:
+        chain.append(node)
+        node = parent[node]
+    return chain[::-1]
+
+
 def watershed_station_adjacency(
     *, coords: "np.ndarray", neighbours: list[list[int]], region: "np.ndarray", seal_m: float
-) -> dict[int, set[int]]:
-    """Per-complex BFS over welded track vertices → symmetric complex adjacency (complex root → neighbours).
+) -> tuple[dict[int, set[int]], dict[tuple[int, int], list[int]]]:
+    """Per-complex BFS over welded track vertices → symmetric complex adjacency + the track path per pair.
 
-    Multi-source Dijkstra assigns each vertex its nearest complex; a flood from each complex halts at another
-    region OR inside another complex's throat (owner within ``seal_m``), else walks through. Mutual-union.
+    Multi-source Dijkstra owns each vertex by nearest complex; a flood halts at another region or its throat
+    (within ``seal_m``), else walks through. Returns adjacency AND each pair's welded-vertex path (real track).
     """
     n_vertices = len(coords)
     # Vectorized undirected CSR: flatten the adjacency list, keep u<v, weight = euclidean edge length.
@@ -234,51 +243,58 @@ def watershed_station_adjacency(
     # A step to nb arrives at complex `arrival[nb]` (>=0) or is walk-through (-1): its own region's vertices
     # and throat vertices (owned within seal, off-region) are arrivals; everything else keeps flooding.
     arrival = np.where(region >= 0, region, np.where((owner >= 0) & (owner_dist <= seal_m), owner, -1))
+    graph: dict[int, set[int]] = {}
+    paths: dict[tuple[int, int], list[int]] = {}
 
-    def flood(rep: int, rep_seeds: list[int]) -> set[int]:
-        """One complex's BFS: record the first complex each branch arrives at; walk through the rest."""
-        found: set[int] = set()
+    def flood(rep: int, rep_seeds: list[int]) -> None:
+        """One complex's BFS: record the first complex each branch arrives at + the vertex path to it."""
+        parent = {s: -1 for s in rep_seeds}
         queue = deque(rep_seeds)
         for s in rep_seeds:
             visited[s] = rep
         while queue:
-            for nb in neighbours[queue.popleft()]:
+            cur = queue.popleft()
+            for nb in neighbours[cur]:
                 if visited[nb] == rep:
                     continue
                 visited[nb] = rep
+                parent[nb] = cur
                 reached = int(arrival[nb])
-                if reached >= 0 and reached != rep:
-                    found.add(reached)
-                else:
+                if reached < 0 or reached == rep:
                     queue.append(nb)
-        return found
+                    continue
+                graph.setdefault(rep, set()).add(reached)
+                key = (min(rep, reached), max(rep, reached))
+                paths.setdefault(key, _trace_to_root(node=nb, parent=parent))  # first BFS arrival wins the path
 
-    graph: dict[int, set[int]] = {rep: flood(rep, rep_seeds) for rep, rep_seeds in seeds_by_complex.items()}
+    for rep, rep_seeds in seeds_by_complex.items():
+        flood(rep, rep_seeds)
     for a in list(graph):
         for b in list(graph[a]):
-            graph[b].add(a)
-    return graph
+            graph.setdefault(b, set()).add(a)
+    return graph, paths
 
 
-def weld_rail_track(*, geometries: "np.ndarray", weld_m: float) -> tuple["np.ndarray", list[list[int]]]:
+def weld_rail_track(*, geometries: "np.ndarray", weld_m: float) -> tuple["np.ndarray", list[list[int]], "np.ndarray"]:
     """Fuse rail WKT LINESTRINGs into ONE planar graph, welding shared vertices on a ``weld_m`` grid.
 
-    Equirectangular metres (per-point cos-lat) map lon/lat to a metric plane; NULL geometry (corrupt
-    connectors) is dropped. Returns the ``(V, 2)`` vertex coordinates and an undirected adjacency list.
+    Returns metric ``(V,2)`` coords, an undirected adjacency list, and each vertex's real ``(lon,lat,z)``
+    (NULL geometry dropped) so a track path can be re-emitted as a true polyline.
     """
     mpd = GeoConfig.METERS_PER_DEGREE_EQUATOR
     coord_to_vertex: dict[tuple[int, int], int] = {}
     xs: list[float] = []
     ys: list[float] = []
+    lonlatz: list[tuple[float, float, float]] = []
     adjacency: dict[int, set[int]] = {}
     for wkt in geometries:
         if not isinstance(wkt, str):
             continue  # corrupt builder connector (no geometry) — not real track
-        lonlat = np.asarray(from_wkt(wkt).coords)
-        px = lonlat[:, 0] * mpd * np.cos(np.radians(lonlat[:, 1]))
-        py = lonlat[:, 1] * mpd
+        raw = np.asarray(from_wkt(wkt).coords)
+        px = raw[:, 0] * mpd * np.cos(np.radians(raw[:, 1]))
+        py = raw[:, 1] * mpd
         previous = -1
-        for x, y in zip(px, py, strict=True):
+        for j, (x, y) in enumerate(zip(px, py, strict=True)):
             key = (round(x / weld_m), round(y / weld_m))
             vertex = coord_to_vertex.get(key)
             if vertex is None:
@@ -286,33 +302,98 @@ def weld_rail_track(*, geometries: "np.ndarray", weld_m: float) -> tuple["np.nda
                 coord_to_vertex[key] = vertex
                 xs.append(float(x))
                 ys.append(float(y))
+                z = float(raw[j, 2]) if raw.shape[1] >= 3 else float(np.nan)
+                lonlatz.append((float(raw[j, 0]), float(raw[j, 1]), z))
             if previous not in (-1, vertex):
                 adjacency.setdefault(previous, set()).add(vertex)
                 adjacency.setdefault(vertex, set()).add(previous)
             previous = vertex
     coords = np.column_stack([xs, ys]) if xs else np.empty((0, 2))
     neighbours = [sorted(adjacency.get(v, set())) for v in range(len(xs))]
-    return coords, neighbours
+    vertex_lonlatz = np.array(lonlatz, dtype=np.float64) if lonlatz else np.empty((0, 3))
+    return coords, neighbours, vertex_lonlatz
 
 
 def rail_edge(
-    *, a: int, b: int, latlon: dict[int, tuple[float, float]], elev_by_osmid: dict[int, float]
+    *,
+    a: int,
+    b: int,
+    latlon: dict[int, tuple[float, float]],
+    elev_by_osmid: dict[int, float],
+    polyline: "np.ndarray | None",
 ) -> dict[str, object]:
-    """One directed station→station rail row (a=from, b=to) with straight z-carrying geometry."""
+    """One directed station→station rail row (a=from, b=to).
+
+    ``polyline`` (an ``(n,3)`` lon/lat/z path along the real welded track, oriented a→b) becomes the edge
+    geometry + length; without it the edge is a straight z-carrying segment between the two platforms.
+    """
     la, lo_a = latlon[a]
     lb, lo_b = latlon[b]
     ea, eb = elev_by_osmid[a], elev_by_osmid[b]
+    if polyline is not None and len(polyline) >= 2:
+        pts = [(float(x), float(y), float(z)) for x, y, z in polyline]
+        length_m = float(
+            haversine_vec(
+                lat_a=polyline[:-1, 1], lon_a=polyline[:-1, 0], lat_b=polyline[1:, 1], lon_b=polyline[1:, 0]
+            ).sum()
+        )
+    else:
+        pts = [(lo_a, la, ea), (lo_b, lb, eb)]
+        length_m = haversine_distance_m(lat_a=la, lon_a=lo_a, lat_b=lb, lon_b=lo_b)
     return {
         Schema.FROM_NODE: a,
         Schema.TO_NODE: b,
         Schema.KEY: 0,
-        Schema.LENGTH_M: haversine_distance_m(lat_a=la, lon_a=lo_a, lat_b=lb, lon_b=lo_b),
+        Schema.LENGTH_M: length_m,
         Schema.HEIGHT_DIFF_M: eb - ea,
         Schema.SURFACE: None,
         Schema.HIGHWAY: None,
         Schema.MODE: Mode.RAIL,
-        Schema.GEOMETRY_WKT: LineString([(lo_a, la, ea), (lo_b, lb, eb)]).wkt,
+        Schema.GEOMETRY_WKT: LineString(pts).wkt,
     }
+
+
+def _oriented_track_polyline(
+    *, vpath: "list[int] | None", vertex_lonlatz: "np.ndarray", from_lon: float, from_lat: float
+) -> "np.ndarray | None":
+    """The welded-track lon/lat/z path for a vertex chain, flipped to start nearest ``(from_lon, from_lat)``."""
+    if vpath is None or len(vpath) < 2:
+        return None
+    line = vertex_lonlatz[vpath]  # (n, 3) lon/lat/z along the real track
+    d0 = (line[0, 0] - from_lon) ** 2 + (line[0, 1] - from_lat) ** 2
+    d1 = (line[-1, 0] - from_lon) ** 2 + (line[-1, 1] - from_lat) ** 2
+    return line if d0 <= d1 else line[::-1]
+
+
+def _build_rail_rows(
+    *,
+    adjacency: dict[int, set[int]],
+    paths: dict[tuple[int, int], list[int]],
+    survivor: dict[int, int],
+    latlon: dict[int, tuple[float, float]],
+    elev_by_osmid: dict[int, float],
+    vertex_lonlatz: "np.ndarray",
+) -> list[dict[str, object]]:
+    """Both-direction rail edge rows for every adjacent complex pair, each tracing the real welded track."""
+    seen: set[tuple[int, int]] = set()
+    rows: list[dict[str, object]] = []
+    for a_root, roots in adjacency.items():
+        for b_root in roots:
+            sa, sb = survivor[int(a_root)], survivor[int(b_root)]
+            if sa == sb or (min(sa, sb), max(sa, sb)) in seen:
+                continue
+            seen.add((min(sa, sb), max(sa, sb)))
+            vpath = paths.get((min(int(a_root), int(b_root)), max(int(a_root), int(b_root))))
+            fwd = _oriented_track_polyline(
+                vpath=vpath, vertex_lonlatz=vertex_lonlatz, from_lon=latlon[sa][1], from_lat=latlon[sa][0]
+            )
+            rows.append(rail_edge(a=sa, b=sb, latlon=latlon, elev_by_osmid=elev_by_osmid, polyline=fwd))
+            rows.append(
+                rail_edge(
+                    a=sb, b=sa, latlon=latlon, elev_by_osmid=elev_by_osmid, polyline=None if fwd is None else fwd[::-1]
+                )
+            )
+    return rows
 
 
 def consolidate_rail(*, nodes_df: pd.DataFrame, edges_df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
@@ -347,7 +428,7 @@ def consolidate_rail(*, nodes_df: pd.DataFrame, edges_df: pd.DataFrame) -> tuple
     kept_name = grp.sort_values(["root", "namelen", "name"]).groupby("root")["name"].first().to_dict()
     platform_to_survivor = {int(o): int(survivor[int(r)]) for o, r in zip(osmids, complex_of, strict=True)}
 
-    coords, neighbours = weld_rail_track(
+    coords, neighbours, vertex_lonlatz = weld_rail_track(
         geometries=edges_df.loc[is_rail_edge, Schema.GEOMETRY_WKT].to_numpy(), weld_m=RailConfig.TRACK_WELD_M
     )
     logger.info(f"consolidate_rail: welded {len(coords)} track vertices from {len(stations)} platforms; watershed …")
@@ -358,22 +439,20 @@ def consolidate_rail(*, nodes_df: pd.DataFrame, edges_df: pd.DataFrame) -> tuple
         dist, nearest = cKDTree(station_xy).query(coords)
         inside = dist <= RailConfig.STATION_MERGE_M
         region[inside] = complex_of[nearest[inside]]
-    adjacency = watershed_station_adjacency(
+    adjacency, paths = watershed_station_adjacency(
         coords=coords, neighbours=neighbours, region=region, seal_m=RailConfig.STATION_THROAT_SEAL_M
     )
 
     elev_by_osmid = {int(osmids[i]): float(elevs[i]) for i in range(len(osmids))}
     latlon = {int(osmids[i]): (float(lat[i]), float(lon[i])) for i in range(len(osmids))}
-
-    pairs: set[tuple[int, int]] = set()
-    for a_root, roots in adjacency.items():
-        for b_root in roots:
-            sa, sb = survivor[int(a_root)], survivor[int(b_root)]
-            if sa != sb:
-                pairs.add((min(sa, sb), max(sa, sb)))
-    rail_rows = [rail_edge(a=a, b=b, latlon=latlon, elev_by_osmid=elev_by_osmid) for a, b in pairs] + [
-        rail_edge(a=b, b=a, latlon=latlon, elev_by_osmid=elev_by_osmid) for a, b in pairs
-    ]
+    rail_rows = _build_rail_rows(
+        adjacency=adjacency,
+        paths=paths,
+        survivor=survivor,
+        latlon=latlon,
+        elev_by_osmid=elev_by_osmid,
+        vertex_lonlatz=vertex_lonlatz,
+    )
 
     survivor_rows = sorted(survivor_row.values())
     survivor_nodes = stations.iloc[survivor_rows].copy()
