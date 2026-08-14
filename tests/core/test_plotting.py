@@ -17,9 +17,19 @@ from bike_router.core.plotting import (
     _marker_node_indices,
     _prefs_text,
     plot_route_debug,
+    route_title,
 )
 from bike_router.core.track import build_track
 from tests.conftest import DEFAULT_PARAMS, make_line_route, make_mixed_mode_route, zero_params
+
+
+def test_route_title():
+    # A coords-literal pick shows its readable "(Name)" (never raw coords); plain text passes through.
+    assert (
+        route_title(origin="48.47652, 7.94654 (Offenburg Bahnhof)", destination="47.99, 7.85 (Freiburg Hbf)")
+        == "Bike route: Offenburg Bahnhof → Freiburg Hbf"
+    )
+    assert route_title(origin="Freudenstadt, Germany", destination="Horb") == "Bike route: Freudenstadt, Germany → Horb"
 
 
 def test_prefs_text():

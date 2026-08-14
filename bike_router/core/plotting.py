@@ -29,6 +29,7 @@ from bike_router.core.constants import (  # noqa: E402
     RoutingParams,
 )
 from bike_router.core.geo import nearest_index  # noqa: E402
+from bike_router.core.geocoding import box_display_label  # noqa: E402
 from bike_router.core.route_path import RoutePath  # noqa: E402
 from bike_router.core.track import (  # noqa: E402
     Track,
@@ -111,6 +112,15 @@ def _marker_node_indices(*, route: RoutePath, marker_points: list[tuple[float, f
     return sorted(idxs)
 
 
+def route_title(*, origin: str, destination: str) -> str:
+    """The PNG title "Bike route: A → B", with any coords-literal box value stripped to its ``(Name)``.
+
+    Mirrors the leg display (simplify.bike_leg_endpoints): a picked "lat, lon (Name)" shows just the
+    readable name, never the raw coordinates; a plain geocoded string passes through unchanged.
+    """
+    return f"Bike route: {box_display_label(value=origin)} → {box_display_label(value=destination)}"
+
+
 def plot_route_debug(
     *,
     route: RoutePath,
@@ -181,7 +191,8 @@ def plot_route_debug(
     axes.scatter(
         lons[-1], lats[-1], s=200, c=[end_rgb], edgecolors="black", linewidths=1.2, zorder=7, marker="*", label="end"
     )
-    axes.set_title(f"Bike route: {origin} → {destination}", fontsize=13, weight="bold")
+    # Strip a coords-literal box value ("lat, lon (Name)") to its readable name, like the leg display.
+    axes.set_title(route_title(origin=origin, destination=destination), fontsize=13, weight="bold")
 
     mappable = cm.ScalarMappable(norm=norm, cmap=cmap)
     mappable.set_array([])
